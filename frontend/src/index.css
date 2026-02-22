@@ -1601,3 +1601,157 @@ body {
     color: var(--text2);
     line-height: 1.5;
 }
+
+/* ── Mobile Responsive ─────────────────────────────────────── */
+@media (max-width: 768px) {
+
+    /* Header: stack logo + buttons vertically */
+    .dash-header {
+        padding: 10px 14px;
+        flex-wrap: wrap;
+        gap: 8px;
+        height: auto;
+    }
+
+    .logo-group {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .logo-title {
+        font-size: 1.1rem !important;
+    }
+
+    .logo-sub {
+        display: none;
+    }
+
+    .header-right {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .btn-primary {
+        padding: 7px 12px !important;
+        font-size: 0.78rem !important;
+    }
+
+    .btn-secondary-sm {
+        padding: 5px 10px !important;
+        font-size: 0.75rem !important;
+    }
+
+    .status-badge {
+        font-size: 0.72rem !important;
+        padding: 4px 8px !important;
+    }
+
+    /* Market bar: make it horizontally scrollable */
+    .market-bar-inner {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        gap: 12px !important;
+        scrollbar-width: none;
+    }
+
+    .market-bar-inner::-webkit-scrollbar {
+        display: none;
+    }
+
+    .market-item {
+        flex-shrink: 0;
+    }
+
+    .market-warning {
+        flex-shrink: 0;
+        font-size: 0.72rem !important;
+        white-space: nowrap;
+    }
+
+    /* Show all market items on mobile, not just hidden-mobile */
+    .hidden-mobile {
+        display: flex !important;
+    }
+
+    /* Main content padding */
+    .dash-main {
+        padding: 12px !important;
+        gap: 16px !important;
+    }
+
+    /* Setup cards: single column on mobile */
+    .setups-grid {
+        grid-template-columns: 1fr !important;
+        gap: 14px !important;
+    }
+
+    /* Section header: stack on mobile */
+    .section-header {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 8px !important;
+    }
+
+    /* Active trades grid: single column */
+    .active-grid {
+        grid-template-columns: 1fr !important;
+    }
+
+    /* Trades summary bar: 2x2 grid on mobile */
+    .trades-summary-bar {
+        grid-template-columns: 1fr 1fr !important;
+    }
+
+    /* RCC grid: single column */
+    .rcc-grid {
+        grid-template-columns: 1fr !important;
+    }
+
+    /* Setup card internals */
+    .card-metrics {
+        grid-template-columns: 1fr 1fr !important;
+    }
+
+    .card-price {
+        font-size: 1.3rem !important;
+    }
+
+    /* Filter buttons wrap */
+    .section-header+div {
+        flex-wrap: wrap;
+    }
+
+    /* Reduce section padding */
+    .section {
+        padding: 0 !important;
+    }
+
+    /* Footer */
+    .dash-footer {
+        padding: 16px 14px !important;
+        font-size: 0.72rem !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .logo-icon {
+        font-size: 1.2rem !important;
+    }
+
+    .card-price {
+        font-size: 1.1rem !important;
+    }
+
+    .active-card {
+        padding: 14px !important;
+    }
+
+    .active-metrics {
+        grid-template-columns: 1fr 1fr !important;
+    }
+}
