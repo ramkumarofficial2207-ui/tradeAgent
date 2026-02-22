@@ -195,12 +195,42 @@ export async function runBacktest(
 ): Promise<BacktestResult> {
     const startMs = Date.now();
 
-    // Buffer: We need 210 extra days of history before startDate
     const startTs = new Date(config.startDate).getTime() / 1000;
     const endTs = new Date(config.endDate).getTime() / 1000;
-    const extendedStartTs = startTs - 400 * 24 * 3600; // extra ~1yr
+    const extendedStartTs = startTs - 400 * 24 * 3600;
 
-    // ── Step 1: Collect all raw signals per date ──────
+    // ── Step 0: Build Nifty Market Regime Map ─────────
+    // Key insight: only take trades when Nifty is above its 200 DMA
+    // This is the #1 filter to improve win rate in swing trading
+    onProgress?.(0, config.tickers.length, 'Fetching Nifty market regime data…');
+    const niftyBullDates = new Set<string>(); // dates when market is in uptrend
+
+    try {
+        const { default: axios } = await import('axios');
+        const niftyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI` +
+            `?period1=${Math.floor(extendedStartTs)}&period2=${Math.floor(endTs)}&interval=1d`;
+        const nr = await axios.get(niftyUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000 });
+        const nResult = nr.data?.chart?.result?.[0];
+        if (nResult) {
+            const nTs: number[] = nResult.timestamp || [];
+            const nClose: number[] = nResult.indicators?.quote?.[0]?.close || [];
+            const nCandles = nTs.map((ts, i) => ({ date: new Date(ts * 1000).toISOString().slice(0, 10), close: nClose[i] || 0 })).filter(c => c.close > 0);
+
+            for (let i = 200; i < nCandles.length; i++) {
+                const nDMA200 = nCandles.slice(i - 200, i).reduce((s, c) => s + c.close, 0) / 200;
+                const nDMA200_20ago = i >= 220 ? nCandles.slice(i - 220, i - 20).reduce((s, c) => s + c.close, 0) / 200 : nDMA200;
+                // Market is bullish if: price > 200 DMA AND 200 DMA is still rising
+                if (nCandles[i].close > nDMA200 && nDMA200 >= nDMA200_20ago * 0.995) {
+                    niftyBullDates.add(nCandles[i].date);
+                }
+            }
+        }
+    } catch (_) {
+        // If Nifty fetch fails, allow all dates (no regime filter)
+        console.warn('[Backtest] Could not fetch Nifty data, skipping regime filter');
+    }
+
+    // ── Step 1: Collect all raw signals ───────────────
     type Signal = BacktestTrade & { ticker: string };
     const allSignals: Signal[] = [];
 
@@ -209,16 +239,12 @@ export async function runBacktest(
         onProgress?.(i, config.tickers.length, ticker);
 
         try {
+            const { default: axios } = await import('axios');
             const yahooSym = ticker.includes('.NS') ? ticker : `${ticker}.NS`;
             const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}` +
                 `?period1=${Math.floor(extendedStartTs)}&period2=${Math.floor(endTs)}&interval=1d`;
 
-            const { default: axios } = await import('axios');
-            const resp = await axios.get(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
-                timeout: 20000,
-            });
-
+            const resp = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000 });
             const result = resp.data?.chart?.result?.[0];
             if (!result) continue;
 
@@ -242,24 +268,22 @@ export async function runBacktest(
 
             for (let idx = testStartIdx; idx < candles.length - 1; idx++) {
                 if (candles[idx].date > config.endDate) break;
-
-                // Cooldown: skip re-entry too soon after last trade
                 if (lastExitDate && candles[idx].date <= lastExitDate) continue;
+
+                // ⭐ MARKET REGIME FILTER: skip trade if market is in downtrend
+                if (niftyBullDates.size > 0 && !niftyBullDates.has(candles[idx].date)) continue;
 
                 if (passesFilters(candles, idx, config)) {
                     const trade = simulateTrade(candles, idx, ticker, config);
                     if (trade) {
                         allSignals.push(trade as Signal);
-                        // Add cooldown from exit date
                         const exitD = new Date(trade.exitDate);
                         exitD.setDate(exitD.getDate() + config.cooldownDays);
                         lastExitDate = exitD.toISOString().slice(0, 10);
                     }
                 }
             }
-        } catch (_) {
-            // Skip failed tickers
-        }
+        } catch (_) { }
     }
 
     onProgress?.(config.tickers.length, config.tickers.length, 'Simulating portfolio…');
