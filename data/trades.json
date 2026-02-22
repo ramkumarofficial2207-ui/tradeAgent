@@ -1,0 +1,41 @@
+[
+  {
+    "ticker": "HINDCOPPER",
+    "entryPrice": 583.31,
+    "target": 641.64,
+    "stopLoss": 578.09,
+    "breakEvenSet": false,
+    "entryDate": "2026-02-20T16:44:00.128Z",
+    "currentPrice": 569.05,
+    "pnlPct": -2.44,
+    "trailReference": 580.99,
+    "status": "exit_signal",
+    "exitReason": "Stop loss breached (578.09)"
+  },
+  {
+    "ticker": "NATIONALUM",
+    "entryPrice": 342.84,
+    "target": 377.12,
+    "stopLoss": 353.96,
+    "breakEvenSet": false,
+    "entryDate": "2026-02-20T16:44:04.909Z",
+    "currentPrice": 341.2,
+    "pnlPct": -0.48,
+    "trailReference": 355.74,
+    "status": "exit_signal",
+    "exitReason": "Stop loss breached (353.96)"
+  },
+  {
+    "ticker": "BHARTIARTL",
+    "entryPrice": 1995.69,
+    "target": 2159.85,
+    "stopLoss": 1999.64,
+    "breakEvenSet": false,
+    "status": "exit_signal",
+    "entryDate": "2026-02-20T17:38:55.872Z",
+    "currentPrice": 1977.4,
+    "pnlPct": -0.92,
+    "trailReference": 2009.69,
+    "exitReason": "Stop loss breached (1999.64)"
+  }
+]

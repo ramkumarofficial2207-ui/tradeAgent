@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SwingEdge Screener — NSE Stock Analysis</title>
+    <meta name="description"
+        content="Deep technical &amp; fundamental analysis for NSE stocks — RSI, DMA200, EMA50, Volume, Quarterly Results, Trade Setups." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="screener.css" />
+    <script>
+        (function () {
+            var t = localStorage.getItem('swingEdgeTheme') || 'dark';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+</head>
+
+<body>
+    <!-- ── NAVBAR ── -->
+    <nav class="sc-nav">
+        <div class="sc-nav-inner">
+            <a href="/" class="sc-logo">
+                <span class="sc-logo-icon">⚡</span>
+                <span class="sc-logo-text">SwingEdge</span>
+                <span class="sc-logo-sep">|</span>
+                <span class="sc-logo-page">Screener</span>
+            </a>
+            <div class="sc-nav-actions">
+                <a href="/" class="sc-nav-link">🔍 Scanner</a>
+                <button class="sc-theme-btn" onclick="toggleTheme()" title="Toggle theme">
+                    <span id="scThemeEmoji">☀️</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- ── LAYOUT ── -->
+    <div class="sc-layout">
+
+        <!-- LEFT SIDEBAR -->
+        <aside class="sc-sidebar">
+            <div class="sc-search-wrap">
+                <input type="text" id="sc-search" class="sc-search" placeholder="🔎  Search ticker or sector…"
+                    oninput="filterStocks(this.value)" autocomplete="off" />
+            </div>
+            <div class="sc-sector-tabs" id="sc-sector-tabs"></div>
+            <div class="sc-stock-list" id="sc-stock-list">
+                <div class="sc-list-loading">Loading universe…</div>
+            </div>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="sc-main">
+
+            <!-- WELCOME STATE -->
+            <div class="sc-welcome" id="sc-welcome">
+                <div class="sc-welcome-icon">📊</div>
+                <h1 class="sc-welcome-title">NSE Stock Screener</h1>
+                <p class="sc-welcome-sub">
+                    Select any stock from the left panel to see its full analysis —<br>
+                    fundamentals, technicals, financials, and trade setup.
+                </p>
+                <div class="sc-welcome-chips">
+                    <span class="sc-chip">📈 Technical Analysis</span>
+                    <span class="sc-chip">🏛️ NSE Live Price</span>
+                    <span class="sc-chip">📋 Quarterly Results</span>
+                    <span class="sc-chip">🎯 Trade Setups</span>
+                    <span class="sc-chip">110+ Stocks</span>
+                </div>
+            </div>
+
+            <!-- LOADING STATE -->
+            <div class="sc-loading" id="sc-loading" style="display:none;">
+                <div class="sc-spinner"></div>
+                <div class="sc-loading-text">Fetching data…</div>
+                <div class="sc-loading-sub">Price • Fundamentals • Technical Indicators</div>
+            </div>
+
+            <!-- STOCK DETAIL REPORT -->
+            <div class="sc-detail" id="sc-detail" style="display:none;">
+
+                <!-- Stock Header -->
+                <div class="sc-stock-header">
+                    <div class="sc-stock-identity">
+                        <div class="sc-stock-badge-row">
+                            <span class="sc-nse-badge" id="d-ticker-badge">NSE: —</span>
+                            <span class="sc-sector-badge" id="d-sector">—</span>
+                        </div>
+                        <h2 class="sc-company-name" id="d-company-name">—</h2>
+                    </div>
+                    <div class="sc-stock-price-block">
+                        <div class="sc-price" id="d-price">—</div>
+                        <div class="sc-price-change" id="d-price-change">—</div>
+                        <div class="sc-updated" id="d-updated">—</div>
+                    </div>
+                </div>
+
+                <!-- 52W Range Bar -->
+                <div class="sc-range-bar-wrap">
+                    <div class="sc-range-label">
+                        <span>52W Low: <strong id="d-52wl">—</strong></span>
+                        <span class="sc-range-center">52-Week Price Range</span>
+                        <span>52W High: <strong id="d-52wh">—</strong></span>
+                    </div>
+                    <div class="sc-range-track">
+                        <div class="sc-range-fill" id="d-range-fill"></div>
+                        <div class="sc-range-dot" id="d-range-dot"></div>
+                    </div>
+                </div>
+
+                <!-- Tabs -->
+                <div class="sc-tabs">
+                    <button class="sc-tab active" data-tab="valuation" onclick="switchTab('valuation', this)">💰
+                        Valuation</button>
+                    <button class="sc-tab" data-tab="technicals" onclick="switchTab('technicals', this)">📐
+                        Technicals</button>
+                    <button class="sc-tab" data-tab="quarterly" onclick="switchTab('quarterly', this)">📋
+                        Quarterly</button>
+                    <button class="sc-tab" data-tab="annual" onclick="switchTab('annual', this)">📈 Annual
+                        P&amp;L</button>
+                    <button class="sc-tab" data-tab="setup" onclick="switchTab('setup', this)">🎯 Trade Setup</button>
+                </div>
+
+                <!-- Tab: Valuation & Quality -->
+                <div class="sc-tab-content active" id="tab-valuation">
+                    <div class="sc-ratios-grid" id="d-valuation-grid"></div>
+                </div>
+
+                <!-- Tab: Technical Analysis -->
+                <div class="sc-tab-content" id="tab-technicals">
+                    <div class="sc-ratios-grid" id="d-tech-grid"></div>
+                    <div class="sc-ma-wrap" id="d-ma-status"></div>
+                </div>
+
+                <!-- Tab: Quarterly Results -->
+                <div class="sc-tab-content" id="tab-quarterly">
+                    <div class="sc-table-wrap">
+                        <table class="sc-table">
+                            <thead>
+                                <tr>
+                                    <th>Quarter</th>
+                                    <th class="num">Sales (₹Cr)</th>
+                                    <th class="num">OPM %</th>
+                                    <th class="num">Net Profit (₹Cr)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="quarterly-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="sc-no-data" id="quarterly-nodata" style="display:none;">
+                        Quarterly data not available. The server may still be fetching it.
+                    </div>
+                    <div class="sc-mini-charts" id="sc-mini-charts"></div>
+                </div>
+
+                <!-- Tab: Annual P&L -->
+                <div class="sc-tab-content" id="tab-annual">
+                    <div class="sc-table-wrap">
+                        <table class="sc-table">
+                            <thead>
+                                <tr>
+                                    <th>Year</th>
+                                    <th class="num">Sales (₹Cr)</th>
+                                    <th class="num">Net Profit (₹Cr)</th>
+                                    <th class="num">EPS (₹)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="annual-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="sc-no-data" id="annual-nodata" style="display:none;">Annual data not available.</div>
+                </div>
+
+                <!-- Tab: Trade Setup -->
+                <div class="sc-tab-content" id="tab-setup">
+                    <div id="d-setup-card"></div>
+                </div>
+
+            </div><!-- /sc-detail -->
+
+            <!-- ERROR STATE -->
+            <div class="sc-error" id="sc-error" style="display:none;">
+                <div class="sc-error-icon">⚠️</div>
+                <div class="sc-error-title" id="sc-error-msg">Failed to load data</div>
+                <div class="sc-error-sub">The market may be closed or data service is temporarily unavailable.</div>
+                <button class="sc-retry-btn" onclick="retryLoad()">↻ Retry</button>
+            </div>
+
+        </main>
+    </div>
+
+    <script src="screener.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SwingEdge — Your Quantitative Edge in the Indian Market</title>
+  <meta name="description"
+    content="SwingEdge: AI-powered NSE swing trading scanner. Find high-probability Large &amp; Midcap setups using DMA200, EMA, RSI, and volume analysis." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <!-- Prevent flash-of-unstyled-content: apply saved theme instantly -->
+  <script>
+    (function () {
+      var saved = localStorage.getItem('swingEdgeTheme') || 'dark';
+      document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
+</head>
+
+<body>
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo-group">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1 class="logo-title">SwingEdge</h1>
+          <span class="logo-sub">Your Quantitative Edge in the Indian Market</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <a href="/screener.html" class="btn-secondary" style="text-decoration:none;font-size:0.8rem;">📊 Screener</a>
+        <div id="market-status-badge" class="status-badge status-loading">
+          <span class="status-dot"></span>
+          <span id="market-status-text">Checking Market…</span>
+        </div>
+        <!-- Theme Toggle -->
+        <button id="theme-toggle-btn" class="theme-toggle" onclick="toggleTheme()" title="Switch theme"
+          aria-label="Toggle light / dark theme">
+          <div class="toggle-track">
+            <div class="toggle-thumb"></div>
+          </div>
+          <span class="toggle-emoji" id="theme-emoji">☀️</span>
+          <span class="toggle-label" id="theme-label">Light</span>
+        </button>
+        <button id="scan-btn" class="btn-primary" onclick="runScan()">
+          <span id="scan-btn-text">🔍 Run Scanner</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MARKET BAR -->
+  <div class="market-bar" id="market-bar" style="display:none;">
+    <div class="market-bar-inner">
+      <div class="market-item">
+        <span class="market-label">NIFTY 50</span>
+        <span id="nifty-change" class="market-value">—</span>
+      </div>
+      <div class="market-item">
+        <span class="market-label">INDIA VIX Δ</span>
+        <span id="vix-change" class="market-value">—</span>
+      </div>
+      <div class="market-item">
+        <span class="market-label">LAST SCAN</span>
+        <span id="last-scan-time" class="market-value">—</span>
+      </div>
+      <div class="market-warning-text" id="market-warning-text"></div>
+    </div>
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+
+    <!-- EMPTY STATE -->
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">🎯</div>
+      <h2 class="empty-title">Ready to Scan</h2>
+      <p class="empty-sub">Click <strong>Run Scanner</strong> to scan <strong>110+ NSE Large &amp; Midcap</strong>
+        stocks for high-probability swing setups using DMA200, EMA, RSI &amp; Volume filters.</p>
+      <div class="empty-metrics">
+        <div class="empty-metric"><span>📊</span> RSI 35–50 Pullback</div>
+        <div class="empty-metric"><span>📈</span> Price &gt; 200 DMA</div>
+        <div class="empty-metric"><span>💧</span> Volume 1.5× Spike</div>
+        <div class="empty-metric"><span>🥇</span> Beats Nifty 3M RS</div>
+      </div>
+    </div>
+
+    <!-- KILL SWITCH WARNING -->
+    <div id="kill-switch" class="kill-switch" style="display:none;">
+      <div class="kill-icon">🚨</div>
+      <div class="kill-content">
+        <div class="kill-title">KILL SWITCH ACTIVATED</div>
+        <div id="kill-message" class="kill-message"></div>
+      </div>
+    </div>
+
+    <!-- SETUPS SECTION -->
+    <section id="setups-section" style="display:none;">
+      <div class="section-header">
+        <h2 class="section-title">🏆 Top Trade Setups</h2>
+        <span id="setups-count" class="badge-count">0 Found</span>
+      </div>
+      <div id="setups-grid" class="setups-grid"></div>
+    </section>
+
+    <!-- ACTIVE TRADES SECTION -->
+    <section id="trades-section" style="display:none;">
+      <div class="section-header">
+        <h2 class="section-title">🔁 Active Trades Monitor</h2>
+        <button class="btn-secondary" onclick="watchTrades()">🔄 Refresh</button>
+      </div>
+      <div id="trades-grid" class="trades-grid"></div>
+    </section>
+
+    <!-- RISK COMMAND CENTER -->
+    <section class="rcc-section" id="rcc-section">
+      <div class="rcc-header">
+        <div class="rcc-title-group">
+          <h2 class="section-title" style="margin:0">🛡️ Risk Command Center</h2>
+          <span class="rcc-subtitle">Live market risk monitoring &amp; trade health</span>
+        </div>
+        <button class="btn-secondary rcc-refresh-btn" onclick="refreshRCC()" title="Refresh all widgets">↻
+          Refresh</button>
+      </div>
+
+      <div class="rcc-grid">
+
+        <!-- Widget 1: Market Risk Meter -->
+        <div class="rcc-card rcc-card-risk" id="rcc-risk-card">
+          <div class="rcc-card-header">
+            <span class="rcc-card-icon">📡</span>
+            <span class="rcc-card-title">Market Risk Meter</span>
+            <span class="rcc-live-dot" title="Live"></span>
+          </div>
+          <div class="rcc-risk-body" id="rcc-risk-body">
+            <div class="rcc-risk-badge" id="rcc-risk-badge">—</div>
+            <div class="rcc-risk-gauge-wrap">
+              <div class="rcc-risk-gauge" id="rcc-risk-gauge"></div>
+            </div>
+            <div class="rcc-risk-stats">
+              <div class="rcc-stat">
+                <div class="rcc-stat-label">NIFTY 50</div>
+                <div class="rcc-stat-val" id="rcc-nifty">—</div>
+              </div>
+              <div class="rcc-stat">
+                <div class="rcc-stat-label">INDIA VIX Δ</div>
+                <div class="rcc-stat-val" id="rcc-vix">—</div>
+              </div>
+              <div class="rcc-stat">
+                <div class="rcc-stat-label">ACTION</div>
+                <div class="rcc-stat-val" id="rcc-action">Run scan first</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Widget 2: Protocol Checklist -->
+        <div class="rcc-card" id="rcc-checklist-card">
+          <div class="rcc-card-header">
+            <span class="rcc-card-icon">📋</span>
+            <span class="rcc-card-title">Protocol Checklist</span>
+          </div>
+          <div class="rcc-checklist" id="rcc-checklist">
+            <div class="rcc-check-item rcc-check-pending">
+              <span class="rcc-check-icon">⏳</span>
+              <div class="rcc-check-text">
+                <div class="rcc-check-label">Kill Switch</div>
+                <div class="rcc-check-sub">Run scan to evaluate</div>
+              </div>
+            </div>
+            <div class="rcc-check-item rcc-check-pending">
+              <span class="rcc-check-icon">⏳</span>
+              <div class="rcc-check-text">
+                <div class="rcc-check-label">Profit Trailer Rule</div>
+                <div class="rcc-check-sub">+5% → Move SL to break-even</div>
+              </div>
+            </div>
+            <div class="rcc-check-item rcc-check-pending">
+              <span class="rcc-check-icon">⏳</span>
+              <div class="rcc-check-text">
+                <div class="rcc-check-label">Trailing Exit Rule</div>
+                <div class="rcc-check-sub">Exit if close below 50-EMA</div>
+              </div>
+            </div>
+            <div class="rcc-check-item rcc-check-pending">
+              <span class="rcc-check-icon">⏳</span>
+              <div class="rcc-check-text">
+                <div class="rcc-check-label">Volume Quality</div>
+                <div class="rcc-check-sub">Setups need ≥1.5× avg volume</div>
+              </div>
+            </div>
+            <div class="rcc-check-item rcc-check-pending">
+              <span class="rcc-check-icon">⏳</span>
+              <div class="rcc-check-text">
+                <div class="rcc-check-label">Fundamental Grade</div>
+                <div class="rcc-check-sub">Prefer A/B grade setups only</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Widget 3: Trade Health Monitor -->
+        <div class="rcc-card" id="rcc-health-card">
+          <div class="rcc-card-header">
+            <span class="rcc-card-icon">🏥</span>
+            <span class="rcc-card-title">Trade Health Monitor</span>
+          </div>
+          <div id="rcc-health-body">
+            <div class="rcc-no-trades">No active trades. Accept a setup to start monitoring.</div>
+          </div>
+        </div>
+
+        <!-- Widget 4: Live Market News -->
+        <div class="rcc-card rcc-card-news" id="rcc-news-card">
+          <div class="rcc-card-header">
+            <span class="rcc-card-icon">📰</span>
+            <span class="rcc-card-title">Market News Feed</span>
+            <span class="rcc-live-dot" title="Live"></span>
+          </div>
+          <div class="rcc-news-list" id="rcc-news-list">
+            <div class="rcc-news-loading">Loading headlines…</div>
+          </div>
+          <div class="rcc-news-source">Source: Economic Times Markets</div>
+        </div>
+
+      </div>
+    </section>
+
+
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <p class="footer-warn">⚠️ <strong>Risk Disclaimer:</strong> SwingEdge is for educational and personal research
+        purposes only. It does not constitute financial advice. All trading involves risk. You may lose your principal.
+        Always consult a SEBI-registered advisor before taking positions.</p>
+      <p class="footer-copy">SwingEdge © 2026 — Your Quantitative Edge in the Indian Market</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

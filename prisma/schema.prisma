@@ -1,0 +1,63 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  brokerConfig BrokerConfig?
+  trades       Trade[]
+  screenerPresets ScreenerPreset[]
+}
+
+model BrokerConfig {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  provider    String   // 'zerodha', 'upstox', 'angelone', 'paper'
+  apiKey      String
+  apiSecret   String
+  accessToken String?
+  isLive      Boolean  @default(false)
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Trade {
+  id            String   @id @default(uuid())
+  userId        String
+  ticker        String
+  status        String   // 'active', 'closed'
+  entryDate     DateTime @default(now())
+  exitDate      DateTime?
+  entryPrice    Float
+  currentPrice  Float
+  exitPrice     Float?
+  quantity      Int
+  target        Float
+  stopLoss      Float
+  setupType     String   // 'VCP', 'Breakout', etc.
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ScreenerPreset {
+  id          String   @id @default(uuid())
+  userId      String
+  name        String
+  filters     String   // Stored as JSON string
+  isDefault   Boolean  @default(false)
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
