@@ -1,5 +1,21 @@
-node_modules
-# Keep environment variables out of version control
+# Dependencies
+node_modules/
+
+# Environment variables — NEVER commit this (contains API keys!)
 .env
 
-/src/generated/prisma
+# Database
+*.db
+*.db-journal
+prisma/dev.db
+
+# Build outputs
+dist/
+frontend/dist/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
