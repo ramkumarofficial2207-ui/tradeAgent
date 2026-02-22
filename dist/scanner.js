@@ -6,24 +6,28 @@ exports.buildTradeSetups = buildTradeSetups;
 const dataService_1 = require("./dataService");
 const indicators_1 = require("./indicators");
 const newsValidator_1 = require("./newsValidator");
+const aiAdvisor_1 = require("./aiAdvisor");
 const MIN_MARKET_CAP_CR = 5000;
-const MIN_AVG_VOLUME = 500_000; // Lowered: midcaps have lower absolute volumes
-const MIN_VOLUME_SPIKE = 1.2; // Lowered: 1.5x was eliminating too many valid setups
-// RSI range: wider band to capture more phases of pullback
-//   30–50 = classic oversold/pullback; 50–65 = healthy consolidation in uptrend
-const RSI_MIN = 30;
-const RSI_MAX = 65;
+const MIN_AVG_VOLUME = 500_000;
+const MIN_VOLUME_SPIKE = 1.1; // Softened to 1.1x so the AI has candidates to evaluate, it will throw out the weak ones.
+// RSI range: Momentum Zone, softened minimum to catch early breakouts
+const RSI_MIN = 45;
+const RSI_MAX = 80;
 async function checkMarketCondition() {
-    const { niftyChange, vixChange } = await (0, dataService_1.fetchNiftyData)();
-    const safeToTrade = niftyChange > -1.5;
+    const marketData = await (0, dataService_1.fetchNiftyData)();
+    const safeToTrade = marketData.niftyChange > -1.5;
     let warning = 'Markets healthy. Normal position sizing allowed.';
     if (!safeToTrade) {
         warning = 'Market risk elevated. Stay in cash: Nifty 50 is down more than 1.5%.';
     }
-    else if (vixChange > 10) {
+    else if (marketData.vixChange > 10) {
         warning = 'India VIX is up more than 10%. Reduce position size.';
     }
-    return { niftyChange, vixChange, safeToTrade, warning };
+    return {
+        ...marketData,
+        safeToTrade,
+        warning
+    };
 }
 async function fetchUniverseData(dataApi, concurrency = 6) {
     const entries = Object.entries(dataService_1.NSE_UNIVERSE);
@@ -62,11 +66,10 @@ async function runScanner(dataApi = null) {
             continue;
         // GATE 1 — Trend: price must be above 200 DMA (primary trend filter)
         const trendOk = indicators.ltp > indicators.dma200;
-        // GATE 2 — RSI: wider band (30–65) captures pullbacks AND consolidations
+        // GATE 2 — RSI: Momentum Zone (55-80) captures active breakouts
         const pullbackOk = indicators.rsi14 >= RSI_MIN && indicators.rsi14 <= RSI_MAX;
-        // GATE 3 — Volume: meaningful activity (1.2× spike OR very high absolute volume)
-        const volumeOk = (indicators.volumeRatio >= MIN_VOLUME_SPIKE && indicators.avgVolume20d >= MIN_AVG_VOLUME) ||
-            indicators.avgVolume20d >= 5_000_000; // Very liquid stocks pass regardless of spike
+        // GATE 3 — Volume: We need a strict spike for a Newgen style breakout
+        const volumeOk = indicators.volumeRatio >= MIN_VOLUME_SPIKE && indicators.avgVolume20d >= MIN_AVG_VOLUME;
         // BONUS — Nifty RS: outperforming Nifty is scored higher, not a hard gate
         // (some great setups exist in stocks that just lagged Nifty briefly)
         // Only 3 gates required: trend + RSI + volume
@@ -75,11 +78,11 @@ async function runScanner(dataApi = null) {
         }
     }
     qualified.sort((a, b) => {
-        // Score = RS vs Nifty (50% weight) + volume (30% weight) + RSI proximity to sweet spot 45 (20%)
-        // RS bonus is a scoring factor now, not a hard filter
+        // Score = Volume Spike (50% weight) + RS vs Nifty (30% weight) + RSI momentum strength (20%)
+        // We want the most explosive stocks at the top
         const rsBonus = (x) => x.outperformsNifty ? (x.returns3m - x.nifty3mReturn) : 0;
-        const scoreA = rsBonus(a) * 0.5 + a.volumeRatio * 0.3 + (50 - Math.abs(a.rsi14 - 45)) * 0.2;
-        const scoreB = rsBonus(b) * 0.5 + b.volumeRatio * 0.3 + (50 - Math.abs(b.rsi14 - 45)) * 0.2;
+        const scoreA = (a.volumeRatio * 0.5) + (rsBonus(a) * 0.3) + (a.rsi14 * 0.2);
+        const scoreB = (b.volumeRatio * 0.5) + (rsBonus(b) * 0.3) + (b.rsi14 * 0.2);
         return scoreB - scoreA;
     });
     return { qualified, marketStatus };
@@ -106,9 +109,9 @@ async function buildTradeSetups(qualified) {
         const stopLoss = +(entryPrice * 0.965).toFixed(2);
         const slPct = +(((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2);
         const riskReward = +(((targetPrice - entryPrice) / (entryPrice - stopLoss))).toFixed(2);
-        // Relaxed gates: R:R ≥ 1.5 (was 2.0), target ≥ 5% (was 7%)
-        // A 1.5 R:R is still excellent for swing trades
-        if (riskReward < 1.5 || targetPct < 5)
+        // Relaxed gates: R:R ≥ 1.0 (was 1.5), target >= 3% (was 5%)
+        // We let the AI decide if the setup is actually worth trading based on momentum
+        if (riskReward < 1.0 || targetPct < 3)
             continue;
         const news = await (0, newsValidator_1.validateNewsRisk)(ind.ticker);
         if (news.blocked)
@@ -142,6 +145,39 @@ async function buildTradeSetups(qualified) {
             volatilityHitProb: hitProb,
         });
     }
-    return setups.slice(0, 10);
+    const finalSetups = setups.slice(0, 10);
+    // AI ENRICHMENT: Send the top setups to Gemini for the "Newgen Breakout" analysis
+    if (finalSetups.length > 0) {
+        // Collect data needed for AI prompt
+        const aiInputData = finalSetups.map(s => {
+            const ind = qualified.find(q => q.ticker === s.ticker);
+            return {
+                ticker: s.ticker,
+                close: s.ltp,
+                high: ind?.candles[ind.candles.length - 1]?.high,
+                volume: ind?.todayVolume,
+                avgVolume20d: ind?.avgVolume20d,
+                rsi14: ind?.rsi14,
+                distFromDma200Pct: ind?.dma200 ? +(((s.ltp - ind.dma200) / ind.dma200) * 100).toFixed(2) : null,
+                sector: s.sector,
+                mcap: s.marketCapCr,
+            };
+        });
+        const aiAssessments = await (0, aiAdvisor_1.analyzeStocksWithAI)(aiInputData);
+        for (const s of finalSetups) {
+            const assessment = aiAssessments.get(s.ticker);
+            if (assessment) {
+                s.aiSignal = assessment.signal;
+                s.aiLogic = assessment.logic;
+                s.aiTargetRange = assessment.target_range;
+                s.aiStopLoss = assessment.stop_loss;
+                // We can override the base confidence score with AI momentum score if we want, 
+                // but let's keep both distinct for now or average them. Let's just override it:
+                if (assessment.momentum_score)
+                    s.confidenceScore = assessment.momentum_score;
+            }
+        }
+    }
+    return finalSetups;
 }
 //# sourceMappingURL=scanner.js.map

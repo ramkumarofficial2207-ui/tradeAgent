@@ -126,7 +126,6 @@ export default function BacktestPage() {
     const [universe, setUniverse] = useState<'top30' | 'top60' | 'full'>('top60')
     const [requireBreakout, setRequireBreakout] = useState(false)
     const [requireVCP, setRequireVCP] = useState(false)
-    const [aiSignalOnly, setAiSignalOnly] = useState(false)
 
     // ── One-click preset: fills the optimal settings for best results
     const applyBestSettings = () => {
@@ -139,7 +138,6 @@ export default function BacktestPage() {
         setUniverse('top60')
         setRequireBreakout(false)   // EMA Bounce
         setRequireVCP(false)
-        setAiSignalOnly(false)
     }
     const runBacktest = async () => {
         setRunning(true)
@@ -160,7 +158,6 @@ export default function BacktestPage() {
                     requireBreakout, requireVCP,
                     capital,
                     universeSize: universe === 'top30' ? 30 : universe === 'top60' ? 60 : 0,
-                    aiSignalOnly,
                 }),
                 signal: abortRef.current.signal,
             })
@@ -303,19 +300,6 @@ export default function BacktestPage() {
                             </div>
                             <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>🔥 + VCP Pattern Required</span>
                             <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Add Minervini VCP confirmation on top of entry mode</span>
-                        </label>
-                        {/* AI BUY Signal Simulation */}
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: aiSignalOnly ? 'rgba(245,158,11,0.15)' : 'var(--bg3)', border: `1px solid ${aiSignalOnly ? '#f59e0b' : 'var(--border)'}`, borderRadius: 8, width: '100%', boxSizing: 'border-box' }}>
-                            <div onClick={() => setAiSignalOnly(v => !v)} style={{ width: 36, height: 20, borderRadius: 10, background: aiSignalOnly ? '#f59e0b' : 'var(--bg3)', position: 'relative', transition: 'background 0.2s', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}>
-                                <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: aiSignalOnly ? 18 : 2, transition: 'left 0.2s' }} />
-                            </div>
-                            <div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 700 }}>🤖 AI BUY Signal Only</span>
-                                    <span style={{ padding: '2px 6px', background: 'rgba(245,158,11,0.2)', border: '1px solid #f59e0b', borderRadius: 4, fontSize: '0.65rem', color: '#f59e0b', fontWeight: 700 }}>RECOMMENDED</span>
-                                </div>
-                                <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Only trade when AI would say BUY — RSI 55-72 + Volume 2× + Near 52w High + Positive RS. Fewer trades, higher quality.</span>
-                            </div>
                         </label>
                     </div>
 
@@ -529,7 +513,7 @@ export default function BacktestPage() {
                                 Click <strong style={{ color: '#f59e0b' }}>✨ Best Settings (5yr)</strong> above, then hit <strong style={{ color: '#10b981' }}>🚀 Run Backtest</strong> to reproduce these results
                             </p>
                             <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
-                                {['📈 EMA Bounce Entry', '🤖 AI Signal Filter', '🔥 VCP Patterns', '📅 Monthly Heatmap', '🏆 Per-Stock Analysis'].map(f => (
+                                {['📈 EMA Bounce Entry', '🔥 VCP Patterns', '📅 Monthly Heatmap', '🏆 Per-Stock Analysis'].map(f => (
                                     <span key={f} style={{ padding: '6px 14px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 20, fontSize: '0.75rem', color: 'var(--text2)' }}>{f}</span>
                                 ))}
                             </div>

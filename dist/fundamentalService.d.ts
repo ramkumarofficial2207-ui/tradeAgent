@@ -57,6 +57,8 @@ export interface StockReport {
     annualResults: AnnualResult[];
     fetchedAt: string;
 }
+/** Call this to force a fresh fetch for a specific ticker on next request */
+export declare function clearStockCache(ticker: string): void;
 export declare function fetchStockReport(ticker: string, niftyCandles?: any[]): Promise<StockReport | null>;
 export interface FundamentalGrade {
     grade: 'A' | 'B' | 'C' | 'D' | '—';

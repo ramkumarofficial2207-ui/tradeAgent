@@ -22,7 +22,6 @@ export interface BacktestConfig {
     requireVCP: boolean;        // Only take VCP-pattern setups
     requireBreakout: boolean;   // Only buy on 15-day resistance breakout
     startingCapital: number;    // User's actual capital (e.g. 100000)
-    aiSignalOnly: boolean;      // Only trade AI BUY signals (simulated via strict technical score)
 }
 
 export interface BacktestTrade {
@@ -199,29 +198,6 @@ function passesFilters(candles: Candle[], idx: number, cfg: BacktestConfig): boo
     if (cfg.requireVCP) {
         const vcp = detectVCPInline(candles, idx);
         if (!vcp.isVCP) return false;
-    }
-
-    // ── GATE 4: AI BUY Signal Simulation ─────────────────
-    // When enabled, only take trades matching what Gemini would rate as BUY
-    // BUY criteria: RSI in momentum zone + strong relative volume + RS vs Nifty
-    if (cfg.aiSignalOnly) {
-        // RSI must be in momentum sweet spot (55-72) — not pullback, not overbought
-        if (rsi < 55 || rsi > 72) return false;
-
-        // Volume must be strong spike (2x+ average) — institutional involvement
-        const volRatio = calcVolRatio(volumes, idx);
-        if (!volRatio || volRatio < 2.0) return false;
-
-        // Stock must be near 52-week high (within 8%) — real momentum stock
-        const high52w = Math.max(...highs.slice(Math.max(0, idx - 252), idx + 1));
-        const pctFrom52wHigh = (high52w - price) / high52w * 100;
-        if (pctFrom52wHigh > 8) return false;
-
-        // Stock must be outperforming NIfty over last 3 months
-        // Proxy: price must be at least 3% above its 60-day low (relative strength)
-        const low60d = Math.min(...closes.slice(Math.max(0, idx - 60), idx + 1));
-        const returnFrom60dLow = (price - low60d) / low60d * 100;
-        if (returnFrom60dLow < 3) return false;
     }
 
     return true;

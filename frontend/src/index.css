@@ -1605,11 +1605,14 @@ body {
 /* ── Mobile Responsive ─────────────────────────────────────── */
 @media (max-width: 768px) {
 
-    /* Header: stack logo + buttons vertically */
     .dash-header {
+        padding: 0;
+    }
+
+    .dash-header-inner {
         padding: 10px 14px;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: 12px;
         height: auto;
     }
 

@@ -8,6 +8,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.clearStockCache = clearStockCache;
 exports.fetchStockReport = fetchStockReport;
 exports.getFundamentalGrade = getFundamentalGrade;
 exports.batchPrefetch = batchPrefetch;
@@ -18,6 +19,11 @@ const indicators_1 = require("./indicators");
 // ── Cache ─────────────────────────────────────────────
 const CACHE = new Map();
 const CACHE_TTL = 30 * 60 * 1000; // 30min
+/** Call this to force a fresh fetch for a specific ticker on next request */
+function clearStockCache(ticker) {
+    CACHE.delete(ticker.toUpperCase());
+    console.log(`[Cache] Cleared cache for ${ticker}`);
+}
 // ── Session cookies ───────────────────────────────────
 let _nseCookie = '';
 let _nseTs = 0;
@@ -41,6 +47,12 @@ async function nseCookie() {
     return _nseCookie;
 }
 async function scrCookie() {
+    // Prefer the manually-set session from .env (gives fresh data)
+    const envSession = process.env.SCREENER_SESSION;
+    if (envSession && envSession !== 'paste_your_sessionid_value_here') {
+        return `sessionid=${envSession}`;
+    }
+    // Fallback: dynamic anonymous cookie (may return older data)
     if (_scrCookie && Date.now() - _scrTs < 50 * 60 * 1000)
         return _scrCookie;
     try {
@@ -128,6 +140,8 @@ function toCr(s) {
     const n = parseFloat(s.replace(/[^0-9.-]/g, ''));
     return Number.isFinite(n) ? n : 0;
 }
+// ── Screener.in: Fundamentals + P&L ────────────────────────────────────
+// Using session cookies from .env to bypass generic HTML cache
 async function fetchScreener(symbol) {
     const cookie = await scrCookie();
     const urls = [
@@ -138,16 +152,23 @@ async function fetchScreener(symbol) {
     for (const url of urls) {
         try {
             const { data } = await axios_1.default.get(url, {
-                headers: { 'User-Agent': CHROME_UA, 'Accept': 'text/html', 'Referer': 'https://www.screener.in/', 'Cookie': cookie },
+                headers: {
+                    'User-Agent': CHROME_UA,
+                    'Accept': 'text/html,application/xhtml+xml',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.screener.in/',
+                    'Cookie': cookie,
+                },
                 timeout: 15000,
             });
-            if (typeof data === 'string' && data.length > 5000) {
+            // If redirected to login page, skip
+            if (typeof data === 'string' && data.length > 5000 && !data.includes('login?next=')) {
                 html = data;
                 break;
             }
         }
         catch (e) {
-            console.warn(`[SCR] ${url}: ${e?.response?.status ?? e.message}`);
+            console.warn(`[SCR] ${url}: ${e?.message ?? e}`);
         }
     }
     if (!html)
@@ -173,25 +194,26 @@ async function fetchScreener(symbol) {
     const salesQ = qRows.find(r => /^sales/i.test(Object.values(r)[0] ?? ''));
     const profQ = qRows.find(r => /net profit/i.test(Object.values(r)[0] ?? ''));
     const opmQ = qRows.find(r => /opm\s*%/i.test(Object.values(r)[0] ?? ''));
-    const periods = qHdr.slice(1).filter(Boolean);
+    // THE FIX: Screener lists oldest→newest left-to-right. Take last 5 (most recent). Ignore TTM.
+    const periods = qHdr.slice(1).filter(h => Boolean(h) && !/^ttm$/i.test(h.trim()));
     const quarterlyResults = periods.map(p => ({
         period: p,
         salesCr: toCr(salesQ?.[p] ?? '0'),
         profitCr: toCr(profQ?.[p] ?? '0'),
         opmPct: opmQ?.[p] ? parseFloat(opmQ[p]) : null,
-    })).filter(q => q.salesCr > 0 || q.profitCr !== 0).slice(0, 5);
+    })).filter(q => q.salesCr > 0 || q.profitCr !== 0).slice(-5); // ← last 5 = most recent
     // ── Annual P&L ──
     const { headers: aHdr, rows: aRows } = parseTable(html, 'profit-loss');
     const salesA = aRows.find(r => /^sales/i.test(Object.values(r)[0] ?? ''));
     const profA = aRows.find(r => /net profit/i.test(Object.values(r)[0] ?? ''));
     const epsA = aRows.find(r => /^eps/i.test(Object.values(r)[0] ?? ''));
-    const years = aHdr.slice(1).filter(Boolean);
+    const years = aHdr.slice(1).filter(h => Boolean(h) && !/^ttm$/i.test(h.trim()));
     const annualResults = years.map(y => ({
         year: y,
         salesCr: toCr(salesA?.[y] ?? '0'),
         profitCr: toCr(profA?.[y] ?? '0'),
         epsDiluted: epsA?.[y] ? parseFloat(epsA[y]) : null,
-    })).filter(a => a.salesCr > 0 || a.profitCr !== 0).slice(0, 5);
+    })).filter(a => a.salesCr > 0 || a.profitCr !== 0).slice(-5); // ← last 5 = most recent
     console.log(`[SCR] ✓ ${symbol} | mcap=₹${mcap}Cr | ROE=${roe}% | Q=${quarterlyResults.length} qtrs | A=${annualResults.length} yrs`);
     return { mcap, pe, pb, dy, roe, roce, d2e, cr, bv, fv, eps, promoterHolding, quarterlyResults, annualResults };
 }
@@ -203,14 +225,17 @@ async function fetchStockReport(ticker, niftyCandles) {
         return hit.data;
     console.log(`[Report] Fetching ${ticker}…`);
     const yahoo = dataService_1.NSE_UNIVERSE[ticker] ?? `${ticker}.NS`;
-    // All three in parallel for speed
-    const [nseRes, scrRes, candleRes] = await Promise.allSettled([
+    // All three in parallel for speed:
+    // - NSE: live LTP, P/E, 52W data
+    // - Screener: rich fundamentals + quarterly/annual P&L
+    // - Yahoo Candles: OHLCV for technical indicators
+    const [nseRes, finRes, candleRes] = await Promise.allSettled([
         fetchNSE(ticker),
         fetchScreener(ticker),
         (0, dataService_1.fetchHistoricalData)(yahoo, 300),
     ]);
     const nse = nseRes.status === 'fulfilled' ? nseRes.value : null;
-    const scr = scrRes.status === 'fulfilled' ? scrRes.value : null;
+    const scr = finRes.status === 'fulfilled' ? finRes.value : null;
     const candles = candleRes.status === 'fulfilled' ? candleRes.value : [];
     if (!nse && !scr && !candles.length) {
         console.error(`[Report] No data for ${ticker}`);

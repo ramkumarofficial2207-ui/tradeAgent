@@ -42,7 +42,7 @@ export interface StockIndicators {
     outperformsNifty: boolean;
     candles: Candle[];
 }
-export type SetupType = 'Pullback Continuation' | 'Volatility Contraction (VCP)' | 'Breakout Base';
+export type SetupType = 'Pullback Continuation' | 'Volatility Contraction (VCP)' | 'VCP Breakout 🔥' | 'Breakout Base' | 'EMA20 Bounce';
 export interface TradeSetup {
     ticker: string;
     sector: string;
@@ -65,10 +65,19 @@ export interface TradeSetup {
     newsSummary: string;
     momentumRank: number;
     volatilityHitProb: number;
+    aiSignal?: 'BUY' | 'WATCH' | 'AVOID';
+    aiLogic?: string;
+    aiTargetRange?: string;
+    aiStopLoss?: string;
 }
 export interface MarketStatus {
     niftyChange: number;
     vixChange: number;
+    niftyNext50Change?: number;
+    niftyMidcapChange?: number;
+    sensexChange?: number;
+    goldChange?: number;
+    silverChange?: number;
     safeToTrade: boolean;
     warning: string;
 }

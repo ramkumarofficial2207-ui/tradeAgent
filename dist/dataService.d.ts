@@ -4,10 +4,16 @@ export declare const SECTOR_MAP: Record<string, string>;
 export declare const MARKET_CAP_CR_MAP: Record<string, number>;
 export declare function fetchHistoricalData(yahooTicker: string, days?: number): Promise<Candle[]>;
 export declare function fetchLtp(yahooTicker: string): Promise<number>;
-export declare function fetchNiftyData(): Promise<{
+export interface MarketDataChange {
     niftyChange: number;
     vixChange: number;
-}>;
+    niftyNext50Change: number;
+    niftyMidcapChange: number;
+    sensexChange: number;
+    goldChange: number;
+    silverChange: number;
+}
+export declare function fetchNiftyData(): Promise<MarketDataChange>;
 type BrokerProvider = 'paper' | 'kite';
 export declare class KiteLiveTradingApi implements TradingApi {
     private readonly baseUrl;

@@ -7,6 +7,7 @@ exports.addTrade = addTrade;
 exports.removeTrade = removeTrade;
 exports.watchTrades = watchTrades;
 exports.getActiveTrades = getActiveTrades;
+exports.getTradeHistory = getTradeHistory;
 const technicalindicators_1 = require("technicalindicators");
 const dataService_1 = require("./dataService");
 const prismaClient_1 = __importDefault(require("./prismaClient"));
@@ -95,6 +96,9 @@ async function watchTrades(dataApi = null) {
     return updated;
 }
 async function getActiveTrades() {
-    return prismaClient_1.default.trade.findMany({ where: { userId: MOCK_USER_ID, status: 'active' } });
+    return prismaClient_1.default.trade.findMany({ where: { userId: MOCK_USER_ID, status: 'active' }, orderBy: { entryDate: 'desc' } });
+}
+async function getTradeHistory() {
+    return prismaClient_1.default.trade.findMany({ where: { userId: MOCK_USER_ID, status: 'closed' }, orderBy: { exitDate: 'desc' }, take: 50 });
 }
 //# sourceMappingURL=tradeManager.js.map

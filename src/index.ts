@@ -331,7 +331,6 @@ app.post('/api/backtest', async (req: Request, res: Response) => {
             requireBreakout: body.requireBreakout ?? false,
             requireVCP: body.requireVCP ?? false,
             startingCapital: body.capital ?? 10000,
-            aiSignalOnly: body.aiSignalOnly ?? false,
         };
 
         console.log(`[Backtest] Starting: ${config.tickers.length} stocks, ${config.startDate} → ${config.endDate}`);
