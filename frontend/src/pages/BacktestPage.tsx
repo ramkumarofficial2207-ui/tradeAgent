@@ -124,7 +124,7 @@ export default function BacktestPage() {
     const [maxConcurrent, setMaxConcurrent] = useState(5)
     const [capital, setCapital] = useState(10000)
     const [universe, setUniverse] = useState<'top30' | 'top60' | 'full'>('top60')
-    const [requireBreakout, setRequireBreakout] = useState(true)
+    const [requireBreakout, setRequireBreakout] = useState(false)  // Default: EMA Bounce
     const [requireVCP, setRequireVCP] = useState(false)
 
     const runBacktest = async () => {
@@ -257,22 +257,26 @@ export default function BacktestPage() {
 
                     {/* Filter Mode Toggles */}
                     <div style={{ marginTop: 16, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600, width: '100%', marginBottom: 4 }}>🎛️ Advanced Filters</div>
-                        {/* Breakout Toggle */}
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600, width: '100%', marginBottom: 4 }}>🎛️ Entry Strategy</div>
+                        {/* Mode A: EMA Bounce (DEFAULT) */}
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: !requireBreakout ? 'rgba(16,185,129,0.15)' : 'var(--bg3)', border: `1px solid ${!requireBreakout ? '#10b981' : 'var(--border)'}`, borderRadius: 8 }}>
+                            <div onClick={() => setRequireBreakout(false)} style={{ width: 16, height: 16, borderRadius: '50%', background: !requireBreakout ? '#10b981' : 'transparent', border: `2px solid ${!requireBreakout ? '#10b981' : 'var(--border)'}`, cursor: 'pointer', flexShrink: 0 }} />
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>📉 EMA Bounce (Recommended)</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Buy when price pulls back to 20 EMA support — higher win rate</span>
+                        </label>
+                        {/* Mode B: Breakout */}
                         <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: requireBreakout ? 'rgba(59,130,246,0.15)' : 'var(--bg3)', border: `1px solid ${requireBreakout ? '#3b82f6' : 'var(--border)'}`, borderRadius: 8 }}>
-                            <div onClick={() => setRequireBreakout(v => !v)} style={{ width: 36, height: 20, borderRadius: 10, background: requireBreakout ? '#3b82f6' : 'var(--bg3)', position: 'relative', transition: 'background 0.2s', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}>
-                                <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: requireBreakout ? 18 : 2, transition: 'left 0.2s' }} />
-                            </div>
-                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>📈 15-Day Breakout Filter</span>
-                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Only buy when price breaks 15-day resistance</span>
+                            <div onClick={() => setRequireBreakout(true)} style={{ width: 16, height: 16, borderRadius: '50%', background: requireBreakout ? '#3b82f6' : 'transparent', border: `2px solid ${requireBreakout ? '#3b82f6' : 'var(--border)'}`, cursor: 'pointer', flexShrink: 0 }} />
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>📈 Breakout Mode</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Buy when price breaks above 15-day resistance on volume</span>
                         </label>
                         {/* VCP Toggle */}
                         <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: requireVCP ? 'rgba(139,92,246,0.15)' : 'var(--bg3)', border: `1px solid ${requireVCP ? '#8b5cf6' : 'var(--border)'}`, borderRadius: 8 }}>
                             <div onClick={() => setRequireVCP(v => !v)} style={{ width: 36, height: 20, borderRadius: 10, background: requireVCP ? '#8b5cf6' : 'var(--bg3)', position: 'relative', transition: 'background 0.2s', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}>
                                 <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: requireVCP ? 18 : 2, transition: 'left 0.2s' }} />
                             </div>
-                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>🔥 VCP Patterns Only</span>
-                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Fewer trades, higher quality (Minervini method)</span>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>🔥 + VCP Pattern Required</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Add Minervini VCP confirmation on top of entry mode</span>
                         </label>
                     </div>
 

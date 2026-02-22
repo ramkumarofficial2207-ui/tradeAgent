@@ -160,35 +160,40 @@ function passesFilters(candles: Candle[], idx: number, cfg: BacktestConfig): boo
     const ema50 = calcEMA(closes, 50, idx);
     const ema20 = calcEMA(closes, 20, idx);
     const rsi = calcRSI(closes, 14, idx);
-    const volRatio = calcVolRatio(volumes, idx);
 
-    if (!dma200 || !dma200_20ago || !ema50 || !ema20 || rsi === null || !volRatio) return false;
+    if (!dma200 || !dma200_20ago || !ema50 || !ema20 || rsi === null) return false;
 
     const price = closes[idx];
-    const prevHigh = highs[idx - 1]; // Yesterday's high (buy-on-strength check)
 
-    // 52-week proximity
-    const high52w = Math.max(...highs.slice(Math.max(0, idx - 252), idx + 1));
-    const pctFrom52wHigh = (high52w - price) / high52w * 100;
+    // ── GATE 1: Primary uptrend filters (always required) ──
+    if (price <= dma200) return false;          // Must be above 200 DMA
+    if (price <= ema50) return false;           // Must be above 50 EMA
+    if (ema20 <= ema50) return false;           // Short-term EMAs bullishly aligned
+    if ((dma200 ?? 0) <= (dma200_20ago ?? 0)) return false; // 200 DMA must be rising
+    if (rsi < 38 || rsi > 78) return false;    // RSI within acceptable range
 
-    // Base mechanical filters
-    const mechanicalOk = (
-        price > dma200 &&               // Above 200 DMA
-        price > ema50 &&                // Above 50 EMA
-        ema20 > ema50 &&                // EMAs aligned bullishly
-        dma200 > dma200_20ago &&        // 200 DMA rising
-        rsi >= cfg.minRSI &&
-        rsi <= cfg.maxRSI &&
-        volRatio >= cfg.minVolumeRatio &&
-        price > prevHigh &&             // ⭐ Buy-on-strength: close above yesterday's HIGH
-        pctFrom52wHigh <= 15           // Near 52-week high
-    );
-    if (!mechanicalOk) return false;
+    // ── GATE 2: Entry method ─────────────────────────────
+    if (cfg.requireBreakout) {
+        // MODE A: 15-day resistance breakout
+        if (!isBreakoutDay(candles, idx, 15)) return false;
+        const volRatio = calcVolRatio(volumes, idx);
+        if (!volRatio || volRatio < cfg.minVolumeRatio) return false;
+    } else {
+        // MODE B: EMA Bounce (default — matches real scanner useBounceEntry)
+        // Price should be pulling back to the 20 EMA support zone
+        const distFromEMA20 = Math.abs(price - ema20) / ema20 * 100;
+        if (distFromEMA20 > 4) return false;           // Price must be within 4% of 20 EMA
+        if (price < ema20 * 0.99) return false;        // Not too far below
+        const prev = closes[idx - 1];
+        if (price <= prev) return false;               // Must bounce up on signal day
+        // Volume should be normal/low (quiet pullback is healthy)
+        const volRatio = calcVolRatio(volumes, idx);
+        if (!volRatio || volRatio > 3.0) return false; // Avoid panic spikes
+        if (rsi > 65) return false;                    // RSI pulled back (not extended)
+        if (rsi < 38) return false;                    // Not deeply oversold
+    }
 
-    // ⭐ Breakout from 15-day resistance
-    if (cfg.requireBreakout && !isBreakoutDay(candles, idx, 15)) return false;
-
-    // ⭐ VCP Pattern required
+    // ── GATE 3: VCP Pattern (optional) ───────────────────
     if (cfg.requireVCP) {
         const vcp = detectVCPInline(candles, idx);
         if (!vcp.isVCP) return false;
