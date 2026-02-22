@@ -11,14 +11,16 @@ export interface BacktestConfig {
     tickers: string[];
     startDate: string;
     endDate: string;
-    targetPct: number;          // e.g. 5
-    stopLossPct: number;        // e.g. 3.5
-    maxHoldingDays: number;     // e.g. 20
-    minRSI: number;             // e.g. 45
-    maxRSI: number;             // e.g. 72
-    minVolumeRatio: number;     // e.g. 1.5
-    maxConcurrentTrades: number; // e.g. 5
-    cooldownDays: number;       // e.g. 15 (don't re-enter same stock)
+    targetPct: number;
+    stopLossPct: number;
+    maxHoldingDays: number;
+    minRSI: number;
+    maxRSI: number;
+    minVolumeRatio: number;
+    maxConcurrentTrades: number;
+    cooldownDays: number;
+    requireVCP: boolean;        // Only take VCP-pattern setups
+    requireBreakout: boolean;   // Only buy on 15-day resistance breakout
 }
 
 export interface BacktestTrade {
@@ -94,11 +96,61 @@ function calcVolRatio(volumes: number[], idx: number, period = 20): number | nul
     return avg > 0 ? volumes[idx] / avg : null;
 }
 
-// ─── Strict Scanner Signal Check ──────────────────────
-// Matches the REAL SwingEdge scanner filter logic closely
+// ─── VCP Helpers for backtester use ─────────────────
+function detectVCPInline(candles: Candle[], idx: number): { isVCP: boolean; quality: number } {
+    if (idx < 240) return { isVCP: false, quality: 0 };
+    const lookback = 60;
+    const slice = candles.slice(idx - lookback, idx + 1);
+    const highs = slice.map(c => c.high);
+    const lows = slice.map(c => c.low);
+    const closes = slice.map(c => c.close);
+    const volumes = slice.map(c => c.volume);
+    const currentClose = closes[closes.length - 1];
+    const currentVol = volumes[volumes.length - 1];
+    const peakHigh = Math.max(...highs);
+    const peakIdx = highs.indexOf(peakHigh);
+    if (peakIdx > lookback * 0.65 || (lookback - peakIdx) < 10) return { isVCP: false, quality: 0 };
+    const pctFromPivot = (peakHigh - currentClose) / peakHigh * 100;
+    if (pctFromPivot > 5) return { isVCP: false, quality: 0 };
+    const postPeak = slice.slice(peakIdx);
+    const ppH = postPeak.map(c => c.high);
+    const ppL = postPeak.map(c => c.low);
+    const ppV = postPeak.map(c => c.volume);
+    const n = postPeak.length;
+    if (n < 9) return { isVCP: false, quality: 0 };
+    const t = Math.floor(n / 3);
+    const s1r = (Math.max(...ppH.slice(0, t)) - Math.min(...ppL.slice(0, t))) / currentClose * 100;
+    const s2r = (Math.max(...ppH.slice(t, t * 2)) - Math.min(...ppL.slice(t, t * 2))) / currentClose * 100;
+    const s3r = (Math.max(...ppH.slice(t * 2)) - Math.min(...ppL.slice(t * 2))) / currentClose * 100;
+    const contractions = (s2r < s1r * 0.8 ? 1 : 0) + (s3r < s2r * 0.8 ? 1 : 0);
+    const avgBaseVol = ppV.slice(t * 2, -1).reduce((a, b) => a + b, 0) / Math.max(1, ppV.slice(t * 2, -1).length);
+    const avgEarlyVol = ppV.slice(0, t).reduce((a, b) => a + b, 0) / Math.max(1, t);
+    const volDryUp = avgBaseVol < avgEarlyVol * 0.75;
+    const breakoutVol = currentVol > avgBaseVol * 1.4;
+    let quality = 0;
+    if (contractions >= 1) quality += 3;
+    if (contractions >= 2) quality += 2;
+    if (s3r < 7) quality += 2;
+    if (s3r < 4) quality += 1;
+    if (volDryUp) quality += 1;
+    if (breakoutVol) quality += 1;
+    if (pctFromPivot < 2) quality += 1;
+    return { isVCP: quality >= 5 && contractions >= 1 && s3r < 12, quality };
+}
 
+// ─── Breakout Filter ──────────────────────────────────
+function isBreakoutDay(candles: Candle[], idx: number, lookback = 15): boolean {
+    if (idx < lookback + 1) return false;
+    // Resistance = highest CLOSE of the last N days (excluding today)
+    const resistance = Math.max(...candles.slice(idx - lookback, idx).map(c => c.close));
+    const today = candles[idx];
+    // Breakout: today's close > resistance AND close > open (green candle)
+    return today.close > resistance && today.close > today.open;
+}
+
+// ─── Core Signal Check ───────────────────────────────
 function passesFilters(candles: Candle[], idx: number, cfg: BacktestConfig): boolean {
-    if (idx < 210) return false;
+    if (idx < 215) return false;
     const closes = candles.map(c => c.close);
     const volumes = candles.map(c => c.volume);
     const highs = candles.map(c => c.high);
@@ -113,26 +165,36 @@ function passesFilters(candles: Candle[], idx: number, cfg: BacktestConfig): boo
     if (!dma200 || !dma200_20ago || !ema50 || !ema20 || rsi === null || !volRatio) return false;
 
     const price = closes[idx];
-    const prev = closes[idx - 1];
+    const prevHigh = highs[idx - 1]; // Yesterday's high (buy-on-strength check)
 
-    // 52-week high proximity: price should be within 15% of 52-week high
+    // 52-week proximity
     const high52w = Math.max(...highs.slice(Math.max(0, idx - 252), idx + 1));
     const pctFrom52wHigh = (high52w - price) / high52w * 100;
 
-    // EMA alignment: 20 EMA must be above 50 EMA (short-term bullish)
-    const emaAligned = ema20 > ema50;
-
-    return (
-        price > dma200 &&               // Above 200 DMA (uptrend)
-        price > ema50 &&                // Above 50 EMA (momentum)
-        dma200 > dma200_20ago &&        // 200 DMA is rising (strengthening trend)
-        emaAligned &&                   // Short-term EMAs aligned bullishly
-        rsi >= cfg.minRSI &&            // RSI not oversold
-        rsi <= cfg.maxRSI &&            // RSI not overbought
-        volRatio >= cfg.minVolumeRatio && // Strong volume confirmation
-        price > prev &&                 // Green candle (price moving up)
-        pctFrom52wHigh <= 15           // Within 15% of 52-week high (momentum stock)
+    // Base mechanical filters
+    const mechanicalOk = (
+        price > dma200 &&               // Above 200 DMA
+        price > ema50 &&                // Above 50 EMA
+        ema20 > ema50 &&                // EMAs aligned bullishly
+        dma200 > dma200_20ago &&        // 200 DMA rising
+        rsi >= cfg.minRSI &&
+        rsi <= cfg.maxRSI &&
+        volRatio >= cfg.minVolumeRatio &&
+        price > prevHigh &&             // ⭐ Buy-on-strength: close above yesterday's HIGH
+        pctFrom52wHigh <= 15           // Near 52-week high
     );
+    if (!mechanicalOk) return false;
+
+    // ⭐ Breakout from 15-day resistance
+    if (cfg.requireBreakout && !isBreakoutDay(candles, idx, 15)) return false;
+
+    // ⭐ VCP Pattern required
+    if (cfg.requireVCP) {
+        const vcp = detectVCPInline(candles, idx);
+        if (!vcp.isVCP) return false;
+    }
+
+    return true;
 }
 
 // ─── Simulate a Single Trade ──────────────────────────

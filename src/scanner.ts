@@ -166,7 +166,7 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
             riskReward,
             catalyst: `RSI at ${ind.rsi14.toFixed(1)} — ${ind.rsi14 < 50 ? 'pullback setup' : 'momentum consolidation'}. 3M RS vs Nifty: ${ind.outperformsNifty ? '✅ Outperforming' : '⚠️ Lagging'}. Vol: ${ind.volumeRatio.toFixed(1)}× avg.`,
             confidenceScore,
-            setupType: identifySetupType(ind),
+            setupType: identifySetupType(ind) as import('./types').SetupType,
             earningsRisk: false,
             newsRisk: false,
             newsSummary: news.reason,

@@ -118,12 +118,14 @@ export default function BacktestPage() {
     // Config state — matches real SwingEdge scanner defaults
     const [startDate, setStartDate] = useState('2024-01-01')
     const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10))
-    const [targetPct, setTargetPct] = useState(5)
+    const [targetPct, setTargetPct] = useState(7)
     const [stopLossPct, setStopLossPct] = useState(3.5)
     const [maxHoldingDays, setMaxHoldingDays] = useState(20)
     const [maxConcurrent, setMaxConcurrent] = useState(5)
     const [capital, setCapital] = useState(10000)
     const [universe, setUniverse] = useState<'top30' | 'top60' | 'full'>('top60')
+    const [requireBreakout, setRequireBreakout] = useState(true)
+    const [requireVCP, setRequireVCP] = useState(false)
 
     const runBacktest = async () => {
         setRunning(true)
@@ -141,6 +143,7 @@ export default function BacktestPage() {
                     maxHoldingDays, maxConcurrentTrades: maxConcurrent,
                     minRSI: 45, maxRSI: 72, minVolumeRatio: 1.5,
                     cooldownDays: 15,
+                    requireBreakout, requireVCP,
                 }),
                 signal: abortRef.current.signal,
             })
@@ -250,6 +253,27 @@ export default function BacktestPage() {
                                 <option value="full">Full 110+ (Thorough ~8 min)</option>
                             </select>
                         </div>
+                    </div>
+
+                    {/* Filter Mode Toggles */}
+                    <div style={{ marginTop: 16, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600, width: '100%', marginBottom: 4 }}>🎛️ Advanced Filters</div>
+                        {/* Breakout Toggle */}
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: requireBreakout ? 'rgba(59,130,246,0.15)' : 'var(--bg3)', border: `1px solid ${requireBreakout ? '#3b82f6' : 'var(--border)'}`, borderRadius: 8 }}>
+                            <div onClick={() => setRequireBreakout(v => !v)} style={{ width: 36, height: 20, borderRadius: 10, background: requireBreakout ? '#3b82f6' : 'var(--bg3)', position: 'relative', transition: 'background 0.2s', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}>
+                                <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: requireBreakout ? 18 : 2, transition: 'left 0.2s' }} />
+                            </div>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>📈 15-Day Breakout Filter</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Only buy when price breaks 15-day resistance</span>
+                        </label>
+                        {/* VCP Toggle */}
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: requireVCP ? 'rgba(139,92,246,0.15)' : 'var(--bg3)', border: `1px solid ${requireVCP ? '#8b5cf6' : 'var(--border)'}`, borderRadius: 8 }}>
+                            <div onClick={() => setRequireVCP(v => !v)} style={{ width: 36, height: 20, borderRadius: 10, background: requireVCP ? '#8b5cf6' : 'var(--bg3)', position: 'relative', transition: 'background 0.2s', border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }}>
+                                <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: requireVCP ? 18 : 2, transition: 'left 0.2s' }} />
+                            </div>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>🔥 VCP Patterns Only</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Fewer trades, higher quality (Minervini method)</span>
+                        </label>
                     </div>
 
                     <div style={{ marginTop: 20, display: 'flex', gap: 12, alignItems: 'center' }}>
