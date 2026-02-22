@@ -5,8 +5,8 @@
     "main": "dist/index.js",
     "scripts": {
         "build": "tsc",
-        "build:full": "cd frontend && npm install && npm run build && cd .. && npm run build",
-        "start": "NODE_ENV=production node dist/index.js",
+        "build:full": "npm install && cd frontend && npm install && npm run build && cd .. && npx prisma generate && npm run build",
+        "start": "npx prisma migrate deploy && NODE_ENV=production node dist/index.js",
         "dev:server": "ts-node-dev --respawn --transpile-only src/index.ts",
         "dev:client": "cd frontend && npm run dev",
         "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\""
