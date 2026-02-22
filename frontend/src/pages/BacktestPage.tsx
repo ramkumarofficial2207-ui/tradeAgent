@@ -126,6 +126,7 @@ export default function BacktestPage() {
     const [universe, setUniverse] = useState<'top30' | 'top60' | 'full'>('top60')
     const [requireBreakout, setRequireBreakout] = useState(false)
     const [requireVCP, setRequireVCP] = useState(false)
+    const [requireMeanReversion, setRequireMeanReversion] = useState(false)
 
     // ── One-click preset: fills the optimal settings for best results
     const applyBestSettings = () => {
@@ -138,6 +139,7 @@ export default function BacktestPage() {
         setUniverse('top60')
         setRequireBreakout(false)   // EMA Bounce
         setRequireVCP(false)
+        setRequireMeanReversion(false)
     }
     const runBacktest = async () => {
         setRunning(true)
@@ -155,7 +157,7 @@ export default function BacktestPage() {
                     maxHoldingDays, maxConcurrentTrades: maxConcurrent,
                     minRSI: 45, maxRSI: 72, minVolumeRatio: 1.5,
                     cooldownDays: 15,
-                    requireBreakout, requireVCP,
+                    requireBreakout, requireVCP, requireMeanReversion,
                     capital,
                     universeSize: universe === 'top30' ? 30 : universe === 'top60' ? 60 : 0,
                 }),
@@ -282,16 +284,22 @@ export default function BacktestPage() {
                     <div style={{ marginTop: 16, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600, width: '100%', marginBottom: 4 }}>🎛️ Entry Strategy</div>
                         {/* Mode A: EMA Bounce (DEFAULT) */}
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: !requireBreakout ? 'rgba(16,185,129,0.15)' : 'var(--bg3)', border: `1px solid ${!requireBreakout ? '#10b981' : 'var(--border)'}`, borderRadius: 8 }}>
-                            <div onClick={() => setRequireBreakout(false)} style={{ width: 16, height: 16, borderRadius: '50%', background: !requireBreakout ? '#10b981' : 'transparent', border: `2px solid ${!requireBreakout ? '#10b981' : 'var(--border)'}`, cursor: 'pointer', flexShrink: 0 }} />
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: (!requireBreakout && !requireMeanReversion) ? 'rgba(16,185,129,0.15)' : 'var(--bg3)', border: `1px solid ${(!requireBreakout && !requireMeanReversion) ? '#10b981' : 'var(--border)'}`, borderRadius: 8 }}>
+                            <div onClick={() => { setRequireBreakout(false); setRequireMeanReversion(false); }} style={{ width: 16, height: 16, borderRadius: '50%', background: (!requireBreakout && !requireMeanReversion) ? '#10b981' : 'transparent', border: `2px solid ${(!requireBreakout && !requireMeanReversion) ? '#10b981' : 'var(--border)'}`, cursor: 'pointer', flexShrink: 0 }} />
                             <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>📉 EMA Bounce (Recommended)</span>
-                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Buy when price pulls back to 20 EMA support — higher win rate</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Buy when price pulls back to 20 EMA support</span>
                         </label>
                         {/* Mode B: Breakout */}
                         <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: requireBreakout ? 'rgba(59,130,246,0.15)' : 'var(--bg3)', border: `1px solid ${requireBreakout ? '#3b82f6' : 'var(--border)'}`, borderRadius: 8 }}>
-                            <div onClick={() => setRequireBreakout(true)} style={{ width: 16, height: 16, borderRadius: '50%', background: requireBreakout ? '#3b82f6' : 'transparent', border: `2px solid ${requireBreakout ? '#3b82f6' : 'var(--border)'}`, cursor: 'pointer', flexShrink: 0 }} />
+                            <div onClick={() => { setRequireBreakout(true); setRequireMeanReversion(false); }} style={{ width: 16, height: 16, borderRadius: '50%', background: requireBreakout ? '#3b82f6' : 'transparent', border: `2px solid ${requireBreakout ? '#3b82f6' : 'var(--border)'}`, cursor: 'pointer', flexShrink: 0 }} />
                             <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>📈 Breakout Mode</span>
-                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Buy when price breaks above 15-day resistance on volume</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Buy when price breaks above 15-day resistance</span>
+                        </label>
+                        {/* Mode C: Mean Reversion */}
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: requireMeanReversion ? 'rgba(6,182,212,0.15)' : 'var(--bg3)', border: `1px solid ${requireMeanReversion ? '#06b6d4' : 'var(--border)'}`, borderRadius: 8 }}>
+                            <div onClick={() => { setRequireBreakout(false); setRequireMeanReversion(true); }} style={{ width: 16, height: 16, borderRadius: '50%', background: requireMeanReversion ? '#06b6d4' : 'transparent', border: `2px solid ${requireMeanReversion ? '#06b6d4' : 'var(--border)'}`, cursor: 'pointer', flexShrink: 0 }} />
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text2)', fontWeight: 600 }}>📉 Deep Value Reversion</span>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text3)' }}>Buy heavily oversold setups (RSI &lt; 30)</span>
                         </label>
                         {/* VCP Toggle */}
                         <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 14px', background: requireVCP ? 'rgba(139,92,246,0.15)' : 'var(--bg3)', border: `1px solid ${requireVCP ? '#8b5cf6' : 'var(--border)'}`, borderRadius: 8 }}>

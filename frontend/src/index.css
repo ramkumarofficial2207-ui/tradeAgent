@@ -598,6 +598,12 @@ body {
     border: 1px solid rgba(16, 185, 129, 0.25);
 }
 
+.mr {
+    background: rgba(6, 182, 212, 0.12);
+    color: #06b6d4;
+    border: 1px solid rgba(6, 182, 212, 0.25);
+}
+
 .card-body {
     padding: 14px 16px;
     display: flex;

@@ -71,21 +71,26 @@ export async function runScanner(dataApi: MarketDataApi | null = null): Promise<
 
         const indicators = computeIndicators(ticker, candles, niftyCandles);
         if (!indicators) continue;
-
+        // MOMENTUM FILTER
         // GATE 1 — Trend: price must be above 200 DMA (primary trend filter)
         const trendOk = indicators.ltp > indicators.dma200;
-
         // GATE 2 — RSI: Momentum Zone (55-80) captures active breakouts
         const pullbackOk = indicators.rsi14 >= RSI_MIN && indicators.rsi14 <= RSI_MAX;
-
         // GATE 3 — Volume: We need a strict spike for a Newgen style breakout
         const volumeOk = indicators.volumeRatio >= MIN_VOLUME_SPIKE && indicators.avgVolume20d >= MIN_AVG_VOLUME;
+        const isMomentumSetup = trendOk && pullbackOk && volumeOk;
 
-        // BONUS — Nifty RS: outperforming Nifty is scored higher, not a hard gate
-        // (some great setups exist in stocks that just lagged Nifty briefly)
+        // MEAN REVERSION FILTER
+        // 1. Fundamentals proxy: strict large cap filtering (> 20,000 Cr, basically top 100/150 NSE)
+        // 2. Overextended drop: price must be 15%+ below 50 EMA
+        // 3. Capitulation RSI: below 30
+        const isLargeCap = marketCapCr >= 20000;
+        const isDropping = indicators.ltp < indicators.ema50 * 0.85;
+        const isOversold = indicators.rsi14 < 30;
+        const isMeanReversionSetup = isLargeCap && isDropping && isOversold;
 
-        // Only 3 gates required: trend + RSI + volume
-        if (trendOk && pullbackOk && volumeOk) {
+        // Passed if it triggers either strategy
+        if (isMomentumSetup || isMeanReversionSetup) {
             qualified.push(indicators);
         }
     }
@@ -110,18 +115,27 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
         const marketCapCr = MARKET_CAP_CR_MAP[ind.ticker] ?? 0;
         const lastCandle = ind.candles[ind.candles.length - 1];
 
-        const useBounceEntry = Math.abs(ind.ltp - ind.ema20) / ind.ema20 <= 0.015 && lastCandle.low <= ind.ema20;
-        const entryPrice = useBounceEntry
-            ? +(Math.max(ind.ema20, lastCandle.high) * 1.001).toFixed(2)
-            : +(lastCandle.high * 1.001).toFixed(2);
-        const entryTrigger = useBounceEntry
-            ? `Bounce confirmation from 20 EMA. Buy above ${entryPrice}`
-            : `Breakout above today's high. Buy above ${entryPrice}`;
+        const setupType = identifySetupType(ind) as import('./types').SetupType;
+        const isMeanReversion = setupType === 'Deep Value Reversion 📉';
 
-        const projectedResistance = ind.high3m * 0.995;
-        // Target: 5%–12% range (was 7%–10%) — allows mid-range setups to qualify
-        const minTarget = entryPrice * 1.05;
-        const maxTarget = entryPrice * 1.12;
+        const useBounceEntry = !isMeanReversion && Math.abs(ind.ltp - ind.ema20) / ind.ema20 <= 0.015 && lastCandle.low <= ind.ema20;
+
+        const entryPrice = isMeanReversion
+            ? +(lastCandle.high * 1.002).toFixed(2)
+            : (useBounceEntry
+                ? +(Math.max(ind.ema20, lastCandle.high) * 1.001).toFixed(2)
+                : +(lastCandle.high * 1.001).toFixed(2));
+
+        const entryTrigger = isMeanReversion
+            ? `Deep Value Reversion setup. Buy above capitulation high ${entryPrice}`
+            : (useBounceEntry
+                ? `Bounce confirmation from 20 EMA. Buy above ${entryPrice}`
+                : `Breakout above today's high. Buy above ${entryPrice}`);
+
+        const projectedResistance = isMeanReversion ? ind.ema50 : ind.high3m * 0.995;
+        // Target: 5%–15% range — allows mid-range setups and strong mean reversion bounces
+        const minTarget = entryPrice * (isMeanReversion ? 1.04 : 1.05);
+        const maxTarget = entryPrice * 1.15;
         const targetPrice = +Math.min(Math.max(minTarget, projectedResistance), maxTarget).toFixed(2);
         const targetPct = +(((targetPrice - entryPrice) / entryPrice) * 100).toFixed(2);
 
@@ -164,9 +178,11 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
             targetPct,
             slPct,
             riskReward,
-            catalyst: `RSI at ${ind.rsi14.toFixed(1)} — ${ind.rsi14 < 50 ? 'pullback setup' : 'momentum consolidation'}. 3M RS vs Nifty: ${ind.outperformsNifty ? '✅ Outperforming' : '⚠️ Lagging'}. Vol: ${ind.volumeRatio.toFixed(1)}× avg.`,
+            catalyst: isMeanReversion
+                ? `RSI dropped to ${ind.rsi14.toFixed(1)} (deep capitulation). Overextended -${(((ind.ema50 - ind.ltp) / ind.ema50) * 100).toFixed(1)}% below 50-EMA.`
+                : `RSI at ${ind.rsi14.toFixed(1)} — ${ind.rsi14 < 50 ? 'pullback setup' : 'momentum consolidation'}. 3M RS vs Nifty: ${ind.outperformsNifty ? '✅ Outperforming' : '⚠️ Lagging'}. Vol: ${ind.volumeRatio.toFixed(1)}× avg.`,
             confidenceScore,
-            setupType: identifySetupType(ind) as import('./types').SetupType,
+            setupType,
             earningsRisk: false,
             newsRisk: false,
             newsSummary: news.reason,

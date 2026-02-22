@@ -21,6 +21,7 @@ export interface BacktestConfig {
     cooldownDays: number;
     requireVCP: boolean;        // Only take VCP-pattern setups
     requireBreakout: boolean;   // Only buy on 15-day resistance breakout
+    requireMeanReversion?: boolean; // Only buy deep value capitulations (Mean Reversion)
     startingCapital: number;    // User's actual capital (e.g. 100000)
 }
 
@@ -166,7 +167,15 @@ function passesFilters(candles: Candle[], idx: number, cfg: BacktestConfig): boo
 
     const price = closes[idx];
 
-    // ── GATE 1: Primary uptrend filters (always required) ──
+    // ── STRATEGY: Deep Value Mean Reversion ──────────────
+    if (cfg.requireMeanReversion) {
+        if (price >= ema50 * 0.85) return false;
+        if (rsi >= 30) return false;
+        return true;
+    }
+
+    // ── STRATEGY: Momentum (Default / VCP / Breakout) ────
+    // GATE 1: Primary uptrend filters (always required for momentum) 
     if (price <= dma200) return false;          // Must be above 200 DMA
     if (price <= ema50) return false;           // Must be above 50 EMA
     if (ema20 <= ema50) return false;           // Short-term EMAs bullishly aligned

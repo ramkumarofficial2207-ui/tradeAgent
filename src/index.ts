@@ -330,6 +330,7 @@ app.post('/api/backtest', async (req: Request, res: Response) => {
             cooldownDays: body.cooldownDays ?? 15,
             requireBreakout: body.requireBreakout ?? false,
             requireVCP: body.requireVCP ?? false,
+            requireMeanReversion: body.requireMeanReversion ?? false,
             startingCapital: body.capital ?? 10000,
         };
 

@@ -75,6 +75,7 @@ function SetupBadge({ type }: { type: string }) {
     if (type === 'Pullback Continuation') return <span className="setup-badge pull">📉 Pullback</span>
     if (type === 'Volatility Contraction (VCP)') return <span className="setup-badge vcp">🌀 VCP</span>
     if (type === 'Breakout Base') return <span className="setup-badge breakout">🚀 Breakout Base</span>
+    if (type === 'Deep Value Reversion 📉') return <span className="setup-badge mr">📉 Deep Value</span>
     return null
 }
 
