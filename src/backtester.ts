@@ -1,23 +1,24 @@
 // =====================================================
-// backtester.ts — Historical Strategy Backtesting Engine
-// Replays the SwingEdge scanner strategy on 12 months
-// of NSE historical data to measure real performance
+// backtester.ts — Realistic Portfolio Backtesting Engine
+// Uses concurrent position model (max N open trades)
+// with equal-weight position sizing
 // =====================================================
 
-import { fetchHistoricalData } from './dataService';
 import { Candle } from './types';
 
 // ─── Types ───────────────────────────────────────────
 export interface BacktestConfig {
-    tickers: string[];          // List of NSE tickers to test
-    startDate: string;          // 'YYYY-MM-DD'
-    endDate: string;            // 'YYYY-MM-DD'
-    targetPct: number;          // e.g. 5 (%)
-    stopLossPct: number;        // e.g. 3.5 (%)
-    maxHoldingDays: number;     // e.g. 20 trading days
-    minRSI: number;             // e.g. 35
-    maxRSI: number;             // e.g. 75
-    minVolumeRatio: number;     // e.g. 1.1
+    tickers: string[];
+    startDate: string;
+    endDate: string;
+    targetPct: number;          // e.g. 5
+    stopLossPct: number;        // e.g. 3.5
+    maxHoldingDays: number;     // e.g. 20
+    minRSI: number;             // e.g. 45
+    maxRSI: number;             // e.g. 72
+    minVolumeRatio: number;     // e.g. 1.5
+    maxConcurrentTrades: number; // e.g. 5
+    cooldownDays: number;       // e.g. 15 (don't re-enter same stock)
 }
 
 export interface BacktestTrade {
@@ -57,24 +58,21 @@ export interface BacktestResult {
     byTicker: { ticker: string; trades: number; wins: number; winRate: number; avgReturn: number }[];
     byMonth: { month: string; trades: number; wins: number; return: number }[];
     config: BacktestConfig;
-    duration: number; // ms
+    duration: number;
 }
 
 // ─── Indicator Helpers ────────────────────────────────
 
 function calcSMA(closes: number[], period: number, idx: number): number | null {
     if (idx < period - 1) return null;
-    const slice = closes.slice(idx - period + 1, idx + 1);
-    return slice.reduce((a, b) => a + b, 0) / period;
+    return closes.slice(idx - period + 1, idx + 1).reduce((a, b) => a + b, 0) / period;
 }
 
 function calcEMA(closes: number[], period: number, idx: number): number | null {
     if (idx < period - 1) return null;
     const k = 2 / (period + 1);
     let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    for (let i = period; i <= idx; i++) {
-        ema = closes[i] * k + ema * (1 - k);
-    }
+    for (let i = period; i <= idx; i++) ema = closes[i] * k + ema * (1 - k);
     return ema;
 }
 
@@ -82,77 +80,69 @@ function calcRSI(closes: number[], period: number, idx: number): number | null {
     if (idx < period) return null;
     let gains = 0, losses = 0;
     for (let i = idx - period + 1; i <= idx; i++) {
-        const diff = closes[i] - closes[i - 1];
-        if (diff > 0) gains += diff;
-        else losses += Math.abs(diff);
+        const d = closes[i] - closes[i - 1];
+        if (d > 0) gains += d; else losses += Math.abs(d);
     }
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - 100 / (1 + rs);
+    const avgG = gains / period, avgL = losses / period;
+    if (avgL === 0) return 100;
+    return 100 - 100 / (1 + avgG / avgL);
 }
 
-function calcVolumeRatio(volumes: number[], idx: number, period = 20): number | null {
+function calcVolRatio(volumes: number[], idx: number, period = 20): number | null {
     if (idx < period) return null;
-    const avgVol = volumes.slice(idx - period, idx).reduce((a, b) => a + b, 0) / period;
-    return avgVol > 0 ? volumes[idx] / avgVol : null;
+    const avg = volumes.slice(idx - period, idx).reduce((a, b) => a + b, 0) / period;
+    return avg > 0 ? volumes[idx] / avg : null;
 }
 
-// ─── Scanner Signal Check ─────────────────────────────
-// Returns true if stock passes ALL scanner filters on a given candle index
+// ─── Strict Scanner Signal Check ──────────────────────
+// Matches the REAL SwingEdge scanner filter logic closely
 
-function passesFilters(
-    candles: Candle[],
-    idx: number,
-    config: BacktestConfig
-): boolean {
-    if (idx < 210) return false; // Need enough history
-
+function passesFilters(candles: Candle[], idx: number, cfg: BacktestConfig): boolean {
+    if (idx < 210) return false;
     const closes = candles.map(c => c.close);
     const volumes = candles.map(c => c.volume);
 
     const dma200 = calcSMA(closes, 200, idx);
     const ema50 = calcEMA(closes, 50, idx);
+    const ema20 = calcEMA(closes, 20, idx);
     const rsi = calcRSI(closes, 14, idx);
-    const volRatio = calcVolumeRatio(volumes, idx);
+    const volRatio = calcVolRatio(volumes, idx);
 
-    if (!dma200 || !ema50 || rsi === null || !volRatio) return false;
+    if (!dma200 || !ema50 || !ema20 || rsi === null || !volRatio) return false;
 
     const price = closes[idx];
+    const prev = closes[idx - 1];
 
+    // Strict Minervini-style conditions
     return (
-        price > dma200 &&                          // Above 200 DMA
-        price > ema50 &&                           // Above 50 EMA
-        rsi >= config.minRSI &&                    // RSI not oversold
-        rsi <= config.maxRSI &&                    // RSI not overbought
-        volRatio >= config.minVolumeRatio          // Volume surge
+        price > dma200 &&               // Above 200 DMA (uptrend)
+        price > ema50 &&                // Above 50 EMA  (momentum)
+        dma200 > (calcSMA(closes, 200, idx - 20) ?? 0) && // 200 DMA is rising
+        rsi >= cfg.minRSI &&            // RSI not oversold
+        rsi <= cfg.maxRSI &&            // RSI not overbought
+        volRatio >= cfg.minVolumeRatio && // Strong vol confirmation
+        price > prev                    // Price moving up (green candle)
     );
 }
 
 // ─── Simulate a Single Trade ──────────────────────────
 
-function simulateTrade(
-    candles: Candle[],
-    signalIdx: number,
-    ticker: string,
-    config: BacktestConfig
-): BacktestTrade | null {
+function simulateTrade(candles: Candle[], signalIdx: number, ticker: string, cfg: BacktestConfig): BacktestTrade | null {
     const entryIdx = signalIdx + 1;
     if (entryIdx >= candles.length) return null;
 
     const entryPrice = candles[entryIdx].open || candles[entryIdx].close;
-    const targetPrice = entryPrice * (1 + config.targetPct / 100);
-    const stopPrice = entryPrice * (1 - config.stopLossPct / 100);
+    const targetPrice = entryPrice * (1 + cfg.targetPct / 100);
+    const stopPrice = entryPrice * (1 - cfg.stopLossPct / 100);
 
-    let exitIdx = entryIdx;
-    let exitPrice = entryPrice;
+    let exitIdx = Math.min(entryIdx + cfg.maxHoldingDays, candles.length - 1);
+    let exitPrice = candles[exitIdx].close;
     let exitReason: 'TARGET' | 'STOP_LOSS' | 'TIMEOUT' = 'TIMEOUT';
 
-    for (let i = entryIdx + 1; i < candles.length && i <= entryIdx + config.maxHoldingDays; i++) {
+    for (let i = entryIdx + 1; i < candles.length && i <= entryIdx + cfg.maxHoldingDays; i++) {
         const { high, low, close } = candles[i];
 
-        // Check stop-loss first (conservative)
+        // Check stop-loss FIRST (conservative — assume worst intraday)
         if (low <= stopPrice) {
             exitIdx = i;
             exitPrice = stopPrice;
@@ -168,15 +158,11 @@ function simulateTrade(
             break;
         }
 
-        // End of holding period
-        if (i === entryIdx + config.maxHoldingDays) {
+        if (i === entryIdx + cfg.maxHoldingDays) {
             exitIdx = i;
             exitPrice = close;
-            exitReason = 'TIMEOUT';
         }
     }
-
-    const pnlPct = ((exitPrice - entryPrice) / entryPrice) * 100;
 
     return {
         ticker,
@@ -186,7 +172,7 @@ function simulateTrade(
         exitDate: candles[exitIdx].date,
         exitPrice: +exitPrice.toFixed(2),
         exitReason,
-        pnlPct: +pnlPct.toFixed(2),
+        pnlPct: +((exitPrice - entryPrice) / entryPrice * 100).toFixed(2),
         holdingDays: exitIdx - entryIdx,
     };
 }
@@ -198,28 +184,27 @@ export async function runBacktest(
     onProgress?: (done: number, total: number, ticker: string) => void
 ): Promise<BacktestResult> {
     const startMs = Date.now();
-    const allTrades: BacktestTrade[] = [];
 
+    // Buffer: We need 210 extra days of history before startDate
     const startTs = new Date(config.startDate).getTime() / 1000;
     const endTs = new Date(config.endDate).getTime() / 1000;
+    const extendedStartTs = startTs - 400 * 24 * 3600; // extra ~1yr
 
-    // We need 210 extra trading days of history before startDate for indicators
-    // ~1 year before start = roughly 365 days extra
-    const extendedStartTs = startTs - 365 * 24 * 3600;
+    // ── Step 1: Collect all raw signals per date ──────
+    type Signal = BacktestTrade & { ticker: string };
+    const allSignals: Signal[] = [];
 
     for (let i = 0; i < config.tickers.length; i++) {
         const ticker = config.tickers[i];
         onProgress?.(i, config.tickers.length, ticker);
 
         try {
-            // Fetch full history needed (extra history + test range)
-            const yahooSymbol = ticker.includes('.NS') ? ticker : `${ticker}.NS`;
-
-            // Use raw axios since fetchHistoricalData doesn't expose period1/period2
-            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}` +
+            const yahooSym = ticker.includes('.NS') ? ticker : `${ticker}.NS`;
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}` +
                 `?period1=${Math.floor(extendedStartTs)}&period2=${Math.floor(endTs)}&interval=1d`;
 
-            const resp = await (await import('axios')).default.get(url, {
+            const { default: axios } = await import('axios');
+            const resp = await axios.get(url, {
                 headers: { 'User-Agent': 'Mozilla/5.0' },
                 timeout: 20000,
             });
@@ -228,65 +213,130 @@ export async function runBacktest(
             if (!result) continue;
 
             const timestamps: number[] = result.timestamp || [];
-            const quote = result.indicators?.quote?.[0] || {};
-            const opens: number[] = quote.open || [];
-            const highs: number[] = quote.high || [];
-            const lows: number[] = quote.low || [];
-            const closes: number[] = quote.close || [];
-            const volumes: number[] = quote.volume || [];
-
-            if (closes.length < 220) continue;
-
-            // Build candle array
+            const q = result.indicators?.quote?.[0] || {};
             const candles: Candle[] = timestamps.map((ts, idx) => ({
                 date: new Date(ts * 1000).toISOString().slice(0, 10),
-                open: opens[idx] || closes[idx],
-                high: highs[idx] || closes[idx],
-                low: lows[idx] || closes[idx],
-                close: closes[idx],
-                volume: volumes[idx] || 0,
-            })).filter(c => c.close && c.close > 0);
+                open: q.open?.[idx] || q.close?.[idx] || 0,
+                high: q.high?.[idx] || q.close?.[idx] || 0,
+                low: q.low?.[idx] || q.close?.[idx] || 0,
+                close: q.close?.[idx] || 0,
+                volume: q.volume?.[idx] || 0,
+            })).filter(c => c.close > 0);
 
-            // Find the index where our test range starts
+            if (candles.length < 220) continue;
+
             const testStartIdx = candles.findIndex(c => c.date >= config.startDate);
             if (testStartIdx < 210) continue;
 
-            // Track last trade exit to avoid overlapping trades on same ticker
-            let lastExitIdx = -1;
+            let lastExitDate = '';
 
-            // Scan each day in the test range for signals
             for (let idx = testStartIdx; idx < candles.length - 1; idx++) {
                 if (candles[idx].date > config.endDate) break;
-                if (idx <= lastExitIdx) continue; // Skip if still in a trade
+
+                // Cooldown: skip re-entry too soon after last trade
+                if (lastExitDate && candles[idx].date <= lastExitDate) continue;
 
                 if (passesFilters(candles, idx, config)) {
                     const trade = simulateTrade(candles, idx, ticker, config);
                     if (trade) {
-                        allTrades.push(trade);
-                        // Find exit index to avoid overlapping
-                        const exitCandleIdx = candles.findIndex(c => c.date >= trade.exitDate);
-                        if (exitCandleIdx > 0) lastExitIdx = exitCandleIdx;
+                        allSignals.push(trade as Signal);
+                        // Add cooldown from exit date
+                        const exitD = new Date(trade.exitDate);
+                        exitD.setDate(exitD.getDate() + config.cooldownDays);
+                        lastExitDate = exitD.toISOString().slice(0, 10);
                     }
                 }
             }
-        } catch (_err) {
-            // Skip failed tickers silently
+        } catch (_) {
+            // Skip failed tickers
         }
     }
 
-    onProgress?.(config.tickers.length, config.tickers.length, 'done');
+    onProgress?.(config.tickers.length, config.tickers.length, 'Simulating portfolio…');
 
-    // Sort trades by entry date
-    allTrades.sort((a, b) => a.entryDate.localeCompare(b.entryDate));
+    // ── Step 2: Portfolio simulation (concurrent positions) ──
+    // Sort all signals by entry date
+    allSignals.sort((a, b) => a.entryDate.localeCompare(b.entryDate));
 
-    // ─── Compute Statistics ───────────────────────────────
-    const stats = computeStats(allTrades);
-    const equityCurve = buildEquityCurve(allTrades);
-    const byTicker = buildByTicker(allTrades);
-    const byMonth = buildByMonth(allTrades);
+    // Simulate portfolio: starting capital ₹10,000
+    // Each position uses equal capital (1/maxConcurrentTrades)
+    const STARTING_CAPITAL = 10000;
+    let cash = STARTING_CAPITAL;
+
+    type OpenPosition = Signal & { allocatedCapital: number };
+    const openPositions: OpenPosition[] = [];
+    const executedTrades: BacktestTrade[] = [];
+    const equityByDate = new Map<string, number>();
+
+    const slotCapital = () => STARTING_CAPITAL / config.maxConcurrentTrades;
+
+    for (const signal of allSignals) {
+        // Close any positions that have exited before this signal's entry
+        const releaseDate = signal.entryDate;
+        const toClose = openPositions.filter(p => p.exitDate <= releaseDate);
+
+        for (const pos of toClose) {
+            const pnlAmount = pos.allocatedCapital * (pos.pnlPct / 100);
+            cash += pos.allocatedCapital + pnlAmount;
+            executedTrades.push(pos);
+            openPositions.splice(openPositions.indexOf(pos), 1);
+        }
+
+        // Take new position if we have capacity and enough cash
+        const capital = slotCapital();
+        if (openPositions.length < config.maxConcurrentTrades && cash >= capital) {
+            cash -= capital;
+            openPositions.push({ ...signal, allocatedCapital: capital });
+        }
+
+        // Record equity on this date
+        const portfolioValue = cash + openPositions.reduce((s, p) => {
+            // Estimate current value based on % through trade
+            return s + p.allocatedCapital * (1 + p.pnlPct / 100 * 0.5); // rough mid estimate
+        }, 0);
+        equityByDate.set(signal.entryDate, portfolioValue);
+    }
+
+    // Close any remaining open positions at their exit dates
+    for (const pos of openPositions) {
+        const pnlAmount = pos.allocatedCapital * (pos.pnlPct / 100);
+        cash += pos.allocatedCapital + pnlAmount;
+        executedTrades.push(pos);
+    }
+
+    const finalEquity = cash;
+
+    // ── Step 3: Build equity curve from executed trades ──
+    executedTrades.sort((a, b) => a.exitDate.localeCompare(b.exitDate));
+
+    let runningEquity = STARTING_CAPITAL;
+    let peak = STARTING_CAPITAL;
+    const equityCurve: { date: string; equity: number; drawdown: number }[] = [
+        { date: config.startDate, equity: STARTING_CAPITAL, drawdown: 0 }
+    ];
+
+    for (const t of executedTrades) {
+        const capitalForTrade = slotCapital();
+        const pnlAmount = capitalForTrade * (t.pnlPct / 100);
+        runningEquity += pnlAmount;
+        if (runningEquity > peak) peak = runningEquity;
+        const drawdown = ((runningEquity - peak) / peak) * 100;
+        equityCurve.push({
+            date: t.exitDate,
+            equity: +runningEquity.toFixed(2),
+            drawdown: +drawdown.toFixed(2),
+        });
+    }
+
+    const totalReturn = +((finalEquity - STARTING_CAPITAL) / STARTING_CAPITAL * 100).toFixed(2);
+
+    // ── Step 4: Compute stats on executed trades ──────
+    const stats = computeStats(executedTrades, totalReturn, Math.min(...equityCurve.map(e => e.drawdown)));
+    const byTicker = buildByTicker(executedTrades);
+    const byMonth = buildByMonth(executedTrades);
 
     return {
-        trades: allTrades,
+        trades: executedTrades,
         stats,
         equityCurve,
         byTicker,
@@ -296,61 +346,35 @@ export async function runBacktest(
     };
 }
 
-// ─── Stats Builder ────────────────────────────────────
+// ─── Stats ────────────────────────────────────────────
 
-function computeStats(trades: BacktestTrade[]): BacktestStats {
-    if (trades.length === 0) {
-        return {
-            totalTrades: 0, wins: 0, losses: 0, timeouts: 0,
-            winRate: 0, avgReturn: 0, avgWin: 0, avgLoss: 0,
-            riskRewardRatio: 0, totalReturn: 0, maxDrawdown: 0,
-            bestTrade: null, worstTrade: null, profitFactor: 0, sharpeRatio: 0,
-        };
-    }
+function computeStats(trades: BacktestTrade[], totalReturn: number, maxDrawdown: number): BacktestStats {
+    if (!trades.length) return { totalTrades: 0, wins: 0, losses: 0, timeouts: 0, winRate: 0, avgReturn: 0, avgWin: 0, avgLoss: 0, riskRewardRatio: 0, totalReturn: 0, maxDrawdown: 0, bestTrade: null, worstTrade: null, profitFactor: 0, sharpeRatio: 0 };
 
     const wins = trades.filter(t => t.pnlPct > 0);
     const losses = trades.filter(t => t.pnlPct < 0);
     const timeouts = trades.filter(t => t.exitReason === 'TIMEOUT');
-
     const avgReturn = trades.reduce((s, t) => s + t.pnlPct, 0) / trades.length;
     const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnlPct, 0) / wins.length : 0;
     const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnlPct, 0) / losses.length : 0;
-
     const totalGains = wins.reduce((s, t) => s + t.pnlPct, 0);
     const totalLosses = Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0));
-    const profitFactor = totalLosses > 0 ? totalGains / totalLosses : totalGains > 0 ? 999 : 0;
-
-    // Compound total return (starting with 100 units)
-    let equity = 100;
-    for (const t of trades) {
-        equity = equity * (1 + t.pnlPct / 100);
-    }
-    const totalReturn = equity - 100;
-
-    // Max drawdown from equity curve
-    const curve = buildEquityCurve(trades);
-    const maxDrawdown = Math.min(...curve.map(p => p.drawdown));
-
-    // Sharpe-like ratio (avg return / std dev of returns)
+    const profitFactor = totalLosses > 0 ? totalGains / totalLosses : (totalGains > 0 ? 99 : 0);
     const mean = avgReturn;
     const variance = trades.reduce((s, t) => s + Math.pow(t.pnlPct - mean, 2), 0) / trades.length;
-    const stdDev = Math.sqrt(variance);
-    const sharpeRatio = stdDev > 0 ? (mean / stdDev) * Math.sqrt(252) : 0;
-
+    const sharpeRatio = Math.sqrt(variance) > 0 ? (mean / Math.sqrt(variance)) * Math.sqrt(252 / 20) : 0;
     const sorted = [...trades].sort((a, b) => b.pnlPct - a.pnlPct);
 
     return {
         totalTrades: trades.length,
-        wins: wins.length,
-        losses: losses.length,
-        timeouts: timeouts.length,
+        wins: wins.length, losses: losses.length, timeouts: timeouts.length,
         winRate: +(wins.length / trades.length * 100).toFixed(1),
         avgReturn: +avgReturn.toFixed(2),
         avgWin: +avgWin.toFixed(2),
         avgLoss: +avgLoss.toFixed(2),
         riskRewardRatio: avgLoss !== 0 ? +(Math.abs(avgWin / avgLoss)).toFixed(2) : 0,
-        totalReturn: +totalReturn.toFixed(2),
-        maxDrawdown: +maxDrawdown.toFixed(2),
+        totalReturn,
+        maxDrawdown,
         bestTrade: sorted[0] || null,
         worstTrade: sorted[sorted.length - 1] || null,
         profitFactor: +profitFactor.toFixed(2),
@@ -358,31 +382,11 @@ function computeStats(trades: BacktestTrade[]): BacktestStats {
     };
 }
 
-function buildEquityCurve(trades: BacktestTrade[]): { date: string; equity: number; drawdown: number }[] {
-    let equity = 100;
-    let peak = 100;
-    const curve: { date: string; equity: number; drawdown: number }[] = [
-        { date: trades[0]?.entryDate || '', equity: 100, drawdown: 0 }
-    ];
-
-    for (const t of trades) {
-        equity = equity * (1 + t.pnlPct / 100);
-        if (equity > peak) peak = equity;
-        const drawdown = ((equity - peak) / peak) * 100;
-        curve.push({ date: t.exitDate, equity: +equity.toFixed(2), drawdown: +drawdown.toFixed(2) });
-    }
-    return curve;
-}
-
 function buildByTicker(trades: BacktestTrade[]) {
     const map = new Map<string, BacktestTrade[]>();
-    for (const t of trades) {
-        if (!map.has(t.ticker)) map.set(t.ticker, []);
-        map.get(t.ticker)!.push(t);
-    }
+    for (const t of trades) { if (!map.has(t.ticker)) map.set(t.ticker, []); map.get(t.ticker)!.push(t); }
     return Array.from(map.entries()).map(([ticker, ts]) => ({
-        ticker,
-        trades: ts.length,
+        ticker, trades: ts.length,
         wins: ts.filter(t => t.pnlPct > 0).length,
         winRate: +(ts.filter(t => t.pnlPct > 0).length / ts.length * 100).toFixed(1),
         avgReturn: +(ts.reduce((s, t) => s + t.pnlPct, 0) / ts.length).toFixed(2),
@@ -392,16 +396,13 @@ function buildByTicker(trades: BacktestTrade[]) {
 function buildByMonth(trades: BacktestTrade[]) {
     const map = new Map<string, BacktestTrade[]>();
     for (const t of trades) {
-        const month = t.entryDate.slice(0, 7); // 'YYYY-MM'
-        if (!map.has(month)) map.set(month, []);
-        map.get(month)!.push(t);
+        const m = t.entryDate.slice(0, 7);
+        if (!map.has(m)) map.set(m, []);
+        map.get(m)!.push(t);
     }
-    return Array.from(map.entries())
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([month, ts]) => ({
-            month,
-            trades: ts.length,
-            wins: ts.filter(t => t.pnlPct > 0).length,
-            return: +(ts.reduce((s, t) => s + t.pnlPct, 0) / ts.length).toFixed(2),
-        }));
+    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([month, ts]) => ({
+        month, trades: ts.length,
+        wins: ts.filter(t => t.pnlPct > 0).length,
+        return: +(ts.reduce((s, t) => s + t.pnlPct, 0) / ts.length).toFixed(2),
+    }));
 }

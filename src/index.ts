@@ -320,9 +320,11 @@ app.post('/api/backtest', async (req: Request, res: Response) => {
             targetPct: body.targetPct ?? 5,
             stopLossPct: body.stopLossPct ?? 3.5,
             maxHoldingDays: body.maxHoldingDays ?? 20,
-            minRSI: body.minRSI ?? 35,
-            maxRSI: body.maxRSI ?? 75,
-            minVolumeRatio: body.minVolumeRatio ?? 1.1,
+            minRSI: body.minRSI ?? 45,
+            maxRSI: body.maxRSI ?? 72,
+            minVolumeRatio: body.minVolumeRatio ?? 1.5,
+            maxConcurrentTrades: body.maxConcurrentTrades ?? 5,
+            cooldownDays: body.cooldownDays ?? 15,
         };
 
         console.log(`[Backtest] Starting: ${config.tickers.length} stocks, ${config.startDate} → ${config.endDate}`);

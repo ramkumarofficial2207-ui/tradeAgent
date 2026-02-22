@@ -111,12 +111,14 @@ export default function BacktestPage() {
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
     const abortRef = useRef<AbortController | null>(null)
 
-    // Config state
+    // Config state — matches real SwingEdge scanner defaults
     const [startDate, setStartDate] = useState('2024-01-01')
     const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10))
     const [targetPct, setTargetPct] = useState(5)
     const [stopLossPct, setStopLossPct] = useState(3.5)
     const [maxHoldingDays, setMaxHoldingDays] = useState(20)
+    const [maxConcurrent, setMaxConcurrent] = useState(5)
+    const [capital, setCapital] = useState(10000)
     const [universe, setUniverse] = useState<'top30' | 'top60' | 'full'>('top60')
 
     const runBacktest = async () => {
@@ -127,16 +129,14 @@ export default function BacktestPage() {
         abortRef.current = new AbortController()
 
         try {
-            const tickerCounts = { top30: 30, top60: 60, full: 0 }
-
             const resp = await fetch('/api/backtest', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     startDate, endDate, targetPct, stopLossPct,
-                    maxHoldingDays,
-                    tickers: tickerCounts[universe] > 0 ? [] : [],
-                    universeSize: tickerCounts[universe],
+                    maxHoldingDays, maxConcurrentTrades: maxConcurrent,
+                    minRSI: 45, maxRSI: 72, minVolumeRatio: 1.5,
+                    cooldownDays: 15,
                 }),
                 signal: abortRef.current.signal,
             })
@@ -209,6 +209,12 @@ export default function BacktestPage() {
                             <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
                                 style={{ width: '100%', marginTop: 6, padding: '8px 10px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', fontSize: '0.85rem' }} />
                         </div>
+                        {/* Capital Input */}
+                        <div>
+                            <label style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600 }}>Your Capital (₹)</label>
+                            <input type="number" value={capital} onChange={e => setCapital(+e.target.value)} min={1000} step={1000}
+                                style={{ width: '100%', marginTop: 6, padding: '8px 10px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', fontSize: '0.85rem' }} />
+                        </div>
                         {/* Strategy Params */}
                         <div>
                             <label style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600 }}>Target % (+{targetPct}%)</label>
@@ -221,9 +227,15 @@ export default function BacktestPage() {
                                 style={{ width: '100%', marginTop: 10, accentColor: '#ef4444' }} />
                         </div>
                         <div>
-                            <label style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600 }}>Max Hold Days ({maxHoldingDays})</label>
+                            <label style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600 }}>Max Hold Days ({maxHoldingDays}d)</label>
                             <input type="range" min="5" max="40" step="1" value={maxHoldingDays} onChange={e => setMaxHoldingDays(+e.target.value)}
                                 style={{ width: '100%', marginTop: 10, accentColor: '#3b82f6' }} />
+                        </div>
+                        <div>
+                            <label style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600 }}>Max Concurrent Trades ({maxConcurrent})</label>
+                            <input type="range" min="1" max="10" step="1" value={maxConcurrent} onChange={e => setMaxConcurrent(+e.target.value)}
+                                style={{ width: '100%', marginTop: 10, accentColor: '#8b5cf6' }} />
+                            <div style={{ fontSize: '0.68rem', color: 'var(--text3)', marginTop: 4 }}>₹{(capital / maxConcurrent).toLocaleString('en-IN')} per trade</div>
                         </div>
                         <div>
                             <label style={{ fontSize: '0.75rem', color: 'var(--text3)', fontWeight: 600 }}>Stock Universe</label>
@@ -279,18 +291,29 @@ export default function BacktestPage() {
                             <div style={{ fontSize: '0.78rem', color: 'var(--text3)', marginBottom: 8 }}>
                                 Backtest: {result.config.startDate} → {result.config.endDate} • {s.totalTrades} trades • Completed in {(result.duration / 1000).toFixed(1)}s
                             </div>
-                            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                                 <div>
                                     <div style={{ fontSize: '2.2rem', fontWeight: 900, color: clr(s.totalReturn), fontFamily: 'JetBrains Mono' }}>{pct(s.totalReturn)}</div>
-                                    <div style={{ fontSize: '0.75rem', color: 'var(--text3)' }}>Total Return (compounded)</div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text3)' }}>Total Return</div>
+                                    <div style={{ fontSize: '1rem', fontWeight: 700, color: clr(s.totalReturn), marginTop: 4 }}>
+                                        {s.totalReturn >= 0 ? '+' : ''}₹{Math.abs(capital * s.totalReturn / 100).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                    </div>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text3)' }}>on ₹{capital.toLocaleString('en-IN')} capital → ₹{(capital * (1 + s.totalReturn / 100)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
                                 </div>
                                 <div>
                                     <div style={{ fontSize: '2rem', fontWeight: 800, color: '#f59e0b', fontFamily: 'JetBrains Mono' }}>{s.winRate}%</div>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text3)' }}>Win Rate</div>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text3)', marginTop: 4 }}>{s.wins}W / {s.losses}L / {s.timeouts}T</div>
                                 </div>
                                 <div>
                                     <div style={{ fontSize: '2rem', fontWeight: 800, color: '#3b82f6', fontFamily: 'JetBrains Mono' }}>{s.sharpeRatio}</div>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text3)' }}>Sharpe Ratio</div>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text3)', marginTop: 4 }}>{s.sharpeRatio >= 1.5 ? '✅ Excellent' : s.sharpeRatio >= 1 ? '⚠️ Good' : '❌ Below par'}</div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '2rem', fontWeight: 800, color: clr(s.maxDrawdown), fontFamily: 'JetBrains Mono' }}>{pct(s.maxDrawdown)}</div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text3)' }}>Max Drawdown</div>
+                                    <div style={{ fontSize: '0.7rem', color: '#ef4444', marginTop: 4 }}>Worst drop from peak</div>
                                 </div>
                             </div>
                         </div>
