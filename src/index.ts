@@ -21,7 +21,12 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// In production, serve the built React frontend from frontend/dist
+const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
+if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(FRONTEND_DIST));
+}
 
 // Cache last scan result
 let lastScan: ScanResult | null = null;
@@ -347,6 +352,13 @@ cron.schedule('*/15 9-15 * * 1-5', async () => {
 
 // ——————————————————————————————————————————
 // START
+// SPA fallback — must be after all API routes so React Router handles all non-API paths
+if (process.env.NODE_ENV === 'production') {
+    app.get('*', (_req: Request, res: Response) => {
+        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
+}
+
 // ——————————————————————————————————————————
 app.listen(PORT, () => {
     console.log('');
