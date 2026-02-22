@@ -21,6 +21,7 @@ export interface BacktestConfig {
     cooldownDays: number;
     requireVCP: boolean;        // Only take VCP-pattern setups
     requireBreakout: boolean;   // Only buy on 15-day resistance breakout
+    startingCapital: number;    // User's actual capital (e.g. 100000)
 }
 
 export interface BacktestTrade {
@@ -359,9 +360,8 @@ export async function runBacktest(
     // Sort all signals by entry date
     allSignals.sort((a, b) => a.entryDate.localeCompare(b.entryDate));
 
-    // Simulate portfolio: starting capital ₹10,000
-    // Each position uses equal capital (1/maxConcurrentTrades)
-    const STARTING_CAPITAL = 10000;
+    // Simulate portfolio using the user's actual starting capital
+    const STARTING_CAPITAL = config.startingCapital > 0 ? config.startingCapital : 10000;
     let cash = STARTING_CAPITAL;
 
     type OpenPosition = Signal & { allocatedCapital: number };

@@ -144,6 +144,7 @@ export default function BacktestPage() {
                     minRSI: 45, maxRSI: 72, minVolumeRatio: 1.5,
                     cooldownDays: 15,
                     requireBreakout, requireVCP,
+                    capital,   // ← pass actual capital to backend
                 }),
                 signal: abortRef.current.signal,
             })
