@@ -13,6 +13,8 @@ import { ScanResult } from './types';
 import { getTradingApiFromEnv, fetchHistoricalData } from './dataService';
 import { fetchStockReport, getUniverseList, getFundamentalGrade, batchPrefetch, clearStockCache } from './fundamentalService';
 import { sendPreMarketAlert } from './alerter';
+import { runBacktest, BacktestConfig } from './backtester';
+import { NSE_UNIVERSE } from './dataService';
 import axios from 'axios';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
@@ -296,6 +298,51 @@ app.post('/api/watch', async (req: Request, res: Response) => {
         const updatedWithBroker = await watchTrades(tradingApi);
         res.json({ success: true, data: updatedWithBroker });
     } catch (error: any) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// POST /api/backtest — Run historical backtesting engine
+app.post('/api/backtest', async (req: Request, res: Response) => {
+    try {
+        const body = req.body;
+        const allTickers = Object.keys(NSE_UNIVERSE);
+
+        // Allow custom ticker subset or use full universe
+        const tickers: string[] = body.tickers?.length > 0
+            ? body.tickers
+            : allTickers.slice(0, 60); // Default: top 60 for speed
+
+        const config: BacktestConfig = {
+            tickers,
+            startDate: body.startDate || '2024-01-01',
+            endDate: body.endDate || new Date().toISOString().slice(0, 10),
+            targetPct: body.targetPct ?? 5,
+            stopLossPct: body.stopLossPct ?? 3.5,
+            maxHoldingDays: body.maxHoldingDays ?? 20,
+            minRSI: body.minRSI ?? 35,
+            maxRSI: body.maxRSI ?? 75,
+            minVolumeRatio: body.minVolumeRatio ?? 1.1,
+        };
+
+        console.log(`[Backtest] Starting: ${config.tickers.length} stocks, ${config.startDate} → ${config.endDate}`);
+
+        // Use SSE for progress streaming
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        const result = await runBacktest(config, (done, total, ticker) => {
+            res.write(`data: ${JSON.stringify({ type: 'progress', done, total, ticker })}\n\n`);
+        });
+
+        res.write(`data: ${JSON.stringify({ type: 'result', data: result })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+
+        console.log(`[Backtest] Complete: ${result.stats.totalTrades} trades, ${result.stats.winRate}% win rate`);
+    } catch (error: any) {
+        console.error('[Backtest] Error:', error.message);
         res.status(500).json({ success: false, message: error.message });
     }
 });

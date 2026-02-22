@@ -509,6 +509,7 @@ export default function DashboardPage() {
                             {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
                         </button>
                         <button className="btn-secondary-sm" onClick={() => navigate('/screener')}>📊 Screener</button>
+                        <button className="btn-secondary-sm" onClick={() => navigate('/backtest')} style={{ borderColor: 'rgba(16,185,129,0.5)', color: '#10b981' }}>📈 Backtest</button>
                         <span className={`status-badge ${msBadge.cls}`}>
                             <span className="status-dot" />
                             {msBadge.text}
