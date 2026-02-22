@@ -269,7 +269,7 @@ export async function fetchNiftyData(): Promise<MarketDataChange> {
             fetchHistoricalData('SILVERBEES.NS', 10),
         ]);
 
-        const getChange = (res) => {
+        const getChange = (res: PromiseSettledResult<any[]>) => {
             if (res.status === 'fulfilled' && res.value.length >= 2) {
                 const c = res.value;
                 const prev = c[c.length - 2].close;
