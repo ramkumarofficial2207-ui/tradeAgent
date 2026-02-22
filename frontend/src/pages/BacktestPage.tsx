@@ -144,7 +144,8 @@ export default function BacktestPage() {
                     minRSI: 45, maxRSI: 72, minVolumeRatio: 1.5,
                     cooldownDays: 15,
                     requireBreakout, requireVCP,
-                    capital,   // ← pass actual capital to backend
+                    capital,
+                    universeSize: universe === 'top30' ? 30 : universe === 'top60' ? 60 : 0,  // 0 = full
                 }),
                 signal: abortRef.current.signal,
             })

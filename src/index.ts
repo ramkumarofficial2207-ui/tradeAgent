@@ -308,10 +308,13 @@ app.post('/api/backtest', async (req: Request, res: Response) => {
         const body = req.body;
         const allTickers = Object.keys(NSE_UNIVERSE);
 
-        // Allow custom ticker subset or use full universe
+        // Allow custom ticker subset or use full universe based on universeSize
+        const universeSize: number = body.universeSize ?? 60;
         const tickers: string[] = body.tickers?.length > 0
             ? body.tickers
-            : allTickers.slice(0, 60); // Default: top 60 for speed
+            : universeSize > 0
+                ? allTickers.slice(0, universeSize)  // Top 30 or Top 60
+                : allTickers;                         // Full 110+ (universeSize = 0)
 
         const config: BacktestConfig = {
             tickers,
