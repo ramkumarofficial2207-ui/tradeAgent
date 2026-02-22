@@ -31,7 +31,7 @@ const clr = (v: number, inv = false) => {
 const pct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
 
 // ─── Mini Equity Chart ────────────────────────────────
-function EquityChart({ data }: { data: EquityPoint[] }) {
+function EquityChart({ data, capital }: { data: EquityPoint[]; capital: number }) {
     if (data.length < 2) return null
     const vals = data.map(d => d.equity)
     const min = Math.min(...vals); const max = Math.max(...vals)
@@ -45,7 +45,9 @@ function EquityChart({ data }: { data: EquityPoint[] }) {
 
     return (
         <div style={{ background: 'var(--bg2)', borderRadius: 12, padding: '20px', border: '1px solid var(--border)' }}>
-            <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text3)', marginBottom: 12 }}>📈 Equity Curve (₹100 starting capital)</div>
+            <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text3)', marginBottom: 12 }}>
+                📈 Equity Curve (₹{capital.toLocaleString('en-IN')} starting capital)
+            </div>
             <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
                 <defs>
                     <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
@@ -55,12 +57,14 @@ function EquityChart({ data }: { data: EquityPoint[] }) {
                 </defs>
                 <polyline points={pts} fill="none" stroke="#10b981" strokeWidth="2" />
                 <polyline points={`0,${h} ${pts} ${w},${h}`} fill="url(#eqGrad)" stroke="none" />
-                <line x1="0" y1={h - 10 - ((100 - min) / range) * (h - 20)} x2={w} y2={h - 10 - ((100 - min) / range) * (h - 20)}
+                <line x1="0" y1={h - 10 - ((capital - min) / range) * (h - 20)} x2={w} y2={h - 10 - ((capital - min) / range) * (h - 20)}
                     stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeDasharray="4 4" />
             </svg>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text3)', marginTop: 8 }}>
-                <span>Start: ₹100</span>
-                <span style={{ color: clr(vals[vals.length - 1] - 100) }}>End: ₹{vals[vals.length - 1]?.toFixed(2)}</span>
+                <span>Start: ₹{capital.toLocaleString('en-IN')}</span>
+                <span style={{ color: vals[vals.length - 1] >= capital ? '#10b981' : '#ef4444' }}>
+                    End: ₹{vals[vals.length - 1]?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                </span>
             </div>
         </div>
     )
@@ -332,7 +336,7 @@ export default function BacktestPage() {
                         </div>
 
                         {/* Equity Curve */}
-                        <EquityChart data={result.equityCurve} />
+                        <EquityChart data={result.equityCurve} capital={capital} />
 
                         {/* Tabs */}
                         <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>

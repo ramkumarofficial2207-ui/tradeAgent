@@ -101,27 +101,37 @@ function passesFilters(candles: Candle[], idx: number, cfg: BacktestConfig): boo
     if (idx < 210) return false;
     const closes = candles.map(c => c.close);
     const volumes = candles.map(c => c.volume);
+    const highs = candles.map(c => c.high);
 
     const dma200 = calcSMA(closes, 200, idx);
+    const dma200_20ago = calcSMA(closes, 200, idx - 20);
     const ema50 = calcEMA(closes, 50, idx);
     const ema20 = calcEMA(closes, 20, idx);
     const rsi = calcRSI(closes, 14, idx);
     const volRatio = calcVolRatio(volumes, idx);
 
-    if (!dma200 || !ema50 || !ema20 || rsi === null || !volRatio) return false;
+    if (!dma200 || !dma200_20ago || !ema50 || !ema20 || rsi === null || !volRatio) return false;
 
     const price = closes[idx];
     const prev = closes[idx - 1];
 
-    // Strict Minervini-style conditions
+    // 52-week high proximity: price should be within 15% of 52-week high
+    const high52w = Math.max(...highs.slice(Math.max(0, idx - 252), idx + 1));
+    const pctFrom52wHigh = (high52w - price) / high52w * 100;
+
+    // EMA alignment: 20 EMA must be above 50 EMA (short-term bullish)
+    const emaAligned = ema20 > ema50;
+
     return (
         price > dma200 &&               // Above 200 DMA (uptrend)
-        price > ema50 &&                // Above 50 EMA  (momentum)
-        dma200 > (calcSMA(closes, 200, idx - 20) ?? 0) && // 200 DMA is rising
+        price > ema50 &&                // Above 50 EMA (momentum)
+        dma200 > dma200_20ago &&        // 200 DMA is rising (strengthening trend)
+        emaAligned &&                   // Short-term EMAs aligned bullishly
         rsi >= cfg.minRSI &&            // RSI not oversold
         rsi <= cfg.maxRSI &&            // RSI not overbought
-        volRatio >= cfg.minVolumeRatio && // Strong vol confirmation
-        price > prev                    // Price moving up (green candle)
+        volRatio >= cfg.minVolumeRatio && // Strong volume confirmation
+        price > prev &&                 // Green candle (price moving up)
+        pctFrom52wHigh <= 15           // Within 15% of 52-week high (momentum stock)
     );
 }
 
