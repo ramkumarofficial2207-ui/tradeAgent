@@ -187,8 +187,14 @@ app.get('/api/market-outlook', async (req, res) => {
         const genAI = new generative_ai_1.GoogleGenerativeAI(apiKey);
         const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
         const prompt = `Based on these top Indian and Global stock market headlines today:\n${headlines}\n\nAct as an expert Indian market analyst. Provide a concise, highly insightful 3-4 sentence paragraph. Do not just list the news. Summarize the overall market sentiment, how the overall market/companies are likely performing based on this, and provide a short future prediction or outlook. Format it as plain text without markdown headers or bullet points. Make it actionable for a swing trader.`;
-        const aiResponse = await model.generateContent(prompt);
-        cachedOutlook = aiResponse.response.text();
+        try {
+            const aiResponse = await model.generateContent(prompt);
+            cachedOutlook = aiResponse.response.text();
+        }
+        catch (aiErr) {
+            console.error('[Market Outlook AI] Error:', aiErr.message);
+            cachedOutlook = "AI summary failed (Quota or API error). Showing raw headlines below.";
+        }
         outlookTime = Date.now();
         res.json({ success: true, summary: cachedOutlook, news: cachedNews });
     }
@@ -303,6 +309,7 @@ app.post('/api/backtest', async (req, res) => {
             cooldownDays: body.cooldownDays ?? 15,
             requireBreakout: body.requireBreakout ?? false,
             requireVCP: body.requireVCP ?? false,
+            requireMeanReversion: body.requireMeanReversion ?? false,
             startingCapital: body.capital ?? 10000,
         };
         console.log(`[Backtest] Starting: ${config.tickers.length} stocks, ${config.startDate} → ${config.endDate}`);

@@ -89,6 +89,17 @@ Return strictly ONLY a JSON Array containing objects with these exact keys for e
         console.log(`[AI Advisor] Successfully analyzed ${parsed.length} stocks using Gemini.`);
     } catch (e: any) {
         console.error('[AI Advisor] Error analyzing stocks:', e.message);
+        // Provide a clear fallback so the UI row doesn't spontaneously disappear
+        for (const s of stocks) {
+            results.set(s.Ticker || s.ticker, {
+                ticker: s.Ticker || s.ticker,
+                momentum_score: 5,
+                signal: 'WATCH',
+                logic: `AI Advisor unavailable (${e.message}). Please review manually.`,
+                target_range: 'N/A',
+                stop_loss: 'N/A'
+            });
+        }
     }
 
     return results;

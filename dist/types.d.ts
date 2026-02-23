@@ -42,7 +42,7 @@ export interface StockIndicators {
     outperformsNifty: boolean;
     candles: Candle[];
 }
-export type SetupType = 'Pullback Continuation' | 'Volatility Contraction (VCP)' | 'VCP Breakout 🔥' | 'Breakout Base' | 'EMA20 Bounce';
+export type SetupType = 'Pullback Continuation' | 'Volatility Contraction (VCP)' | 'VCP Breakout 🔥' | 'Breakout Base' | 'EMA20 Bounce' | 'Deep Value Reversion 📉';
 export interface TradeSetup {
     ticker: string;
     sector: string;

@@ -136,7 +136,9 @@ function identifySetupType(ind) {
     if (vcp.isVCP)
         return 'Volatility Contraction (VCP)';
     const breakout = isBreakout(ind.candles, 15);
-    const { ltp, ema20, high3m, rsi14 } = ind;
+    const { ltp, ema20, ema50, high3m, rsi14 } = ind;
+    if (ltp < ema50 * 0.85 && rsi14 < 30)
+        return 'Deep Value Reversion 📉';
     if (breakout && ltp >= high3m * 0.97 && rsi14 >= 44)
         return 'Breakout Base';
     if (Math.abs(ltp - ema20) / ema20 < 0.02)
