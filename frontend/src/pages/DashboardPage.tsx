@@ -172,22 +172,24 @@ function SetupCard({ s, onAccept }: { s: TradeSetup; onAccept: (s: TradeSetup) =
                 {s.aiLogic && (
                     <div className="card-ai-logic">
                         <div className="ai-logic-header">
-                            <span className="ai-icon">✨</span> Gemini AI Assessment: <strong className={s.aiSignal === 'BUY' ? 'green' : s.aiSignal === 'WATCH' ? 'amber' : 'red'}>{s.aiSignal}</strong>
+                            <span className="ai-icon">✨</span> Gemini AI Assessment: <strong>{s.aiSignal}</strong>
                         </div>
                         <div className="ai-logic-text">{s.aiLogic}</div>
                     </div>
                 )}
             </div>
 
-            {showChart && (
-                <div style={{ padding: '0 16px 16px' }}>
-                    {!chartData ? <div style={{ color: 'var(--text3)', fontSize: '0.85rem', textAlign: 'center', padding: '20px' }}>Loading historical data...</div> : (
-                        <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border)' }}>
-                            <TradingChart data={chartData} />
-                        </div>
-                    )}
-                </div>
-            )}
+            {
+                showChart && (
+                    <div style={{ padding: '0 16px 16px' }}>
+                        {!chartData ? <div style={{ color: 'var(--text3)', fontSize: '0.85rem', textAlign: 'center', padding: '20px' }}>Loading historical data...</div> : (
+                            <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border)' }}>
+                                <TradingChart data={chartData} />
+                            </div>
+                        )}
+                    </div>
+                )
+            }
 
             <div className="card-footer">
                 <div className="catalyst-text">💡 {s.catalyst}</div>
@@ -198,7 +200,7 @@ function SetupCard({ s, onAccept }: { s: TradeSetup; onAccept: (s: TradeSetup) =
                     <button className="btn-accept" onClick={() => onAccept(s)}>✅ Accept</button>
                 </div>
             </div>
-        </div>
+        </div >
     )
 }
 

@@ -15,7 +15,18 @@ export async function analyzeStocksWithAI(stocks: any[]): Promise<Map<string, AI
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey === 'paste_your_gemini_key_here' || stocks.length === 0) {
-        return results; // Return empty map if no API key or no stocks
+        // Return fallback so the UI row doesn't spontaneously disappear
+        for (const s of stocks) {
+            results.set(s.Ticker || s.ticker, {
+                ticker: s.Ticker || s.ticker,
+                momentum_score: 5,
+                signal: 'WATCH',
+                logic: 'AI Advisor requires a valid Gemini API key. Please add it to your environment variables to enable Newgen analysis.',
+                target_range: 'N/A',
+                stop_loss: 'N/A'
+            });
+        }
+        return results;
     }
 
     try {
