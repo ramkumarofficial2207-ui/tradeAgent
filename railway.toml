@@ -1,0 +1,8 @@
+# Railway deployment config
+[build]
+builder = "dockerfile"
+
+[deploy]
+startCommand = "npx prisma db push --accept-data-loss && node dist/index.js"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

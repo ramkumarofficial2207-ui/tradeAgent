@@ -32,17 +32,28 @@ export interface StockIndicators {
     ema50: number;
     ema20: number;
     rsi14: number;
+    adx14: number;
+    ema50Slope: number;
     avgVolume20d: number;
     todayVolume: number;
     volumeRatio: number;
     high3m: number;
     low3m: number;
+    high52w: number;
+    pctFrom52wHigh: number;
+    distFrom200: number;
     returns3m: number;
+    returns1m: number;
+    returns6m: number;
+    returns10d: number;
     nifty3mReturn: number;
+    nifty1mReturn: number;
     outperformsNifty: boolean;
+    isBullFlag?: boolean;
+    isDeepValue?: boolean;
     candles: Candle[];
 }
-export type SetupType = 'Pullback Continuation' | 'Volatility Contraction (VCP)' | 'VCP Breakout 🔥' | 'Breakout Base' | 'EMA20 Bounce' | 'Deep Value Reversion 📉';
+export type SetupType = 'Pullback Continuation' | 'EMA50 Pullback' | 'EMA20 Pullback' | 'Volatility Contraction (VCP)' | 'VCP Breakout 🔥' | 'VCP Contraction' | 'Breakout Base' | 'EMA20 Bounce' | 'Momentum Continuation' | 'Bull Flag Breakout 🚩' | 'Deep Value Reversion 📉';
 export interface TradeSetup {
     ticker: string;
     sector: string;
@@ -54,18 +65,29 @@ export interface TradeSetup {
     buyZone: number;
     target: number;
     stopLoss: number;
+    target2?: number;
+    atr14?: number;
     targetPct: number;
     slPct: number;
     riskReward: number;
     catalyst: string;
     confidenceScore: number;
+    confidenceBreakdown?: {
+        scoreTrend: number;
+        scoreVolume: number;
+        scoreRS: number;
+        scoreSetup: number;
+        scoreRR: number;
+    };
     setupType: SetupType;
+    timeframe: 'Intraday' | 'Short Swing' | 'Medium Swing';
     earningsRisk: boolean;
     newsRisk: boolean;
     newsSummary: string;
+    headlines?: string[];
     momentumRank: number;
     volatilityHitProb: number;
-    aiSignal?: 'BUY' | 'WATCH' | 'AVOID';
+    aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT';
     aiLogic?: string;
     aiTargetRange?: string;
     aiStopLoss?: string;
@@ -80,23 +102,18 @@ export interface MarketStatus {
     silverChange?: number;
     safeToTrade: boolean;
     warning: string;
-}
-export interface ActiveTrade {
-    ticker: string;
-    entryPrice: number;
-    target: number;
-    stopLoss: number;
-    breakEvenSet: boolean;
-    status?: 'active' | 'exit_signal';
-    exitReason?: string;
-    trailReference?: number;
-    entryDate: string;
-    currentPrice: number;
-    pnlPct: number;
+    regime?: 'BULLISH' | 'NEUTRAL' | 'RISK_OFF';
+    regimeLabel?: string;
+    regimeDetail?: string;
+    regimeColor?: string;
+    positionSizeMult?: number;
+    nifty50dma?: number;
+    nifty200dma?: number;
+    dmaCrossPct?: number;
+    vixLevel?: number;
 }
 export interface ScanResult {
     timestamp: string;
     marketStatus: MarketStatus;
     setups: TradeSetup[];
-    activeTrades: ActiveTrade[];
 }

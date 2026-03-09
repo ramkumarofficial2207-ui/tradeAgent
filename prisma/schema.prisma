@@ -1,12 +1,12 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// StockSage Pro — Prisma Schema (Phase 3 — Multi-User)
+// SQLite for local dev, PostgreSQL for production (set DATABASE_URL in .env)
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -14,50 +14,139 @@ model User {
   id        String   @id @default(uuid())
   email     String   @unique
   name      String?
+  password  String   // bcrypt hashed
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  brokerConfig BrokerConfig?
-  trades       Trade[]
+  brokerConfig    BrokerConfig?
+  trades          Trade[]
   screenerPresets ScreenerPreset[]
+  watchlistItems  WatchlistItem[]
+}
+
+model WatchlistItem {
+  id              String   @id @default(uuid())
+  userId          String
+  ticker          String
+  sector          String?
+  signal          String?
+  ltp             Float?
+  target          Float?
+  stopLoss        Float?
+  targetPct       Float?
+  slPct           Float?
+  riskReward      Float?
+  confidenceScore Float?
+  setupType       String?
+  buyZone         Float?
+  addedAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, ticker])
+  @@index([userId])
 }
 
 model BrokerConfig {
-  id          String   @id @default(uuid())
-  userId      String   @unique
-  provider    String   // 'zerodha', 'upstox', 'angelone', 'paper'
+  id          String  @id @default(uuid())
+  userId      String  @unique
+  provider    String
   apiKey      String
   apiSecret   String
   accessToken String?
-  isLive      Boolean  @default(false)
+  isLive      Boolean @default(false)
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PortfolioConfig {
+  id              String   @id @default("singleton")
+  totalCapital    Float    @default(1000000)   // ₹10L default
+  riskPctLarge    Float    @default(1.0)        // 1% per large/mid trade
+  riskPctSmall    Float    @default(0.75)       // 0.75% per small cap trade
+  maxOpenTrades   Int      @default(5)
+  maxSectorConc   Int      @default(2)          // max stocks per sector
+  updatedAt       DateTime @updatedAt
 }
 
 model Trade {
-  id            String   @id @default(uuid())
+  id            String    @id @default(uuid())
   userId        String
+
+  // Stock info
   ticker        String
-  status        String   // 'active', 'closed'
-  entryDate     DateTime @default(now())
+  companyName   String?
+  sector        String?
+  capCategory   String    @default("UNKNOWN")  // LARGE | MID | SMALL
+  setupType     String    @default("Manual")
+
+  // Regime context at time of entry
+  regimeAtEntry String?   // BULLISH | NEUTRAL | RISK_OFF
+  confidenceScore Float?  // 0-10
+
+  // Execution
+  status        String    @default("OPEN")     // OPEN | CLOSED
+  entryDate     DateTime  @default(now())
   exitDate      DateTime?
   entryPrice    Float
-  currentPrice  Float
-  exitPrice     Float?
   quantity      Int
-  target        Float
-  stopLoss      Float
-  setupType     String   // 'VCP', 'Breakout', etc.
+  stopLossInit  Float                          // Original stop loss
+  stopLossTrail Float?                         // Trailing stop (updated over time)
+  target1       Float
+  target2       Float?
+  exitPrice     Float?
+  exitReason    String?   // TARGET | STOP | TRAIL | MANUAL
 
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Current price (updated on watch)
+  currentPrice  Float?
+
+  // Computed on close
+  pnlRs         Float?    // Realized P&L in ₹
+  pnlPct        Float?    // Realized P&L %
+  rMultiple     Float?    // P&L / Initial Risk
+
+  // Risk metrics
+  initialRiskRs Float?    // (entryPrice - stopLossInit) × quantity
+  capitalDeployed Float?  // entryPrice × quantity
+
+  daysHeld      Int?
+  notes         String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([ticker])
+  @@index([entryDate])
 }
 
 model ScreenerPreset {
-  id          String   @id @default(uuid())
-  userId      String
-  name        String
-  filters     String   // Stored as JSON string
-  isDefault   Boolean  @default(false)
+  id        String  @id @default(uuid())
+  userId    String
+  name      String
+  filters   String
+  isDefault Boolean @default(false)
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model HistoricalSetup {
+  id              String    @id @default(uuid())
+  ticker          String
+  setupType       String
+  timeframe       String?
+  aiSignal        String    @default("WATCH")
+  confidenceScore Float
+
+  entryPrice      Float
+  targetPrice     Float
+  stopLoss        Float
+
+  status          String    @default("IN_PROGRESS") // IN_PROGRESS, WON, LOST
+  resultPct       Float?    
+  
+  createdAt       DateTime  @default(now())
+  resolvedAt      DateTime?
+
+  @@index([status])
+  @@index([ticker])
 }

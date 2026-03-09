@@ -1,121 +1,121 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { claudeAsk } from './claudeClient';
+import { groqAsk } from './groqClient';
 
 export interface AIAssessment {
     ticker: string;
     momentum_score: number;
-    signal: 'BUY' | 'WATCH' | 'AVOID';
+    signal: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT';
     logic: string;
     target_range: string;
     stop_loss: string;
 }
 
-// Initialize dynamically so it picks up .env changes
+const SYSTEM_PROMPT = `You are a Professional Momentum Trading Analyst specializing in the Indian NSE market.
+Your goal is to identify "High Velocity" stocks capable of 5-15% short-term swing moves.
+
+Analysis rules (Newgen-style breakout):
+1. VOLUME SHOCK: ≥1.5x average volume required. <1.2x → automatic REJECT unless day just started.
+2. PRICE VELOCITY: Price must be pinned near the day high. >1.5% below day high = wick rejection → reject.
+3. MOMENTUM ZONE: RSI 55–75 preferred. RSI >78 = overbought → downgrade.
+4. ROOM TO RUN: Distance to next major resistance.
+5. RUBBER BAND: >25% above 200-DMA = dangerous extension → downgrade to WATCH or REJECT.
+6. NEWS CONTEXT (CRITICAL): Read the provided headlines. If you detect severe regulatory action, SEC probes, fraud, severe analyst downgrades, or immediate earnings risk, you MUST override technicals and issue an REJECT signal with the reasoning.
+
+Constraints:
+- Already up >10% today → flag "High Risk/Late Entry", downgrade to WATCH
+- distFromDma200Pct >25% → downgrade
+- Negative Regulatory/Earnings News → REJECT
+
+- The stock's exact timeframe is given to you based on technicals. Adjust your targets and stop losses accordingly.
+
+- The stock's exact timeframe is given to you based on technicals. Adjust your targets and stop losses accordingly.
+
+Signal Definitions:
+- BUY: A completely perfect setup (A+ grade). High conviction. 
+- LIGHT BUY: A slightly imperfect setup (e.g., market is weak, slightly extended, or lower volume) but still tradable.
+- WATCH: Setup needs confirmation or is waiting for a catalyst/breakout.
+- REJECT: Poor technicals, heavy resistance, or low conviction. Do not trade.
+
+Return ONLY a valid JSON array (no markdown fences, no explanation) with this exact shape per stock:
+[{"ticker":"...","momentum_score":7,"signal":"BUY","logic":"1-sentence reason","target_range":"₹X – ₹Y","stop_loss":"₹Z"}]`;
+
 export async function analyzeStocksWithAI(stocks: any[]): Promise<Map<string, AIAssessment>> {
     const results = new Map<string, AIAssessment>();
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === 'paste_your_gemini_key_here' || stocks.length === 0) {
-        // Return fallback so the UI row doesn't spontaneously disappear
+    if (!stocks.length) return results;
+
+    // Fallback factory
+    const fallback = (ticker: string, reason: string): AIAssessment => ({
+        ticker,
+        momentum_score: 5,
+        signal: 'WATCH',
+        logic: reason,
+        target_range: 'N/A',
+        stop_loss: 'N/A',
+    });
+
+    // Check if Anthropic key is available
+    const claudeKey = process.env.ANTHROPIC_API_KEY;
+    if (!claudeKey || claudeKey === 'paste_your_anthropic_key_here') {
+        console.warn('[AI Advisor] ANTHROPIC_API_KEY not set — using WATCH fallback for all stocks.');
         for (const s of stocks) {
-            results.set(s.Ticker || s.ticker, {
-                ticker: s.Ticker || s.ticker,
-                momentum_score: 5,
-                signal: 'WATCH',
-                logic: 'AI Advisor requires a valid Gemini API key. Please add it to your environment variables to enable Newgen analysis.',
-                target_range: 'N/A',
-                stop_loss: 'N/A'
-            });
+            const t = s.ticker ?? s.Ticker;
+            results.set(t, fallback(t, 'AI Advisor requires ANTHROPIC_API_KEY for Claude integration.'));
         }
         return results;
     }
 
+    // Build compact stock input
+    const stockData = stocks.map(s => JSON.stringify({
+        ticker: s.ticker ?? s.Ticker,
+        price: +(s.close ?? s.ltp ?? 0).toFixed(2),
+        dayHigh: +(s.high ?? 0).toFixed(2),
+        dayChangePct: +(s.dayChangePct ?? 0).toFixed(2),
+        rsi14: s.rsi14 != null ? +s.rsi14.toFixed(1) : null,
+        distFromDma200Pct: s.distFromDma200Pct != null ? +s.distFromDma200Pct.toFixed(1) : null,
+        volumeRatio: s.volumeRatio != null ? +s.volumeRatio.toFixed(2) : null,
+        marketCapCr: s.mcap ?? null,
+        sector: s.sector ?? 'Unknown',
+        timeframe: s.timeframe ?? 'Swing',
+        newsHeadlines: s.headlines ? s.headlines.slice(0, 3) : [],
+    })).join('\n');
+
     try {
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+        let raw = '';
+        try {
+            raw = await claudeAsk(
+                SYSTEM_PROMPT,
+                `Analyse these ${stocks.length} stocks:\n${stockData}`,
+                { maxTokens: 1200, temperature: 0.2 }
+            );
+        } catch (claudeErr: any) {
+            console.warn('[AI Advisor] Claude failed (likely credits or 400). Falling back to Groq...');
+            raw = await groqAsk(
+                SYSTEM_PROMPT,
+                `Analyse these ${stocks.length} stocks:\n${stockData}`,
+                { maxTokens: 1200, temperature: 0.2 }
+            );
+        }
 
-        // Build the prompt as requested by the user
-        const promptInfo = stocks.map(s => JSON.stringify({
-            Ticker: s.ticker,
-            Current_Price: s.close ?? s.ltp ?? s.currentPrice ?? 0,
-            Day_High: s.high ?? 0,
-            Volume: s.volume ?? 0,
-            Avg_Volume_20D: s.avgVolume20d ?? 0,
-            RSI_14: s.rsi14 ?? null,
-            Distance_from_200DMA: s.distFromDma200Pct ?? null,
-            Sector: s.sector ?? 'Unknown',
-            Market_Cap_Cr: s.mcap ?? null,
-            Day_Change_Pct: s.dayChangePct ?? 0
-        })).join('\n');
+        // Strip any accidental markdown fences
+        const clean = raw.replace(/```json|```/g, '').trim();
+        const jsonMatch = clean.match(/\[[\s\S]*\]/);
+        if (!jsonMatch) throw new Error('No JSON array found in response');
 
-        const prompt = `
-# ROLE
-You are a Professional Momentum Trading Analyst specializing in the Indian NSE market. Your goal is to identify "High Velocity" stocks capable of 5-15% intraday or short-term swing moves.
-
-# INPUT DATA
-Here is the list of top gaining stocks today (JSON strings):
-${promptInfo}
-
-# ANALYSIS LOGIC
-Analyze the data based on these strict "Newgen-style" breakout rules:
-1. VOLUME SHOCK: A strict minimum of 1.5x average volume is required to consider it a genuine Volume Shock. (If volume is < 1.2x, automatically grade it AVOID unless the day has just started).
-2. PRICE VELOCITY: We only want stocks that are pinned exactly at the top of their candle, showing zero seller resistance. If the current price has retraced more than 1.5% below the Day's High, reject the setup (wick rejection).
-3. MOMENTUM ZONE: Is the RSI between 55 and 75? (If RSI > 78, it is extremely overbought and vulnerable to mean-reversion pullbacks).
-4. THE "ROOM TO RUN": Calculate the distance to the next major resistance.
-5. RUBBER BAND EFFECT: If the stock is >25% above its 200-DMA, it is too extended for a safe entry. Breakouts here are very prone to failure.
-
-# CONSTRAINTS
-- Ignore stocks with Market Cap < 500 Cr (Give them AVOID signal).
-- Prioritize stocks where the Volume Shock is extremely high and price is pinned at the high of the day.
-- If a stock is already up >10% today, flag it as "High Risk/Late Entry" in your logic and downgrade signal to WATCH.
-- If the stock's distFromDma200Pct is > 25%, automatically downgrade to WATCH or AVOID due to severe overextension risk.
-
-# OUTPUT FORMAT
-Return strictly ONLY a JSON Array containing objects with these exact keys for every single stock provided:
-[
-  {
-    "ticker": "Stock symbol",
-    "momentum_score": (Scale 1-10 integer),
-    "signal": "BUY" | "WATCH" | "AVOID",
-    "logic": "A 1-sentence technical reason for the score.",
-    "target_range": "Predicted 5% and 10% gain price levels.",
-    "stop_loss": "Recommended exit if the momentum fails."
-  }
-]
-`;
-
-        const result = await model.generateContent(prompt);
-        const responseText = result.response.text();
-
-        // Extract JSON array from Markdown backticks if present
-        const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-        const jsonStr = jsonMatch ? jsonMatch[0] : responseText;
-
-        const parsed = JSON.parse(jsonStr) as AIAssessment[];
-
+        const parsed: AIAssessment[] = JSON.parse(jsonMatch[0]);
         for (const item of parsed) {
-            if (item.ticker) {
-                results.set(item.ticker, item);
-            }
-        }
-        console.log(`[AI Advisor] Successfully analyzed ${parsed.length} stocks using Gemini.`);
-    } catch (e: any) {
-        console.error('[AI Advisor] Error analyzing stocks:', e.message);
-
-        let safeError = "API Error or Quota Exceeded";
-        if (e.message && (e.message.includes('429') || e.message.includes('quota') || e.message.includes('exhausted'))) {
-            safeError = "Gemini API free tier quota exceeded. Please wait a bit before scanning again.";
+            if (item.ticker) results.set(item.ticker, item);
         }
 
-        // Provide a clear fallback so the UI row doesn't spontaneously disappear
+        console.log(`[AI Advisor] Claude analysed ${parsed.length}/${stocks.length} stocks ✓`);
+    } catch (err: any) {
+        console.error('[AI Advisor] Claude error:', err.message);
+        const reason = err.message?.includes('ANTHROPIC_API_KEY')
+            ? err.message
+            : `AI unavailable (${err.message?.slice(0, 80)}). Review manually.`;
         for (const s of stocks) {
-            results.set(s.Ticker || s.ticker, {
-                ticker: s.Ticker || s.ticker,
-                momentum_score: 5,
-                signal: 'WATCH',
-                logic: `AI Advisor unavailable (${safeError}). Please review manually.`,
-                target_range: 'N/A',
-                stop_loss: 'N/A'
-            });
+            const t = s.ticker ?? s.Ticker;
+            if (!results.has(t)) results.set(t, fallback(t, reason));
         }
     }
 
