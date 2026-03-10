@@ -8,6 +8,7 @@ import { computeIndicators, computeConfidence, computeRegime, estimateHitProbabi
 import { validateNewsRisk } from './newsValidator';
 import { validateEarningsRisk } from './earningsValidator';
 import { analyzeStocksWithAI } from './aiAdvisor';
+import { getOptionsFlow } from './optionsService';
 import { MarketDataApi, MarketStatus, StockIndicators, TradeSetup } from './types';
 
 // ── Universe liquidity gates ─────────────────────────────────────
@@ -145,6 +146,7 @@ export async function runScanner(
 
     const niftyCandles = await fetchHistoricalData('^NSEI', 300);
     const allData = await fetchUniverseData(dataApi, 6);
+    const optionsFlow = await getOptionsFlow();
     const qualified: StockIndicators[] = [];
 
     for (const { ticker, candles } of allData) {
@@ -187,9 +189,26 @@ export async function runScanner(
             ind.pctFrom52wHigh <= MAX_52W_DROP &&
             ind.ema50Slope > 0;
 
+        // ── Phase 4 GATE: Minimum Accumulation Score (Demand Index > 45%)
+        if ((ind.accumulationScore ?? 0) < 45) continue;
+
         if (!isStandardTrend && !ind.isBullFlag && !ind.isDeepValue) continue;
 
         // Note: For Deep Value, price is explicitly BELOW 200 DMA, so it bypasses standard filters.
+
+        // ── Phase 6 GATE: Options Flow Mechanics ──────────────────────
+        const cleanTicker = ticker.replace('.NS', '');
+        const optData = optionsFlow.get(cleanTicker);
+        if (optData) {
+            ind.pcr = optData.pcr;
+            ind.totalOI = optData.totalOI;
+            ind.oiChangePct = optData.oiChangePct;
+            ind.derivativeStatus = optData.derivativeStatus;
+
+            // Reject if institutional derivatives flow is fundamentally against the trade
+            if (optData.derivativeStatus === 'Short Buildup') continue;
+            if (optData.pcr < 0.6) continue; // Massive call writing resistance ceiling
+        }
 
         qualified.push(ind);
     }
@@ -221,10 +240,32 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
         const lastCandle = ind.candles[ind.candles.length - 1];
         const isSmall = marketCapCr < 5000;
 
-        // ── ATR-based stop loss ───────────────────────────────────
+        // ── Setup type detection ──────────────────────────────────
+        const setupType = identifySetupType(ind) as import('./types').SetupType;
+
+        // ── Phase 1: Structural Stop Loss ─────────────────────────
         const atr14 = calcATR(ind.candles.slice(-30));
         const entryPrice = +(lastCandle.high * 1.001).toFixed(2);
-        const stopLoss = +(entryPrice - 1.5 * atr14).toFixed(2); // 1.5×ATR stop
+
+        let stopLoss = 0;
+        if (ind.isDeepValue) {
+            // Structural stop: just below the lowest low of the last 15 days
+            const recentLows = ind.candles.slice(-15).map(c => c.low);
+            stopLoss = Math.min(...recentLows) * 0.99; // 1% buffer
+        } else if (setupType.includes('VCP') || ind.isBullFlag) {
+            // Tight structural stop: below the recent pivot low (5 days)
+            const recentLows = ind.candles.slice(-5).map(c => c.low);
+            stopLoss = Math.min(...recentLows) * 0.993; // 0.7% buffer
+        } else {
+            // Trend follower: below 20 EMA or 1.5 ATR
+            stopLoss = Math.min(ind.ema20 * 0.99, entryPrice - 1.5 * atr14);
+        }
+
+        // Failsafe bounds
+        if (entryPrice - stopLoss > 2.5 * atr14) stopLoss = entryPrice - 2.5 * atr14;
+        if (stopLoss >= entryPrice) stopLoss = entryPrice - atr14;
+
+        stopLoss = +(stopLoss).toFixed(2);
         const slPct = +(((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2);
 
         if (stopLoss <= 0 || stopLoss >= entryPrice) continue;
@@ -273,8 +314,7 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
         // Precise short-term momentum alignment required (with slight tolerance for pullbacks)
         if (ind.ema20 < ind.ema50 * 0.98) continue;
 
-        // ── Setup type detection ──────────────────────────────────
-        const setupType = identifySetupType(ind) as import('./types').SetupType;
+        // Note: setupType was already computed above.
 
         // ── GATE: The VCP Volume Dry-Up Law ───────────────────────
         if (setupType.includes('VCP')) {
@@ -351,6 +391,11 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
             headlines: news.headlines,
             momentumRank: index + 1,
             volatilityHitProb: hitProb,
+            institutionalDemand: Math.round(ind.accumulationScore ?? 0),
+            pcr: ind.pcr,
+            totalOI: ind.totalOI,
+            oiChangePct: ind.oiChangePct,
+            derivativeStatus: ind.derivativeStatus,
         });
     }
 
@@ -375,6 +420,8 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
                 setupType: s.setupType,
                 confidenceScore: s.confidenceScore,
                 headlines: s.headlines,
+                pcr: s.pcr,
+                derivativeStatus: s.derivativeStatus,
             };
         });
 
@@ -394,6 +441,25 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
         }
     }
 
-    // STRICT CUSTOMER REQUEST: Filter out WATCH and REJECT signals. Only return high-confidence BUYs and LIGHT BUYs.
-    return finalSetups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY');
+    // STRICT CUSTOMER REQUEST: Filter out WATCH and REJECT signals.
+    const eligibleBuys = finalSetups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY');
+
+    // ── Phase 5: Multi-Agent Risk Manager (Sector Concentration) ─────
+    const riskManaged: TradeSetup[] = [];
+    const sectorCounts: Record<string, number> = {};
+
+    for (const setup of eligibleBuys) {
+        const sector = setup.sector || 'Diversified';
+        const count = sectorCounts[sector] || 0;
+
+        // Max 2 stocks per sector to prevent correlation risk
+        if (count < 2) {
+            riskManaged.push(setup);
+            sectorCounts[sector] = count + 1;
+        } else {
+            console.log(`[Risk Manager] Rejected ${setup.ticker} to prevent over-concentration in ${sector}`);
+        }
+    }
+
+    return riskManaged;
 }

@@ -6,29 +6,33 @@ RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
-# ── Stage 2: Backend runtime ──────────────────────────────────
+# ── Stage 2: Build backend ────────────────────────────────────
+FROM node:20-alpine AS backend-build
+WORKDIR /app
+COPY package*.json ./
+COPY prisma/ ./prisma/
+RUN npm ci
+COPY src/ ./src/
+COPY tsconfig.json ./
+RUN npx prisma generate
+RUN npm run build
+
+# ── Stage 3: Runtime ──────────────────────────────────────────
 FROM node:20-alpine
 WORKDIR /app
 
-# Install backend deps
+# Install runtime dependencies only
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# Copy source + built prisma + env
-COPY src/ ./src/
-COPY prisma/ ./prisma/
-COPY tsconfig.json ./
+# Copy built backend and prisma client
+COPY --from=backend-build /app/dist ./dist
+COPY --from=backend-build /app/prisma ./prisma
+COPY --from=backend-build /app/node_modules/@prisma/client ./node_modules/@prisma/client
 
-# Copy built frontend from stage 1
+# Copy built frontend
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-# Build TypeScript
-RUN npm run build
-
-# Generate Prisma client
-RUN npx prisma generate
-
+# Expose port and start
 EXPOSE 3000
-
-# Run migrations then start
 CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/index.js"]

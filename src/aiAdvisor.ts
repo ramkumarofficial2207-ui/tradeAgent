@@ -1,5 +1,6 @@
 import { claudeAsk } from './claudeClient';
 import { groqAsk } from './groqClient';
+import prisma from './prismaClient';
 
 export interface AIAssessment {
     ticker: string;
@@ -20,6 +21,7 @@ Analysis rules (Newgen-style breakout):
 4. ROOM TO RUN: Distance to next major resistance.
 5. RUBBER BAND: >25% above 200-DMA = dangerous extension → downgrade to WATCH or REJECT.
 6. NEWS CONTEXT (CRITICAL): Read the provided headlines. If you detect severe regulatory action, SEC probes, fraud, severe analyst downgrades, or immediate earnings risk, you MUST override technicals and issue an REJECT signal with the reasoning.
+7. OPTIONS FLOW (If available): Look at PCR and Derivative Status. PCR > 1.0 with 'Long Buildup' is hyper-bullish. 'Short Buildup' or PCR < 0.6 is a massive wall of call sellers → REJECT.
 
 Constraints:
 - Already up >10% today → flag "High Risk/Late Entry", downgrade to WATCH
@@ -65,6 +67,42 @@ export async function analyzeStocksWithAI(stocks: any[]): Promise<Map<string, AI
         return results;
     }
 
+    // ── Phase 3: AI Memory (Feedback Loop) ───────────────────
+    let memoryContext = "Market Context: No recent trade history available yet.";
+    try {
+        const recentHistory = await prisma.historicalSetup.findMany({
+            where: { status: { in: ['WON', 'LOST'] } },
+            orderBy: { resolvedAt: 'desc' },
+            take: 30
+        });
+
+        if (recentHistory.length > 0) {
+            const wins = recentHistory.filter(h => h.status === 'WON').length;
+            const winRate = ((wins / recentHistory.length) * 100).toFixed(1);
+
+            const typeStats: Record<string, { total: number, wins: number }> = {};
+            for (const h of recentHistory) {
+                if (!typeStats[h.setupType]) typeStats[h.setupType] = { total: 0, wins: 0 };
+                typeStats[h.setupType].total++;
+                if (h.status === 'WON') typeStats[h.setupType].wins++;
+            }
+
+            const typePerformances = Object.entries(typeStats)
+                .filter(([_, stats]) => stats.total >= 2)
+                .map(([type, stats]) => `${type}: ${((stats.wins / stats.total) * 100).toFixed(0)}% WR (${stats.total} trades)`)
+                .join(', ');
+
+            memoryContext = `CRITICAL MARKET CONTEXT (Recent Agent Performance via Closed Trades):
+- Overall recent win rate: ${winRate}% (${wins}/${recentHistory.length}).
+- Setup performance: ${typePerformances || 'Not enough data by type'}.
+Use this data to penalize failing setup types and prioritize working ones. If a setup type is performing poorly in this regime, downgrade signals to WATCH.`;
+        }
+    } catch (e) {
+        console.warn('[AI Advisor] Failed to load memory context.');
+    }
+
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${memoryContext}`;
+
     // Build compact stock input
     const stockData = stocks.map(s => JSON.stringify({
         ticker: s.ticker ?? s.Ticker,
@@ -78,20 +116,22 @@ export async function analyzeStocksWithAI(stocks: any[]): Promise<Map<string, AI
         sector: s.sector ?? 'Unknown',
         timeframe: s.timeframe ?? 'Swing',
         newsHeadlines: s.headlines ? s.headlines.slice(0, 3) : [],
+        pcr: s.pcr ?? 'N/A',
+        derivativeStatus: s.derivativeStatus ?? 'N/A'
     })).join('\n');
 
     try {
         let raw = '';
         try {
             raw = await claudeAsk(
-                SYSTEM_PROMPT,
+                dynamicSystemPrompt,
                 `Analyse these ${stocks.length} stocks:\n${stockData}`,
                 { maxTokens: 1200, temperature: 0.2 }
             );
         } catch (claudeErr: any) {
             console.warn('[AI Advisor] Claude failed (likely credits or 400). Falling back to Groq...');
             raw = await groqAsk(
-                SYSTEM_PROMPT,
+                dynamicSystemPrompt,
                 `Analyse these ${stocks.length} stocks:\n${stockData}`,
                 { maxTokens: 1200, temperature: 0.2 }
             );

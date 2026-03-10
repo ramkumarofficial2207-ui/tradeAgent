@@ -261,6 +261,17 @@ export default function AppLayout() {
 
                         {/* Right controls */}
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 'auto', flexShrink: 0, position: 'relative' }}>
+                            {/* Mobile menu button */}
+                            <button
+                                id="mobile-menu-btn"
+                                onClick={() => setMobile(!mobile)}
+                                className="btn btn-icon btn-ghost"
+                                style={{ display: 'none' }}
+                                title="Menu"
+                            >
+                                {mobile ? <X size={18} /> : <Menu size={18} />}
+                            </button>
+
                             {/* Run Scanner */}
                             <button
                                 onClick={() => { navigate('/'); window.dispatchEvent(new CustomEvent('trigger-scan')) }}

@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
     Zap, SlidersHorizontal, Cpu, CheckCircle2, Clock, Bookmark,
-    TrendingUp, BarChart3, Target, Activity, ShieldCheck, History
+    TrendingUp, BarChart3, Target, Activity, ShieldCheck, History,
+    Terminal, RadioReceiver, Brain
 } from 'lucide-react'
-import { getWatchlist } from '../lib/watchlist'
 import { useWatchlist } from '../lib/useWatchlist'
 import { useAgentSSE } from '../lib/useAgentSSE'
 import AIActionCard from '../components/AIActionCard'
-import AgentWorkflowVisualizer from '../components/AgentWorkflowVisualizer'
 import MarketDashboardWidget from '../components/MarketDashboardWidget'
 import { AITrackRecordCard } from '../components/AITrackRecordCard'
 import { EquityCurveChart } from '../components/EquityCurveChart'
@@ -21,9 +21,6 @@ interface MarketStatus {
     niftyChange: number
     vixChange: number
     killSwitch: boolean
-    niftyMidcapChange?: number
-    sensexChange?: number
-    goldChange?: number
     regime?: 'BULLISH' | 'NEUTRAL' | 'RISK_OFF'
     regimeLabel?: string
     regimeDetail?: string
@@ -32,20 +29,6 @@ interface MarketStatus {
     nifty50dma?: number
     nifty200dma?: number
     dmaCrossPct?: number
-}
-interface IndexData {
-    price: number
-    change: number
-    high52: number
-    low52: number
-    pct52: number
-}
-interface MarketPulse {
-    indices: Record<string, IndexData>
-    vixRisk: string
-    vixLabel: { text: string; color: string; detail: string }
-    isMarketOpen: boolean
-    fetchedAt: string
 }
 interface TradeSetup {
     ticker: string
@@ -62,227 +45,141 @@ interface TradeSetup {
     slPct: number
     riskReward: number
     confidenceScore: number
-    confidenceBreakdown?: {
-        scoreTrend: number
-        scoreVolume: number
-        scoreRS: number
-        scoreSetup: number
-        scoreRR: number
-    }
     volatilityHitProb: number
     momentumRank: number
     trendStatus: string
     volumeSpike: string
     entryTrigger: string
     catalyst: string
+    pcr?: number
+    institutionalDemand?: number
+    derivativeStatus?: string
     aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT'
     aiLogic?: string
+    headlines?: string[]
 }
 
-
-/* ─── Helpers ─────────────────────────────────────────────── */
-
-/* ─── Regime Banner (prominent, always visible) ───────────── */
-function RegimeBanner({ market }: { market: MarketStatus | null }) {
-    if (!market?.regime) return null
-    const { regime, regimeColor, regimeLabel, regimeDetail, positionSizeMult, nifty50dma, nifty200dma, dmaCrossPct } = market
-    const c = regimeColor || (regime === 'BULLISH' ? '#34d399' : regime === 'NEUTRAL' ? '#fbbf24' : '#f87171')
-    const icon = regime === 'BULLISH' ? '✅' : regime === 'NEUTRAL' ? '⚠️' : '⛔'
-    const sizeLabel = positionSizeMult === 1 ? 'Full size' : positionSizeMult === 0.5 ? 'Half size' : 'No new longs'
-
-    return (
-        <div style={{
-            background: `rgba(${regime === 'BULLISH' ? '16,185,129' : regime === 'NEUTRAL' ? '251,191,36' : '239,68,68'}, 0.06)`,
-            border: `1px solid ${c}44`,
-            borderRadius: 12,
-            padding: '11px 16px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            marginBottom: 4,
-            flexWrap: 'wrap',
-        }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: '1rem' }}>{icon}</span>
-                <div>
-                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.88rem', fontWeight: 900, color: c }}>
-                        {regimeLabel || regime} Regime
-                    </div>
-                    <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 1 }}>{regimeDetail}</div>
-                </div>
-            </div>
-            <div style={{ display: 'flex', gap: 10, marginLeft: 'auto', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)', marginBottom: 1 }}>Position Size</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '0.78rem', color: c }}>{sizeLabel}</div>
-                </div>
-                {nifty50dma != null && nifty200dma != null && (
-                    <div style={{ textAlign: 'center' }}>
-                        <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)', marginBottom: 1 }}>50DMA vs 200DMA</div>
-                        <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '0.78rem', color: (dmaCrossPct ?? 0) > 0 ? '#34d399' : '#f87171' }}>
-                            {(dmaCrossPct ?? 0) > 0 ? '+' : ''}{(dmaCrossPct ?? 0).toFixed(2)}%
-                        </div>
-                    </div>
-                )}
-            </div>
-        </div>
-    )
-}
-
-/* ─── Mini sparkline ──────────────────────────────────────── */
-function Sparkline({ up }: { up: boolean }) {
-    const pts = up
-        ? '0,28 18,22 36,24 54,14 72,17 90,9 108,11 126,4'
-        : '0,5 18,9 36,7 54,17 72,14 90,21 108,19 126,27'
-    const c = up ? '#10b981' : '#ef4444'
-    return (
-        <svg viewBox="0 0 126 32" style={{ width: '100%', height: 44 }} preserveAspectRatio="none">
-            <defs>
-                <linearGradient id={`sg${up ? 'u' : 'd'}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={c} stopOpacity="0.28" />
-                    <stop offset="100%" stopColor={c} stopOpacity="0" />
-                </linearGradient>
-            </defs>
-            <polygon points={`0,32 ${pts} 126,32`} fill={`url(#sg${up ? 'u' : 'd'})`} />
-            <polyline points={pts} fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-    )
-}
-
-/* ─── F&O Expiry helpers ───────────────────────────── */
-function getNextThursday(afterDate = new Date()): Date {
-    const d = new Date(afterDate)
-    const day = d.getDay()
-    const daysToThursday = (4 - day + 7) % 7
-    d.setDate(d.getDate() + (daysToThursday === 0 ? 7 : daysToThursday))
-    d.setHours(15, 30, 0, 0)
-    return d
-}
-function getLastThursdayOfMonth(year: number, month: number): Date {
-    const last = new Date(year, month + 1, 0)
-    const day = last.getDay()
-    const daysBack = (day - 4 + 7) % 7
-    const d = new Date(year, month, last.getDate() - daysBack)
-    d.setHours(15, 30, 0, 0)
-    return d
-}
-function getMonthlyExpiry(): Date {
-    const now = new Date()
-    const curr = getLastThursdayOfMonth(now.getFullYear(), now.getMonth())
-    if (curr > now) return curr
-    const next = now.getMonth() === 11
-        ? getLastThursdayOfMonth(now.getFullYear() + 1, 0)
-        : getLastThursdayOfMonth(now.getFullYear(), now.getMonth() + 1)
-    return next
-}
-function daysUntil(target: Date): number {
-    return Math.max(0, Math.ceil((target.getTime() - Date.now()) / 86400000))
-}
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-
-/* ─── Sector heatmap data — fetched LIVE from /api/sectors ──── */
 const FALLBACK_SECTORS = [
     { n: 'IT', v: 0 }, { n: 'Bank', v: 0 }, { n: 'Pharma', v: 0 },
     { n: 'Auto', v: 0 }, { n: 'Metal', v: 0 }, { n: 'FMCG', v: 0 },
     { n: 'Energy', v: 0 }, { n: 'Realty', v: 0 }, { n: 'Infra', v: 0 },
 ]
 
-/* LeftSidebar removed — sectors moved to right panel, F&O removed, risk advisory in RegimeBanner */
-
-
-/* ─── Right Panel — Market + Sectors + Watchlist ──── */
-function RightPanel({ navigate, sectors, sectorTime, watchlist }: { navigate: (p: string) => void; sectors: { n: string; v: number }[]; sectorTime: string | null; watchlist: any[] }) {
-    const buyCount = watchlist.filter(w => w.signal === 'BUY' || w.signal === 'LIGHT BUY').length
-    const watchCount = watchlist.filter(w => w.signal === 'WATCH').length
+/* ─── Regime Banner (Glassmorphic) ───────────── */
+function RegimeBanner({ market }: { market: MarketStatus | null }) {
+    if (!market?.regime) return null
+    const { regime, regimeColor, regimeLabel, regimeDetail, positionSizeMult, nifty50dma, nifty200dma, dmaCrossPct } = market
+    const isBull = regime === 'BULLISH'
+    const isNeut = regime === 'NEUTRAL'
+    const bgClass = isBull ? 'bg-emerald-500/10 border-emerald-500/20' : isNeut ? 'bg-amber-500/10 border-amber-500/20' : 'bg-rose-500/10 border-rose-500/20'
+    const textClass = isBull ? 'text-emerald-400' : isNeut ? 'text-amber-400' : 'text-rose-400'
+    const sizeLabel = positionSizeMult === 1 ? '100% Core' : positionSizeMult === 0.5 ? '50% Half' : '0% Cash'
 
     return (
-        <aside className="hide-xl" style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto', scrollbarWidth: 'none' }}>
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
+            className={`glass-panel rounded-2xl p-4 flex flex-wrap items-center gap-4 border ${bgClass} shadow-lg mb-2 relative overflow-hidden`}
+        >
+            {/* Pulsing background glow */}
+            <div className="absolute top-0 right-0 w-64 h-64 rounded-full blur-[80px] pointer-events-none" style={{ backgroundColor: 'rgba(6, 182, 212, 0.1)' }} />
 
-            {/* Live Market + Sectors Widget */}
-            <MarketDashboardWidget sectors={sectors} sectorTime={sectorTime} />
-
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 6 }}>
+            <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-black/40 border border-white/5`}>
+                    <Activity className={textClass} size={20} />
+                </div>
                 <div>
-                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.88rem', fontWeight: 800 }}>My Watchlist</div>
-                    <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                        {watchlist.length === 0 ? 'No stocks saved yet' : `${buyCount} BUY · ${watchCount} WATCH`}
+                    <div className={`font-display text-sm font-black uppercase tracking-wider ${textClass} drop-shadow-md`}>
+                        {regimeLabel || regime} REGIME
+                    </div>
+                    <div className="text-[0.65rem] text-slate-400 mt-0.5 max-w-[300px]">{regimeDetail}</div>
+                </div>
+            </div>
+
+            <div className="flex gap-6 ml-auto relative z-10 bg-black/30 p-2.5 rounded-xl border border-white/5 backdrop-blur-md hidden sm:flex">
+                <div className="text-center">
+                    <div className="text-[0.55rem] text-slate-500 uppercase font-bold tracking-widest mb-1">Exposure</div>
+                    <div className={`font-mono font-bold text-xs ${textClass}`}>{sizeLabel}</div>
+                </div>
+                {nifty50dma != null && nifty200dma != null && (
+                    <>
+                        <div className="w-px bg-white/10" />
+                        <div className="text-center">
+                            <div className="text-[0.55rem] text-slate-500 uppercase font-bold tracking-widest mb-1">50v200 DMA</div>
+                            <div className={`font-mono font-bold text-xs ${(dmaCrossPct ?? 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {(dmaCrossPct ?? 0) > 0 ? '+' : ''}{(dmaCrossPct ?? 0).toFixed(2)}%
+                            </div>
+                        </div>
+                    </>
+                )}
+            </div>
+        </motion.div>
+    )
+}
+
+/* ─── Right Panel (Watchlist / Sectors) ──── */
+function RightPanel({ navigate, sectors, sectorTime, watchlist }: { navigate: (p: string) => void; sectors: { n: string; v: number }[]; sectorTime: string | null; watchlist: any[] }) {
+    const buyCount = watchlist.filter(w => w.signal === 'BUY' || w.signal === 'LIGHT BUY').length
+
+    return (
+        <aside className="w-[320px] flex-shrink-0 flex flex-col gap-4 overflow-y-auto no-scrollbar hidden xl:flex">
+            {/* Live Market + Sectors Widget (wrapped slightly) */}
+            <div className="glass-panel p-2 rounded-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-2 opacity-10"><RadioReceiver size={40} /></div>
+                <MarketDashboardWidget sectors={sectors} sectorTime={sectorTime} />
+            </div>
+
+            <div className="flex justify-between items-center px-1">
+                <div>
+                    <div className="font-display text-sm font-black tracking-wide text-white">COMMAND CENTER</div>
+                    <div className="text-[0.6rem] text-cyan-400/70 font-mono mt-1 tracking-widest uppercase">
+                        {watchlist.length === 0 ? 'STATUS: IDLE' : `${buyCount} ACTIVE TARGETS`}
                     </div>
                 </div>
-                <button onClick={() => navigate('/watchlist')} className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: '0.7rem', gap: 4 }}>
-                    View All
+                <button onClick={() => navigate('/watchlist')} className="btn-cyber btn-cyber-ghost text-[0.65rem] py-1 px-2.5">
+                    Terminal
                 </button>
             </div>
 
             {/* Watchlist stocks */}
             {watchlist.length === 0 ? (
-                <div className="card" style={{ padding: '20px 14px', textAlign: 'center' }}>
-                    <Bookmark size={20} style={{ margin: '0 auto 8px', color: 'var(--text-muted)' }} />
-                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                        Save stocks from scanner results to track them here
-                    </div>
+                <div className="glass-card p-6 text-center">
+                    <Terminal size={24} className="mx-auto mb-3 text-slate-500/50" />
+                    <div className="text-[0.7rem] text-slate-500">Awaiting target selection...</div>
                 </div>
-            ) : watchlist.map(w => {
+            ) : watchlist.slice(0, 10).map((w, i) => {
                 const isBuy = w.signal === 'BUY' || w.signal === 'LIGHT BUY'
                 const isReject = w.signal === 'REJECT'
-                const sigColor = isBuy ? '#34d399' : isReject ? '#f87171' : '#fcd34d'
-                const sigBg = isBuy ? 'rgba(16,185,129,0.08)' : isReject ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)'
+                const color = isBuy ? 'text-emerald-400' : isReject ? 'text-rose-400' : 'text-amber-400'
+                const border = isBuy ? 'border-emerald-500/20 bg-emerald-500/5' : isReject ? 'border-rose-500/20 bg-rose-500/5' : 'border-amber-500/20 bg-amber-500/5'
+
                 return (
-                    <div key={w.ticker} style={{
-                        background: 'var(--bg-card)', border: `1px solid ${sigColor}22`,
-                        borderRadius: 12, padding: '11px 13px',
-                        transition: 'all 0.2s',
-                    }}
-                        onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-2px)'}
-                        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.transform = 'none'}
+                    <motion.div
+                        key={w.ticker}
+                        initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}
+                        className={`p-3 rounded-xl border ${border} backdrop-blur-md relative overflow-hidden hover:bg-white/5 transition-colors cursor-pointer`}
                     >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-                            <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', fontWeight: 900 }}>{w.ticker}</div>
+                        <div className="flex justify-between items-start mb-2">
+                            <div className="font-display text-[0.8rem] font-bold text-white">{w.ticker}</div>
                             {w.signal && (
-                                <span style={{ fontSize: '0.58rem', fontWeight: 700, color: sigColor, background: sigBg, padding: '2px 7px', borderRadius: 5 }}>
+                                <span className={`text-[0.55rem] font-bold ${color} uppercase tracking-wider bg-black/40 px-1.5 py-0.5 rounded`}>
                                     {w.signal}
                                 </span>
                             )}
                         </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                            <span style={{ fontFamily: 'var(--font-mono)' }}>&#8377;{w.ltp?.toLocaleString('en-IN') ?? '—'}</span>
-                            {w.targetPct != null && (
-                                <span style={{ color: '#34d399', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>Tgt +{w.targetPct}%</span>
-                            )}
+                        <div className="flex justify-between text-[0.65rem] text-slate-400 font-mono">
+                            <span>&#8377;{w.ltp?.toLocaleString('en-IN') ?? '—'}</span>
+                            {w.targetPct != null && <span className="text-emerald-400 font-bold">+{w.targetPct}% TGT</span>}
                         </div>
-                        {w.confidenceScore != null && (
-                            <div style={{ marginTop: 7 }}>
-                                <div style={{ height: 3, background: 'var(--bg-elevated)', borderRadius: 99, overflow: 'hidden' }}>
-                                    <div style={{ height: '100%', width: `${w.confidenceScore * 10}%`, background: sigColor, borderRadius: 99 }} />
-                                </div>
-                                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', marginTop: 3 }}>Conf {w.confidenceScore}/10</div>
-                            </div>
-                        )}
-                    </div>
+                    </motion.div>
                 )
             })}
-
         </aside>
     )
 }
-
-/* ─── Filter Bar ──────────────────────────────────────────── */
-const FILTER_OPTIONS = [
-    { key: 'All', label: 'All Setups' },
-    { key: 'BUY', label: '🟢 BUY/LIGHT' },
-    { key: 'WATCH', label: '🟡 WATCH' },
-    { key: 'SmallCap', label: 'Small Cap' },
-    { key: 'VCP', label: 'VCP' },
-    { key: 'Breakout', label: 'Breakout' },
-    { key: 'Pullback', label: 'Pullback' },
-]
 
 /* ─── MAIN Dashboard ──────────────────────────────────────── */
 export default function DashboardPage() {
     const [setups, setSetups] = useState<TradeSetup[]>([])
     const [market, setMarket] = useState<MarketStatus | null>(null)
-    const [pulse, setPulse] = useState<MarketPulse | null>(null)
     const [scanning, setScanning] = useState(false)
     const [filter, setFilter] = useState('All')
     const [scanAge, setScanAge] = useState<string | null>(null)
@@ -296,19 +193,7 @@ export default function DashboardPage() {
     const { status } = useAgentSSE()
     const { items: watchlist } = useWatchlist()
 
-    // Load live market pulse on mount + refresh every 5 min
-    useEffect(() => {
-        const fetchPulse = () => {
-            axios.get('/api/market-pulse').then(({ data }) => {
-                if (data.success) setPulse(data.data)
-            }).catch(() => { })
-        }
-        fetchPulse()
-        pulseRef.current = setInterval(fetchPulse, 5 * 60 * 1000)
-        return () => { if (pulseRef.current) clearInterval(pulseRef.current) }
-    }, [])
-
-    // Load last scan on mount
+    // Status polling
     useEffect(() => {
         axios.get('/api/last').then(({ data }) => {
             if (!data.success) return
@@ -316,10 +201,7 @@ export default function DashboardPage() {
             if (data.data?.marketStatus) setMarket(data.data.marketStatus)
             if (data.data?.marketBrief?.brief) setMarketBrief(data.data.marketBrief.brief)
         }).catch(() => { })
-    }, [])
 
-    // Fetch live sector data
-    useEffect(() => {
         axios.get('/api/sectors').then(({ data }) => {
             if (data.success && data.data?.sectors) {
                 setSectors(data.data.sectors)
@@ -328,18 +210,14 @@ export default function DashboardPage() {
         }).catch(() => { })
     }, [])
 
-    // Fetch tracker data
     useEffect(() => {
         if (showTracker && !perfData) {
             axios.get('/api/performance').then(({ data }) => {
-                if (data.success) {
-                    setPerfData(data.data)
-                }
+                if (data.success) setPerfData(data.data)
             }).catch(() => { })
         }
     }, [showTracker, perfData])
 
-    // Listen for navbar "Run Scanner" trigger
     useEffect(() => {
         const handler = () => { if (!scanning) runScan() }
         window.addEventListener('trigger-scan', handler)
@@ -351,7 +229,7 @@ export default function DashboardPage() {
         try {
             const { data } = await axios.get('/api/scan?force=true', { timeout: 200000 })
             if (data.success) {
-                const scanData = data.data ?? data        // server wraps in .data
+                const scanData = data.data ?? data
                 setSetups(scanData.setups || [])
                 setMarket(scanData.marketStatus || null)
                 setScanAge(scanData.timestamp || scanData.scannedAt)
@@ -373,261 +251,186 @@ export default function DashboardPage() {
     })
 
     return (
-        <div style={{ minHeight: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="min-h-[calc(100vh-64px)] flex flex-col pt-4">
 
             {/* AI Market Brief Banner */}
             {marketBrief && (
-                <div style={{ background: 'rgba(59,130,246,0.05)', borderBottom: '1px solid rgba(59,130,246,0.12)', padding: '9px 24px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    <span className="badge badge-vcp" style={{ fontSize: '0.62rem', flexShrink: 0, marginTop: 1 }}>AI Brief</span>
-                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>{marketBrief}</p>
-                </div>
+                <motion.div initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="mx-4 mb-4 lg:mx-8">
+                    <div className="glass-panel border-cyan-500/20 bg-cyan-950/10 rounded-xl p-3 flex items-start gap-4">
+                        <div className="bg-cyan-500/20 border border-cyan-500/40 p-1.5 rounded-lg flex-shrink-0 animate-pulse">
+                            <Brain size={14} className="text-cyan-400" />
+                        </div>
+                        <p className="text-[0.75rem] text-slate-300 leading-relaxed font-mono">
+                            <strong className="text-cyan-400">SYS_BRIEF:</strong> {marketBrief}
+                        </p>
+                    </div>
+                </motion.div>
             )}
 
-            {/* 2-column layout */}
-            <div style={{ flex: 1, display: 'flex', gap: 18, padding: '20px 22px 28px', maxWidth: 1480, margin: '0 auto', width: '100%' }}>
+            <div className="flex-1 flex gap-6 px-4 lg:px-8 pb-8 max-w-[1600px] mx-auto w-full">
 
                 {/* MAIN CENTER */}
-                <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
-
-                    {/* ── REGIME BANNER ── always visible ─────────── */}
+                <main className="flex-1 min-w-0 flex flex-col gap-4">
                     <RegimeBanner market={market} />
 
-                    {/* ── AI COMMAND CENTER v2 ── */}
-                    <div className="gradient-border" style={{
-                        background: 'linear-gradient(135deg, rgba(34,211,238,0.03), rgba(139,92,246,0.02))',
-                        borderRadius: 16, padding: '14px 18px',
-                        position: 'relative', overflow: 'hidden',
-                    }}>
-                        {/* Ambient glow */}
-                        <div style={{ position: 'absolute', top: -30, right: -30, width: 100, height: 100, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.08), transparent 70%)', pointerEvents: 'none' }} />
+                    {/* AI COMMAND CENTER HEADER */}
+                    <div className="glass-panel rounded-2xl p-4 relative overflow-hidden flex flex-wrap justify-between items-center gap-4">
+                        <div className="absolute top-0 right-0 w-64 h-64 bg-cyan-500/10 rounded-full blur-[80px] pointer-events-none" />
 
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, position: 'relative' }}>
-                            {/* Left — Agent identity + status */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 200 }}>
-                                <div style={{
-                                    width: 36, height: 36, borderRadius: 10,
-                                    background: 'linear-gradient(135deg, rgba(34,211,238,0.15), rgba(139,92,246,0.1))',
-                                    border: '1px solid rgba(34,211,238,0.2)',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    boxShadow: '0 0 16px rgba(34,211,238,0.12)',
-                                    flexShrink: 0,
-                                }}>
-                                    <Cpu size={17} color="#22d3ee" strokeWidth={2} />
+                        <div className="flex items-center gap-4 z-10">
+                            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-950 to-blue-950 border border-cyan-500/30 flex items-center justify-center shadow-[0_0_15px_rgba(6,182,212,0.2)]">
+                                <Cpu size={24} className="text-cyan-400" />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-3">
+                                    <h1 className="font-display text-xl font-bold tracking-tight text-white mb-1">Algorithmic Terminal</h1>
+                                    <span className={`px-2 py-0.5 rounded bg-black/30 border text-[0.55rem] font-bold uppercase tracking-widest flex items-center gap-1.5
+                                        ${scanning ? 'border-purple-500/50 text-purple-400 shadow-[0_0_10px_rgba(139,92,246,0.3)]' : 'border-cyan-500/50 text-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.3)]'}`}>
+                                        <span className={`w-1.5 h-1.5 rounded-full ${scanning ? 'bg-purple-400 animate-ping' : 'bg-cyan-400 animate-pulse'}`} />
+                                        {scanning ? 'SCANNING' : status?.state === 'IDLE' ? 'ACTIVE' : 'IDLE'}
+                                    </span>
                                 </div>
-                                <div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                                        <span style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', fontWeight: 900, letterSpacing: '-0.02em' }}>StockSage AI</span>
-                                        <span style={{
-                                            fontSize: '0.52rem', fontWeight: 700,
-                                            color: scanning ? '#a78bfa' : '#22d3ee',
-                                            background: scanning ? 'rgba(167,139,250,0.12)' : 'rgba(34,211,238,0.1)',
-                                            border: `1px solid ${scanning ? 'rgba(167,139,250,0.25)' : 'rgba(34,211,238,0.2)'}`,
-                                            padding: '2px 8px', borderRadius: 99,
-                                            display: 'flex', alignItems: 'center', gap: 3,
-                                        }}>
-                                            <span style={{ width: 5, height: 5, borderRadius: '50%', background: scanning ? '#a78bfa' : '#22d3ee', boxShadow: `0 0 6px ${scanning ? '#a78bfa' : '#22d3ee'}`, animation: scanning ? 'pulse 1.2s ease-in-out infinite' : 'none' }} />
-                                            {scanning ? 'Scanning...' : status?.state === 'IDLE' ? 'Active' : 'Ready'}
-                                        </span>
-                                    </div>
-                                    <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                                        Nifty 1000 Universe · DMA200 · RSI · Volume · Claude AI
-                                    </p>
+                                <div className="text-[0.65rem] text-slate-400 uppercase tracking-widest font-mono">
+                                    NSE1000 • Quant Metrics • AI Analysis
                                 </div>
                             </div>
+                        </div>
 
-                            {/* Center — Scan stats (only when we have results) */}
-                            {setups.length > 0 && (
-                                <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-                                    {[
-                                        { label: 'Setups', value: setups.length, color: '#22d3ee', icon: <Target size={10} /> },
-                                        { label: 'BUY', value: setups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY').length, color: '#34d399', icon: <TrendingUp size={10} /> },
-                                        { label: 'WATCH', value: setups.filter(s => s.aiSignal === 'WATCH').length, color: '#fbbf24', icon: <Activity size={10} /> },
-                                    ].map(stat => (
-                                        <div key={stat.label} style={{ textAlign: 'center' }}>
-                                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1rem', fontWeight: 900, color: stat.color, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}>
-                                                {stat.icon} {stat.value}
-                                            </div>
-                                            <div style={{ fontSize: '0.5rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{stat.label}</div>
-                                        </div>
-                                    ))}
-                                    {scanAge && (
-                                        <div style={{ textAlign: 'center' }}>
-                                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}>
-                                                <Clock size={10} /> {new Date(scanAge).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-                                            </div>
-                                            <div style={{ fontSize: '0.5rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Last Scan</div>
-                                        </div>
-                                    )}
+                        <div className="flex items-center gap-4 z-10 ml-auto">
+                            {setups.length > 0 && scanAge && (
+                                <div className="text-right hidden sm:block mr-2">
+                                    <div className="text-[0.55rem] text-slate-500 uppercase tracking-widest font-bold mb-1">Last Sweep</div>
+                                    <div className="text-xs font-mono text-cyan-400">{new Date(scanAge).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
                                 </div>
                             )}
-
-                            {/* Right — Run Scanner button */}
-                            <button onClick={runScan} disabled={scanning} className="btn btn-primary" style={{ padding: '8px 18px', fontSize: '0.82rem', gap: 6, flexShrink: 0 }}>
-                                {scanning
-                                    ? <><span style={{ width: 13, height: 13, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid #fff', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> Scanning...</>
-                                    : <><Zap size={14} /> Run Scanner</>
-                                }
+                            <button onClick={runScan} disabled={scanning} className="btn-cyber btn-cyber-primary text-sm px-6 py-2.5">
+                                {scanning ? (
+                                    <><div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" /> Processing...</>
+                                ) : (
+                                    <><Zap size={16} className={scanning ? '' : 'text-cyan-100'} /> Execute Scan</>
+                                )}
                             </button>
                         </div>
                     </div>
 
-                    {/* Filter bar and Toggle */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                    {/* Filter and Mode Toggle */}
+                    <div className="flex justify-between items-center flex-wrap gap-4 mt-2">
                         {setups.length > 0 && !showTracker ? (
-                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                                {FILTER_OPTIONS.map(f => (
-                                    <button key={f.key} onClick={() => setFilter(f.key)} className={`filter-pill ${filter === f.key ? 'active' : ''}`}>{f.label}</button>
+                            <div className="flex gap-2 items-center flex-wrap">
+                                {[
+                                    { key: 'All', label: 'All Setups' },
+                                    { key: 'BUY', label: 'BUY' },
+                                    { key: 'WATCH', label: 'WATCH' },
+                                    { key: 'VCP', label: 'Volatility Contraction' },
+                                ].map(f => (
+                                    <button
+                                        key={f.key}
+                                        onClick={() => setFilter(f.key)}
+                                        className={`px-3 py-1.5 rounded-lg text-[0.65rem] font-bold uppercase tracking-wider transition-all duration-200 border 
+                                            ${filter === f.key ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300 drop-shadow-[0_0_5px_rgba(6,182,212,0.5)]' : 'bg-black/20 border-white/10 text-slate-400 hover:bg-white/5 hover:text-white'}`}
+                                    >
+                                        {f.label}
+                                    </button>
                                 ))}
-                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: 4 }}>{filtered.length} result{filtered.length !== 1 ? 's' : ''}</span>
                             </div>
                         ) : <div />}
 
                         <button
                             onClick={() => setShowTracker(!showTracker)}
-                            className={`btn ${showTracker ? 'btn-primary' : 'btn-ghost'}`}
-                            style={{ padding: '6px 14px', fontSize: '0.78rem', gap: 6, borderRadius: 20 }}
+                            className={`btn-cyber text-[0.65rem] uppercase tracking-widest py-1.5 px-3 rounded-lg border transition-all ${showTracker ? 'bg-purple-600/20 border-purple-500/50 text-purple-300 shadow-[0_0_10px_rgba(139,92,246,0.3)]' : 'bg-black/20 border-white/10 text-slate-400 hover:text-white hover:bg-white/10'}`}
                         >
-                            <History size={14} /> AI Track Record
+                            <History size={12} /> Live P&L Visualizer
                         </button>
                     </div>
 
-                    {/* ─── TRACK RECORD UI ─── */}
-                    {showTracker && (
-                        <div style={{ animation: 'fade-in 0.3s ease-out' }}>
-                            {/* Stats Bar */}
-                            <div style={{
-                                display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20
-                            }}>
-                                {[
-                                    { label: 'Win Rate', val: `${perfData?.stats?.winRate?.toFixed(1) || '0'}%`, color: '#34d399', icon: <ShieldCheck size={16} /> },
-                                    { label: 'Avg Profit', val: `+${perfData?.stats?.avgWin?.toFixed(2) || '0'}%`, color: '#60a5fa', icon: <TrendingUp size={16} /> },
-                                    { label: 'Avg Loss', val: `${perfData?.stats?.avgLoss?.toFixed(2) || '0'}%`, color: '#f87171', icon: <BarChart3 size={16} /> },
-                                    { label: 'Win/Loss', val: `${perfData?.stats?.won || 0} / ${perfData?.stats?.lost || 0}`, color: 'var(--text-primary)', icon: <Target size={16} /> },
-                                    { label: 'In Progress', val: `${perfData?.stats?.inProgress || 0}`, color: '#fbbf24', icon: <Activity size={16} /> }
-                                ].map((s, i) => (
-                                    <div key={i} className="card" style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                                        <div style={{ color: s.color }}>{s.icon}</div>
-                                        <div>
-                                            <div style={{ fontSize: '0.64rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>{s.label}</div>
-                                            <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.2rem', fontWeight: 900, color: s.color, marginTop: 2 }}>{s.val}</div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-
-                            {/* Equity Compounding Chart */}
-                            <EquityCurveChart history={perfData?.history || []} />
-
-                            {/* History Grid */}
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
-                                {perfData?.history.map((h: any) => (
-                                    <AITrackRecordCard key={h.id} trade={h} />
-                                ))}
-                                {perfData?.history.length === 0 && (
-                                    <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', padding: '20px' }}>No historic tracking data available yet.</div>
-                                )}
-                            </div>
-                        </div>
-                    )}
+                    {/* ─── P&L TRACK RECORD ─── */}
+                    <AnimatePresence mode="wait">
+                        {showTracker && (
+                            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98 }} className="space-y-4">
+                                <EquityCurveChart history={perfData?.history || []} />
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
+                                    {perfData?.history.map((h: any) => (
+                                        <AITrackRecordCard key={h.id} trade={h} />
+                                    ))}
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
 
                     {/* ─── PREMIUM EMPTY STATE ─── */}
                     {!showTracker && setups.length === 0 && !scanning && (
-                        <div style={{
-                            flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
-                            justifyContent: 'center', padding: '60px 24px', textAlign: 'center', gap: 24,
-                        }}>
-                            {/* Animated hero orb */}
-                            <div style={{ position: 'relative', width: 120, height: 120 }}>
-                                {/* Main icon */}
-                                <div style={{
-                                    width: 100, height: 100, borderRadius: '50%',
-                                    background: 'linear-gradient(135deg, rgba(59,130,246,0.12), rgba(124,58,237,0.12))',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    boxShadow: '0 0 60px rgba(59,130,246,0.08), 0 0 120px rgba(124,58,237,0.06)',
-                                    animation: 'heroFloat 4s ease-in-out infinite',
-                                    position: 'absolute', top: 10, left: 10,
-                                }}>
-                                    <Cpu size={36} style={{ color: 'var(--blue)', opacity: 0.9 }} />
+                        <div className="flex-1 flex flex-col items-center justify-center p-12 text-center rounded-2xl glass-panel relative overflow-hidden min-h-[50vh]">
+                            <div className="absolute inset-0 bg-[url('https://camo.githubusercontent.com/9dcad634026da78784fcabf19bb8bebc80cba00d4ef460012e1ec73e6dd33ea0/68747470733a2f2f7777772e7472616e73706172656e7474657874757265732e636f6d2f7061747465726e732f63756265732e706e67')] opacity-[0.03] pointer-events-none" />
+
+                            <div className="relative w-32 h-32 mb-8">
+                                <div className="absolute inset-0 bg-gradient-to-tr from-cyan-500/20 to-purple-500/20 rounded-full blur-[40px] animate-pulse" />
+                                <div className="absolute inset-0 rounded-full border border-white/10 flex items-center justify-center bg-black/40 backdrop-blur-md">
+                                    <Target size={40} className="text-cyan-400/80" />
                                 </div>
-                                {/* Orbiting dots */}
-                                {[0, 1, 2].map(i => (
-                                    <div key={i} style={{
-                                        position: 'absolute', top: '50%', left: '50%',
-                                        width: 8, height: 8, borderRadius: '50%',
-                                        background: ['#3b82f6', '#8b5cf6', '#10b981'][i],
-                                        boxShadow: `0 0 8px ${['#3b82f6', '#8b5cf6', '#10b981'][i]}88`,
-                                        animation: `heroOrbit ${4 + i * 0.8}s linear infinite`,
-                                        animationDelay: `${i * 1.2}s`,
-                                    }} />
-                                ))}
+                                {/* Orbiting rings */}
+                                <div className="absolute inset-[-20%] border border-cyan-500/20 rounded-full animate-[spin_10s_linear_infinite]" />
+                                <div className="absolute inset-[-40%] border border-purple-500/10 rounded-full animate-[spin_15s_linear_infinite_reverse]" />
                             </div>
 
-                            <div>
-                                <div style={{
-                                    fontFamily: 'var(--font-display)', fontSize: '1.65rem', fontWeight: 900,
-                                    marginBottom: 10, letterSpacing: '-0.03em',
-                                    background: 'linear-gradient(90deg, #f0f0ff, #93c5fd, #c4b5fd)',
-                                    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-                                    backgroundClip: 'text',
-                                }}>
-                                    AI Agent Ready
-                                </div>
-                                <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', maxWidth: 420, lineHeight: 1.7, margin: '0 auto' }}>
-                                    Run a full market scan to analyse <strong style={{ color: 'var(--text-primary)' }}>1000+ NSE stocks</strong> — Large, Mid and Small Cap — with live technical data, volume analysis, and Claude AI signal generation.
-                                </p>
-                            </div>
+                            <h2 className="font-display text-2xl font-black text-white mb-3 tracking-wide">SYSTEM INITIALIZED</h2>
+                            <p className="text-slate-400 text-sm max-w-md mx-auto mb-8 font-mono leading-relaxed">
+                                Ready to execute multi-variate quantitative scan across NSE1000.
+                                Engaged parameters: <span className="text-cyan-400">ATR Limits</span>, <span className="text-purple-400">Options Flow</span>, <span className="text-emerald-400">Volume Dynamics</span>.
+                            </p>
 
-                            <button onClick={runScan} className="btn btn-primary" style={{ padding: '13px 36px', fontSize: '0.95rem', gap: 8 }}>
-                                <Zap size={16} /> Launch Scanner
+                            <button onClick={runScan} className="btn-cyber btn-cyber-primary px-8 py-3 text-sm tracking-wider uppercase">
+                                <Zap size={16} /> Ignite Engine
                             </button>
-
-                            <div style={{ display: 'flex', gap: 24, marginTop: 6 }}>
-                                {['DMA200 Filter', 'RSI Zone', 'Volume Spike', 'AI Signal'].map(t => (
-                                    <span key={t} style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                                        <CheckCircle2 size={9} style={{ color: '#34d399', opacity: 0.6 }} /> {t}
-                                    </span>
-                                ))}
-                            </div>
                         </div>
                     )}
 
                     {/* ─── SCANNING STATE ─── */}
-                    {!showTracker && scanning && (
-                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20, padding: '60px 0' }}>
-                            <div style={{ position: 'relative', width: 64, height: 64 }}>
-                                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '3px solid rgba(59,130,246,0.12)', borderTop: '3px solid var(--blue)', animation: 'spin 0.9s linear infinite' }} />
-                                <div style={{ position: 'absolute', inset: 9, borderRadius: '50%', border: '2px solid rgba(139,92,246,0.12)', borderBottom: '2px solid var(--purple)', animation: 'spinReverse 1.3s linear infinite' }} />
-                                <div style={{ position: 'absolute', inset: 18, borderRadius: '50%', border: '2px solid rgba(16,185,129,0.12)', borderTop: '2px solid var(--green)', animation: 'spin 1.7s linear infinite' }} />
-                            </div>
-                            <div>
-                                <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem', fontWeight: 800, textAlign: 'center', marginBottom: 8 }}>Scanning High-Liquidity Universe</div>
-                                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.6 }}>
-                                    Fetching live data &nbsp;&middot;&nbsp; Computing indicators &nbsp;&middot;&nbsp; Claude AI analysis
+                    {scanning && (
+                        <div className="flex-1 flex flex-col items-center justify-center p-12 text-center rounded-2xl glass-panel relative overflow-hidden min-h-[50vh]">
+                            <div className="w-full max-w-md">
+                                <div className="flex justify-between text-[0.6rem] font-mono text-cyan-400 mb-2 font-bold tracking-widest uppercase">
+                                    <span>Processing Universe</span>
+                                    <span className="animate-pulse">Loading Matrices...</span>
+                                </div>
+                                <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden border border-white/5 relative">
+                                    <motion.div
+                                        className="h-full bg-cyan-500"
+                                        initial={{ width: "0%" }}
+                                        animate={{ width: "100%" }}
+                                        transition={{ duration: 15, ease: "linear" }}
+                                    />
+                                </div>
+                                <div className="font-mono text-[0.55rem] text-slate-500 mt-4 text-left space-y-1">
+                                    <p className="animate-pulse">&gt; Disconnecting human bias...</p>
+                                    <p className="animate-pulse" style={{ animationDelay: '1s' }}>&gt; Fetching NSE F&O Options Bhavcopy...</p>
+                                    <p className="animate-pulse" style={{ animationDelay: '2s' }}>&gt; Calculating Volume Dry-Up and VCP thresholds...</p>
+                                    <p className="animate-pulse" style={{ animationDelay: '3s' }}>&gt; Handing off to LLM Logic Engine...</p>
                                 </div>
                             </div>
                         </div>
                     )}
 
-                    {/* No match state */}
-                    {!showTracker && filtered.length === 0 && setups.length > 0 && (
-                        <div className="card" style={{ textAlign: 'center', padding: '36px 24px' }}>
-                            <SlidersHorizontal size={24} style={{ margin: '0 auto 12px', color: 'var(--text-muted)', opacity: 0.5 }} />
-                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginBottom: 10 }}>No setups match the "{filter}" filter.</p>
-                            <button onClick={() => setFilter('All')} className="btn btn-ghost" style={{ fontSize: '0.78rem' }}>Show All Setups</button>
-                        </div>
-                    )}
+                    {/* Cards Grid */}
+                    <AnimatePresence>
+                        {!showTracker && !scanning && filtered.length > 0 && (
+                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                {filtered.map((s, i) => <AIActionCard key={s.ticker} s={s} delay={Math.min(i * 0.05, 0.4)} />)}
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
 
-                    {/* Cards grid */}
-                    {!showTracker && filtered.length > 0 && (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
-                            {filtered.map((s, i) => <AIActionCard key={s.ticker} s={s} delay={Math.min(i * 0.04, 0.5)} />)}
+                    {/* No matches */}
+                    {!showTracker && !scanning && setups.length > 0 && filtered.length === 0 && (
+                        <div className="glass-panel text-center p-8 rounded-2xl border-white/5 opacity-70">
+                            <SlidersHorizontal size={24} className="mx-auto text-slate-500 mb-3" />
+                            <p className="text-sm font-mono text-slate-400 mb-4">No targets match filter param: {filter}</p>
+                            <button onClick={() => setFilter('All')} className="btn-cyber btn-cyber-ghost text-xs py-1.5 px-4">Reset Matrix</button>
                         </div>
                     )}
                 </main>
 
-                {/* RIGHT — Market + Sectors + Watchlist */}
                 <RightPanel navigate={navigate} sectors={sectors} sectorTime={sectorTime} watchlist={watchlist} />
             </div>
-        </div>
+        </motion.div>
     )
 }

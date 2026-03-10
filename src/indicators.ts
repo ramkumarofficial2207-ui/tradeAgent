@@ -93,6 +93,19 @@ export function computeIndicators(
     // ── Distance from 200 DMA ───────────────────────────
     const distFrom200 = dma200 > 0 ? ((ltp - dma200) / dma200) * 100 : 0;
 
+    // ── Phase 4: Delivery / Accumulation Proxy ──────────
+    let accumulationScore = 0;
+    if (candles.length >= 10) {
+        const last10 = candles.slice(-10);
+        let upVol = 0, downVol = 0;
+        for (const c of last10) {
+            if (c.close > c.open) upVol += c.volume;
+            else if (c.close < c.open) downVol += c.volume;
+            else { upVol += c.volume / 2; downVol += c.volume / 2; }
+        }
+        accumulationScore = downVol === 0 ? 100 : (upVol / (upVol + downVol)) * 100;
+    }
+
     // ── Setup Identifiers ───────────────────────────────
     // Short Swing: Bull Flag
     const isBullFlag = returns10d >= 15 &&          // 15%+ run in last 10 days
@@ -114,6 +127,7 @@ export function computeIndicators(
         returns3m, returns1m, returns6m, returns10d,
         nifty3mReturn, nifty1mReturn,
         outperformsNifty: returns3m > nifty3mReturn,
+        accumulationScore,
         isBullFlag, isDeepValue,
         candles,
     };

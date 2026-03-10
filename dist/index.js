@@ -11,6 +11,7 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const path_1 = __importDefault(require("path"));
 const node_cron_1 = __importDefault(require("node-cron"));
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const scanner_1 = require("./scanner");
 const dataService_1 = require("./dataService");
 const fundamentalService_1 = require("./fundamentalService");
@@ -21,6 +22,7 @@ const agentEvents_1 = require("./agentEvents");
 const prismaClient_1 = __importDefault(require("./prismaClient"));
 const performanceJob_1 = require("./performanceJob");
 const autoScannerJob_1 = require("./autoScannerJob");
+const authMiddleware_1 = require("./authMiddleware");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3000;
 app.use((0, cors_1.default)());
@@ -37,6 +39,131 @@ const tradingApi = broker.api;
 // ——————————————————————————————————————————
 // ROUTES
 // ——————————————————————————————————————————
+// ═══════════════════════════════════════════
+// AUTH — Register / Login / Me / Logout
+// ═══════════════════════════════════════════
+// POST /api/auth/register
+app.post('/api/auth/register', async (req, res) => {
+    const { name, email, password } = req.body || {};
+    if (!name || !email || !password) {
+        res.status(400).json({ success: false, message: 'Name, email and password are required.' });
+        return;
+    }
+    if (password.length < 6) {
+        res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+        return;
+    }
+    try {
+        const existing = await prismaClient_1.default.user.findUnique({ where: { email } });
+        if (existing) {
+            res.status(409).json({ success: false, message: 'An account with this email already exists.' });
+            return;
+        }
+        const hashed = await bcryptjs_1.default.hash(password, 12);
+        const user = await prismaClient_1.default.user.create({
+            data: { name, email, password: hashed },
+            select: { id: true, name: true, email: true, createdAt: true },
+        });
+        const token = (0, authMiddleware_1.generateToken)(user.id, user.email);
+        res.json({ success: true, token, user });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+// POST /api/auth/login
+app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+        res.status(400).json({ success: false, message: 'Email and password are required.' });
+        return;
+    }
+    try {
+        const user = await prismaClient_1.default.user.findUnique({ where: { email } });
+        if (!user) {
+            res.status(401).json({ success: false, message: 'Invalid email or password.' });
+            return;
+        }
+        const match = await bcryptjs_1.default.compare(password, user.password);
+        if (!match) {
+            res.status(401).json({ success: false, message: 'Invalid email or password.' });
+            return;
+        }
+        const token = (0, authMiddleware_1.generateToken)(user.id, user.email);
+        const { password: _, ...safeUser } = user;
+        res.json({ success: true, token, user: safeUser });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+// GET /api/auth/me
+app.get('/api/auth/me', authMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const user = await prismaClient_1.default.user.findUnique({
+            where: { id: req.userId },
+            select: { id: true, name: true, email: true, createdAt: true },
+        });
+        if (!user) {
+            res.status(404).json({ success: false, message: 'User not found.' });
+            return;
+        }
+        res.json({ success: true, user });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+// POST /api/auth/logout — Stateless JWT: just acknowledge (client deletes token)
+app.post('/api/auth/logout', (_req, res) => {
+    res.json({ success: true, message: 'Logged out.' });
+});
+// ═══════════════════════════════════════════
+// WATCHLIST — Persistent, per-user, cloud-synced
+// ═══════════════════════════════════════════
+// GET /api/watchlist
+app.get('/api/watchlist', authMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const items = await prismaClient_1.default.watchlistItem.findMany({
+            where: { userId: req.userId },
+            orderBy: { addedAt: 'desc' },
+        });
+        res.json({ success: true, data: items });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+// POST /api/watchlist
+app.post('/api/watchlist', authMiddleware_1.requireAuth, async (req, res) => {
+    const { ticker, sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone } = req.body || {};
+    if (!ticker) {
+        res.status(400).json({ success: false, message: 'ticker is required.' });
+        return;
+    }
+    try {
+        const item = await prismaClient_1.default.watchlistItem.upsert({
+            where: { userId_ticker: { userId: req.userId, ticker } },
+            update: { sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone, addedAt: new Date() },
+            create: { userId: req.userId, ticker, sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone },
+        });
+        res.json({ success: true, data: item });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+// DELETE /api/watchlist/:ticker
+app.delete('/api/watchlist/:ticker', authMiddleware_1.requireAuth, async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    try {
+        await prismaClient_1.default.watchlistItem.deleteMany({ where: { userId: req.userId, ticker } });
+        res.json({ success: true });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 // GET /api/scan — Run the full Phase 1+2 scanner
 app.get('/api/scan', async (req, res) => {
     try {
@@ -50,7 +177,7 @@ app.get('/api/scan', async (req, res) => {
         // ── Agentic: emit thinking steps ──
         (0, agentEvents_1.clearThinkingSteps)();
         (0, agentEvents_1.setAgentState)('SCANNING', 'Running full market scan');
-        (0, agentEvents_1.pushEvent)('SCAN_START', 'info', 'Scanner Started', 'Running full Phase 1+2 scan across 200+ NSE stocks');
+        (0, agentEvents_1.pushEvent)('SCAN_START', 'info', 'Scanner Started', 'Running full Phase 1+2 scan across Nifty 1000 stocks');
         const s1 = (0, agentEvents_1.addThinkingStep)('Fetching live market data from NSE', 'running');
         console.log('[API] Running full market scan...');
         const { qualified, marketStatus } = await (0, scanner_1.runScanner)(tradingApi);
@@ -355,25 +482,6 @@ app.get('/api/market-pulse', async (_req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-// GET /api/chart/:ticker — OHLCV data for TradingChart
-app.get('/api/chart/:ticker', async (req, res) => {
-    try {
-        const ticker = req.params.ticker.toUpperCase();
-        const yahooTicker = ticker + '.NS';
-        const candles = await (0, dataService_1.fetchHistoricalData)(yahooTicker, 250);
-        const chartData = candles.map(c => ({
-            time: c.date,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close
-        }));
-        res.json({ success: true, data: chartData });
-    }
-    catch (e) {
-        res.status(500).json({ success: false, message: e.message });
-    }
-});
 let cachedOutlook = '';
 let cachedNews = [];
 let outlookTime = 0;
@@ -436,7 +544,7 @@ app.get('/api/market-outlook', async (req, res) => {
         res.status(500).json({ success: false, message: e.message });
     }
 });
-// POST /api/chat — AI Stock Research Chatbot powered by Groq (Llama 3.3 70B)
+// POST /api/chat — AI Stock Research Chatbot powered by Anthropic Claude AI
 app.post('/api/chat', async (req, res) => {
     const { message } = req.body || {};
     if (!message || typeof message !== 'string') {
@@ -562,7 +670,7 @@ ${headlines.join('\n')}
         }
         catch { /* proceed without news */ }
     }
-    // Always inject current date/time so Groq knows it's not 2024
+    // Always inject current date/time so Claude knows it's not 2024
     const nowIST = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
     const topSetups = lastScan?.setups?.slice(0, 5).map(s => `${s.ticker} (${s.setupType}, Conf:${s.confidenceScore}/10, Signal:${s.aiSignal})`).join(', ') || 'No recent scan on record.';
     const systemPrompt = `You are StockSage AI — India's most helpful stock market research companion.

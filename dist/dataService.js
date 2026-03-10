@@ -16,7 +16,7 @@ exports.fetchNiftyData = fetchNiftyData;
 exports.getTradingApiFromEnv = getTradingApiFromEnv;
 const axios_1 = __importDefault(require("axios"));
 // =====================================================
-// FULL NSE LARGE + MIDCAP UNIVERSE (Nifty 200 equivalent)
+// FULL NSE LARGE + MIDCAP + SMALLCAP UNIVERSE (Nifty 1000 equivalent)
 // =====================================================
 // Generated Universe
 exports.NSE_UNIVERSE = {

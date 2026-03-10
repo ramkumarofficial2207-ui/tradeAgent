@@ -49,8 +49,13 @@ export interface StockIndicators {
     nifty3mReturn: number;
     nifty1mReturn: number;
     outperformsNifty: boolean;
+    accumulationScore?: number;
     isBullFlag?: boolean;
     isDeepValue?: boolean;
+    pcr?: number;
+    totalOI?: number;
+    oiChangePct?: number;
+    derivativeStatus?: string;
     candles: Candle[];
 }
 export type SetupType = 'Pullback Continuation' | 'EMA50 Pullback' | 'EMA20 Pullback' | 'Volatility Contraction (VCP)' | 'VCP Breakout 🔥' | 'VCP Contraction' | 'Breakout Base' | 'EMA20 Bounce' | 'Momentum Continuation' | 'Bull Flag Breakout 🚩' | 'Deep Value Reversion 📉';
@@ -87,10 +92,15 @@ export interface TradeSetup {
     headlines?: string[];
     momentumRank: number;
     volatilityHitProb: number;
+    institutionalDemand?: number;
     aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT';
     aiLogic?: string;
     aiTargetRange?: string;
     aiStopLoss?: string;
+    pcr?: number;
+    totalOI?: number;
+    oiChangePct?: number;
+    derivativeStatus?: string;
 }
 export interface MarketStatus {
     niftyChange: number;

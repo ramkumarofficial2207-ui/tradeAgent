@@ -58,8 +58,13 @@ export interface StockIndicators {
     nifty3mReturn: number;
     nifty1mReturn: number;
     outperformsNifty: boolean;
+    accumulationScore?: number; // Phase 4 Extension
     isBullFlag?: boolean;
     isDeepValue?: boolean;
+    pcr?: number;
+    totalOI?: number;
+    oiChangePct?: number;
+    derivativeStatus?: string;
     candles: Candle[];
 }
 
@@ -109,10 +114,16 @@ export interface TradeSetup {
     headlines?: string[];
     momentumRank: number;
     volatilityHitProb: number;
+    institutionalDemand?: number; // Phase 4 Extension
     aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT';
     aiLogic?: string;
     aiTargetRange?: string;
     aiStopLoss?: string;
+    // Phase 6 Extension
+    pcr?: number;
+    totalOI?: number;
+    oiChangePct?: number;
+    derivativeStatus?: string;
 }
 
 export interface MarketStatus {
