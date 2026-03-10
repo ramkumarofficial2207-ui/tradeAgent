@@ -8,6 +8,7 @@ RUN npm run build
 
 # ── Stage 2: Build backend ────────────────────────────────────
 FROM node:20-alpine AS backend-build
+RUN apk add --no-cache openssl libc6-compat
 WORKDIR /app
 COPY package*.json ./
 COPY prisma/ ./prisma/
@@ -19,6 +20,7 @@ RUN npm run build
 
 # ── Stage 3: Runtime ──────────────────────────────────────────
 FROM node:20-alpine
+RUN apk add --no-cache openssl libc6-compat
 WORKDIR /app
 
 # Install runtime dependencies only
