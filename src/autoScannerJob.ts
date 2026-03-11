@@ -29,7 +29,8 @@ export function initAutoScanner() {
         try {
             pushEvent('SYSTEM', 'info', 'Autonomous Scan Started', 'The agent is running a scheduled background analysis.');
 
-            axios.get('http://localhost:3000/api/scan', { timeout: 300000 })
+            const port = process.env.PORT || 3000;
+            axios.get(`http://localhost:${port}/api/scan`, { timeout: 300000 })
                 .then(res => {
                     if (res.data.success) {
                         console.log(`[AutoScanner] ✅ Background scan complete. Found ${res.data.data.setups?.length || 0} setups.`);

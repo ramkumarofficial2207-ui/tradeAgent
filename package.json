@@ -6,7 +6,7 @@
     "scripts": {
         "build": "npx prisma generate && tsc",
         "build:full": "npm install --include=dev && cd frontend && npm install --include=dev && npm run build && cd .. && npm run build",
-        "start": "npx prisma migrate deploy || echo 'Migration failed, attempting start anyway...' && npx cross-env NODE_ENV=production node dist/index.js",
+        "start": "npx prisma migrate deploy; npx cross-env NODE_ENV=production node dist/index.js",
         "dev:server": "ts-node-dev --respawn --transpile-only src/index.ts",
         "dev:client": "cd frontend && npm run dev",
         "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\""
@@ -29,7 +29,8 @@
         "node-cron": "^3.0.3",
         "nodemailer": "^8.0.1",
         "technicalindicators": "^3.1.0",
-        "cross-env": "^7.0.3"
+        "cross-env": "^7.0.3",
+        "prisma": "^5.22.0"
     },
     "devDependencies": {
         "@types/bcryptjs": "^2.4.6",

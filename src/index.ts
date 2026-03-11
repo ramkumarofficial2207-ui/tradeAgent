@@ -40,6 +40,9 @@ if (process.env.NODE_ENV === 'production') {
     app.use(express.static(FRONTEND_DIST));
 }
 
+// Health check for Railway
+app.get('/api/health', (req, res) => res.status(200).send('OK'));
+
 // Cache last scan result
 let lastScan: ScanResult | null = null;
 const broker = getTradingApiFromEnv();
