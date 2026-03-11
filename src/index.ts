@@ -34,6 +34,14 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+console.log('[System] Process starting...');
+process.on('uncaughtException', (err) => {
+    console.error('[System] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[System] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // In production, serve the built React frontend from frontend/dist
 const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
 if (process.env.NODE_ENV === 'production') {
@@ -939,55 +947,35 @@ cron.schedule('30 10 * * 1-5', () => {
     updatePerformanceRecords();
 });
 
-// Start Level-1000 Autonomous Scanner Agent
-initAutoScanner();
-
 // ——————————————————————————————————————————
-// START
-// SPA fallback — must be after all API routes so React Router handles all non-API paths
-if (process.env.NODE_ENV === 'production') {
-    app.get('*', (_req: Request, res: Response) => {
-        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
-    });
-}
-
-// Compute next scheduled scan time
-function computeNextScan(): string {
-    const now = new Date();
-    const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    const h = ist.getHours();
-    if (h < 9 || (h === 9 && ist.getMinutes() < 20)) {
-        ist.setHours(9, 20, 0, 0);
-    } else if (h < 15 || (h === 15 && ist.getMinutes() < 45)) {
-        ist.setHours(15, 45, 0, 0);
-    } else {
-        ist.setDate(ist.getDate() + 1);
-        ist.setHours(9, 20, 0, 0);
-    }
-    return ist.toISOString();
-}
-setNextScan(computeNextScan());
-
+// 🚀 START SERVER IMMEDIATELY
 // ——————————————————————————————————————————
 app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log('');
-    console.log('╔══════════════════════════════════════════════════════╗');
-    console.log('║   🧠  StockSage AI — Agentic Trading Assistant        ║');
-    console.log('║   India\'s AI Stock Research Companion                 ║');
-    console.log('╠══════════════════════════════════════════════════════╣');
-    console.log(`║   Dashboard : http://localhost:${PORT}                  ║`);
-    console.log('╠══════════════════════════════════════════════════════╣');
-    console.log('║   POST /api/chat           — AI Chatbot               ║');
-    console.log('║   GET  /api/scan           — Run stock scanner        ║');
-    console.log('║   GET  /api/agent/stream   — SSE live event stream    ║');
-    console.log('║   GET  /api/agent/status   — Agent status             ║');
-    console.log('║   GET  /api/sectors        — Live sector data         ║');
-    console.log('╚══════════════════════════════════════════════════════╝');
-    console.log('');
+    console.log(`\n[System] StockSage AI Agent Online on Port ${PORT}`);
+    console.log(`[System] Mode: ${process.env.NODE_ENV}`);
+
     // Log masked DB URL for production debugging
     const dbUrl = process.env.DATABASE_URL || '';
     const maskedUrl = dbUrl.replace(/:([^@]+)@/, ':****@');
-    console.log(`[System] Initializing database connection: ${maskedUrl.split('@')[1] || 'Unknown Host'}`);
+    console.log(`[System] DB Host: ${maskedUrl.split('@')[1] || 'Unknown'}`);
 
-    pushEvent('SYSTEM', 'success', 'Server Started', `StockSage AI agent running on port ${PORT}`);
+    // Deferred initialization to allow server to be "Ready" for Railway
+    setTimeout(async () => {
+        try {
+            console.log('[System] Running database migrations...');
+            // Optional: run migrations in background
+            const { exec } = require('child_process');
+            exec('npx prisma migrate deploy', (err: any, stdout: any, stderr: any) => {
+                if (err) console.error('[System] Migration Error:', stderr);
+                else console.log('[System] Migration Complete:', stdout);
+            });
+
+            console.log('[System] Initializing AI Agentic Systems...');
+            initAutoScanner();
+            setNextScan(computeNextScan());
+            pushEvent('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized and monitoring.');
+        } catch (e: any) {
+            console.error('[System] Deferred Init Failed:', e.message);
+        }
+    }, 1000);
 });
