@@ -981,6 +981,11 @@ app.listen(Number(PORT), '0.0.0.0', () => {
     console.log('║   GET  /api/sectors        — Live sector data         ║');
     console.log('╚══════════════════════════════════════════════════════╝');
     console.log('');
+    // Log masked DB URL for production debugging
+    const dbUrl = process.env.DATABASE_URL || '';
+    const maskedUrl = dbUrl.replace(/:([^@]+)@/, ':****@');
+    console.log(`[System] Initializing database connection: ${maskedUrl.split('@')[1] || 'Unknown Host'}`);
+
     pushEvent('SYSTEM', 'success', 'Server Started', `StockSage AI agent running on port ${PORT}`);
 });
 app.listen(PORT, () => {
