@@ -965,37 +965,26 @@ cron.schedule('30 10 * * 1-5', () => {
 });
 
 // ——————————————————————————————————————————
-// 🚀 START SERVER IMMEDIATELY
+// ⚡ BACKGROUND INITIALIZATION (Non-Blocking)
 // ——————————————————————————————————————————
-app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`\n[System] StockSage AI Agent Online on Port ${PORT}`);
-    console.log(`[System] Mode: ${process.env.NODE_ENV}`);
+setTimeout(() => {
+    try {
+        console.log('[System] Background Init: Starting database cleanup...');
+        const { exec } = require('child_process');
+        exec('npx prisma migrate deploy', (err: any, stdout: any, stderr: any) => {
+            if (err) console.error('[System] Background Migration Error:', stderr);
+            else console.log('[System] Background Migration Complete:', stdout);
+        });
 
-    // Log masked DB URL for production debugging
-    const dbUrl = process.env.DATABASE_URL || '';
-    const maskedUrl = dbUrl.replace(/:([^@]+)@/, ':****@');
-    console.log(`[System] DB Host: ${maskedUrl.split('@')[1] || 'Unknown'}`);
+        console.log('[System] Background Init: Starting AI Agent System...');
+        initAutoScanner();
+        setNextScan(computeNextScan());
+        pushEvent('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized in background.');
+    } catch (e: any) {
+        console.error('[System] Background Init Failed:', e.message);
+    }
+}, 3000);
 
-    // Deferred initialization to allow server to be "Ready" for Railway
-    setTimeout(async () => {
-        try {
-            console.log('[System] Running database migrations...');
-            // Optional: run migrations in background
-            const { exec } = require('child_process');
-            exec('npx prisma migrate deploy', (err: any, stdout: any, stderr: any) => {
-                if (err) console.error('[System] Migration Error:', stderr);
-                else console.log('[System] Migration Complete:', stdout);
-            });
-
-            console.log('[System] Initializing AI Agentic Systems...');
-            initAutoScanner();
-            setNextScan(computeNextScan());
-            pushEvent('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized and monitoring.');
-        } catch (e: any) {
-            console.error('[System] Deferred Init Failed:', e.message);
-        }
-    }, 1000);
-});
 
 // SPA fallback — must be after all API routes so React Router handles all non-API paths
 if (process.env.NODE_ENV === 'production') {
