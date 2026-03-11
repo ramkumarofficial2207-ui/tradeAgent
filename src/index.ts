@@ -979,3 +979,26 @@ app.listen(Number(PORT), '0.0.0.0', () => {
         }
     }, 1000);
 });
+
+// SPA fallback — must be after all API routes so React Router handles all non-API paths
+if (process.env.NODE_ENV === 'production') {
+    app.get('*', (_req: Request, res: Response) => {
+        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
+}
+
+// Compute next scheduled scan time
+function computeNextScan(): string {
+    const now = new Date();
+    const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const h = ist.getHours();
+    if (h < 9 || (h === 9 && ist.getMinutes() < 20)) {
+        ist.setHours(9, 20, 0, 0);
+    } else if (h < 15 || (h === 15 && ist.getMinutes() < 45)) {
+        ist.setHours(15, 45, 0, 0);
+    } else {
+        ist.setDate(ist.getDate() + 1);
+        ist.setHours(9, 20, 0, 0);
+    }
+    return ist.toISOString();
+}
