@@ -1,6 +1,7 @@
 // =====================================================
 // index.ts — Express Server + Cron Scheduler
 // =====================================================
+console.log('[System] 🚀 Starting StockSage AI Engine...');
 
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
