@@ -59,6 +59,12 @@ export interface StockIndicators {
     candles: Candle[];
 }
 export type SetupType = 'Pullback Continuation' | 'EMA50 Pullback' | 'EMA20 Pullback' | 'Volatility Contraction (VCP)' | 'VCP Breakout 🔥' | 'VCP Contraction' | 'Breakout Base' | 'EMA20 Bounce' | 'Momentum Continuation' | 'Bull Flag Breakout 🚩' | 'Deep Value Reversion 📉';
+export interface TriggerZone {
+    triggerPrice: number;
+    triggerVolumeRatio: number;
+    authorizedAt: Date;
+    expiresAt: Date;
+}
 export interface TradeSetup {
     ticker: string;
     sector: string;
@@ -101,6 +107,7 @@ export interface TradeSetup {
     totalOI?: number;
     oiChangePct?: number;
     derivativeStatus?: string;
+    authorizedZone?: TriggerZone;
 }
 export interface MarketStatus {
     niftyChange: number;

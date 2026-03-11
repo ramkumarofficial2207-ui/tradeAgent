@@ -3,12 +3,16 @@
 // scanner.ts — Hardened NSE swing scanner
 // ALL gates strictly enforced per blueprint spec
 // =====================================================
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkMarketCondition = checkMarketCondition;
 exports.runScanner = runScanner;
 exports.buildTradeSetups = buildTradeSetups;
 const dataService_1 = require("./dataService");
 const indicators_1 = require("./indicators");
+const prismaClient_1 = __importDefault(require("./prismaClient"));
 const newsValidator_1 = require("./newsValidator");
 const earningsValidator_1 = require("./earningsValidator");
 const aiAdvisor_1 = require("./aiAdvisor");
@@ -119,6 +123,31 @@ async function fetchUniverseData(dataApi, concurrency = 6) {
         }
     }
     return out;
+}
+/**
+ * Calculates Expected Value (EV) based on:
+ * EV = (WinProb * AvgWin) - (LossProb * AvgLoss)
+ */
+async function calculateExpectedValue(setup) {
+    const winProb = setup.volatilityHitProb / 100;
+    const lossProb = 1 - winProb;
+    const reward = setup.targetPct;
+    const risk = setup.slPct;
+    // Use historical performance data to weight the calculation
+    let historicalWeight = 1.0;
+    try {
+        const stats = await prismaClient_1.default.historicalSetup.findMany({
+            where: { setupType: setup.setupType, status: { in: ['WON', 'LOST'] } },
+            take: 10
+        });
+        if (stats.length >= 2) {
+            const wins = stats.filter(s => s.status === 'WON').length;
+            historicalWeight = (wins / stats.length) + 0.5; // Scale reward potential
+        }
+    }
+    catch { /* fallback to technical-only EV */ }
+    const ev = (winProb * (reward * historicalWeight)) - (lossProb * risk);
+    return +ev.toFixed(2);
 }
 // ──────────────────────────────────────────────────────────────────
 // MAIN SCANNER — all gates enforced
@@ -400,6 +429,15 @@ async function buildTradeSetups(qualified) {
                 s.aiLogic = assessment.logic;
                 s.aiTargetRange = assessment.target_range;
                 s.aiStopLoss = assessment.stop_loss;
+                // Phase 1: Authorized Trigger Zone
+                if (assessment.trigger_price) {
+                    s.authorizedZone = {
+                        triggerPrice: assessment.trigger_price,
+                        triggerVolumeRatio: assessment.trigger_volume_ratio || 1.2,
+                        authorizedAt: new Date(),
+                        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
+                    };
+                }
                 // Only override confidence if AI momentum_score is meaningful AND higher
                 if (assessment.momentum_score && assessment.momentum_score > s.confidenceScore) {
                     s.confidenceScore = Math.min(10, assessment.momentum_score);
@@ -424,6 +462,13 @@ async function buildTradeSetups(qualified) {
             console.log(`[Risk Manager] Rejected ${setup.ticker} to prevent over-concentration in ${sector}`);
         }
     }
-    return riskManaged;
+    // ── Phase 3: EV-Based Prioritization ──────────────────────────
+    const setupsWithEV = await Promise.all(riskManaged.map(async (s) => {
+        s.expectedValue = await calculateExpectedValue(s);
+        return s;
+    }));
+    // Sort by EV (Descending)
+    setupsWithEV.sort((a, b) => b.expectedValue - a.expectedValue);
+    return setupsWithEV;
 }
 //# sourceMappingURL=scanner.js.map

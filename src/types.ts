@@ -81,6 +81,13 @@ export type SetupType =
     | 'Bull Flag Breakout 🚩'
     | 'Deep Value Reversion 📉';
 
+export interface TriggerZone {
+    triggerPrice: number;
+    triggerVolumeRatio: number;
+    authorizedAt: Date;
+    expiresAt: Date;
+}
+
 export interface TradeSetup {
     ticker: string;
     sector: string;
@@ -124,6 +131,8 @@ export interface TradeSetup {
     totalOI?: number;
     oiChangePct?: number;
     derivativeStatus?: string;
+    // Phase 1 Latency Fix
+    authorizedZone?: TriggerZone;
 }
 
 export interface MarketStatus {

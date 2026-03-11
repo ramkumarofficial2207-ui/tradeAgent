@@ -5,6 +5,7 @@
 
 import { fetchHistoricalData, fetchNiftyData, MARKET_CAP_CR_MAP, NSE_UNIVERSE, SECTOR_MAP } from './dataService';
 import { computeIndicators, computeConfidence, computeRegime, estimateHitProbability, identifySetupType, detectVCP } from './indicators';
+import prisma from './prismaClient';
 import { validateNewsRisk } from './newsValidator';
 import { validateEarningsRisk } from './earningsValidator';
 import { analyzeStocksWithAI } from './aiAdvisor';
@@ -128,6 +129,33 @@ async function fetchUniverseData(
         }
     }
     return out;
+}
+
+/**
+ * Calculates Expected Value (EV) based on:
+ * EV = (WinProb * AvgWin) - (LossProb * AvgLoss)
+ */
+async function calculateExpectedValue(setup: TradeSetup): Promise<number> {
+    const winProb = setup.volatilityHitProb / 100;
+    const lossProb = 1 - winProb;
+    const reward = setup.targetPct;
+    const risk = setup.slPct;
+
+    // Use historical performance data to weight the calculation
+    let historicalWeight = 1.0;
+    try {
+        const stats = await prisma.historicalSetup.findMany({
+            where: { setupType: setup.setupType, status: { in: ['WON', 'LOST'] } },
+            take: 10
+        });
+        if (stats.length >= 2) {
+            const wins = stats.filter(s => s.status === 'WON').length;
+            historicalWeight = (wins / stats.length) + 0.5; // Scale reward potential
+        }
+    } catch { /* fallback to technical-only EV */ }
+
+    const ev = (winProb * (reward * historicalWeight)) - (lossProb * risk);
+    return +ev.toFixed(2);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -433,6 +461,15 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
                 s.aiLogic = assessment.logic;
                 s.aiTargetRange = assessment.target_range;
                 s.aiStopLoss = assessment.stop_loss;
+                // Phase 1: Authorized Trigger Zone
+                if (assessment.trigger_price) {
+                    s.authorizedZone = {
+                        triggerPrice: assessment.trigger_price,
+                        triggerVolumeRatio: assessment.trigger_volume_ratio || 1.2,
+                        authorizedAt: new Date(),
+                        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
+                    };
+                }
                 // Only override confidence if AI momentum_score is meaningful AND higher
                 if (assessment.momentum_score && assessment.momentum_score > s.confidenceScore) {
                     s.confidenceScore = Math.min(10, assessment.momentum_score);
@@ -461,5 +498,14 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
         }
     }
 
-    return riskManaged;
+    // ── Phase 3: EV-Based Prioritization ──────────────────────────
+    const setupsWithEV = await Promise.all(riskManaged.map(async s => {
+        (s as any).expectedValue = await calculateExpectedValue(s);
+        return s;
+    }));
+
+    // Sort by EV (Descending)
+    setupsWithEV.sort((a, b) => (b as any).expectedValue - (a as any).expectedValue);
+
+    return setupsWithEV;
 }

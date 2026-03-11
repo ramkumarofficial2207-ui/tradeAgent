@@ -1,5 +1,6 @@
 import { claudeAsk } from './claudeClient';
 import { groqAsk } from './groqClient';
+import { geminiAsk } from './geminiClient';
 import prisma from './prismaClient';
 
 export interface AIAssessment {
@@ -9,6 +10,11 @@ export interface AIAssessment {
     logic: string;
     target_range: string;
     stop_loss: string;
+    // Phase 1: Execution Trigger Zones
+    trigger_price?: number;
+    trigger_volume_ratio?: number;
+    // Phase 4: Devil's Advocate
+    bear_case?: string;
 }
 
 const SYSTEM_PROMPT = `You are a Professional Momentum Trading Analyst specializing in the Indian NSE market.
@@ -23,14 +29,12 @@ Analysis rules (Newgen-style breakout):
 6. NEWS CONTEXT (CRITICAL): Read the provided headlines. If you detect severe regulatory action, SEC probes, fraud, severe analyst downgrades, or immediate earnings risk, you MUST override technicals and issue an REJECT signal with the reasoning.
 7. OPTIONS FLOW (If available): Look at PCR and Derivative Status. PCR > 1.0 with 'Long Buildup' is hyper-bullish. 'Short Buildup' or PCR < 0.6 is a massive wall of call sellers → REJECT.
 
+8. EXECUTION TRIGGER (NEW): You must define a precise 'trigger_price' (usually 0.1% above day high or pivot) and a 'trigger_volume_ratio' (minimum volume intensity required during the breakout).
+
 Constraints:
 - Already up >10% today → flag "High Risk/Late Entry", downgrade to WATCH
 - distFromDma200Pct >25% → downgrade
 - Negative Regulatory/Earnings News → REJECT
-
-- The stock's exact timeframe is given to you based on technicals. Adjust your targets and stop losses accordingly.
-
-- The stock's exact timeframe is given to you based on technicals. Adjust your targets and stop losses accordingly.
 
 Signal Definitions:
 - BUY: A completely perfect setup (A+ grade). High conviction. 
@@ -39,7 +43,20 @@ Signal Definitions:
 - REJECT: Poor technicals, heavy resistance, or low conviction. Do not trade.
 
 Return ONLY a valid JSON array (no markdown fences, no explanation) with this exact shape per stock:
-[{"ticker":"...","momentum_score":7,"signal":"BUY","logic":"1-sentence reason","target_range":"₹X – ₹Y","stop_loss":"₹Z"}]`;
+[{"ticker":"...","momentum_score":7,"signal":"BUY","logic":"...","target_range":"...","stop_loss":"...","trigger_price":123.45,"trigger_volume_ratio":1.5}]`;
+
+const DEVILS_ADVOCATE_PROMPT = `You are a Professional Contrarian Short-Seller. 
+Your job is to find the "Fatal Flaw" in a bullish trade setup.
+Look for:
+- Bull Traps (Wicks at high)
+- Low volume breakouts (Fakeouts)
+- Sector headwinds
+- Major resistance levels just above
+- Overextension (Vertical moves)
+- Regulatory/News risks that could trigger a reversal.
+
+Critique the provided stock data and give a 1-2 sentence "Bear Case" why this trade might fail.
+Return ONLY a valid JSON object: {"bear_case": "..."}`;
 
 export async function analyzeStocksWithAI(stocks: any[]): Promise<Map<string, AIAssessment>> {
     const results = new Map<string, AIAssessment>();
@@ -129,12 +146,21 @@ Use this data to penalize failing setup types and prioritize working ones. If a 
                 { maxTokens: 1200, temperature: 0.2 }
             );
         } catch (claudeErr: any) {
-            console.warn('[AI Advisor] Claude failed (likely credits or 400). Falling back to Groq...');
-            raw = await groqAsk(
-                dynamicSystemPrompt,
-                `Analyse these ${stocks.length} stocks:\n${stockData}`,
-                { maxTokens: 1200, temperature: 0.2 }
-            );
+            console.warn('[AI Advisor] Claude failed. Falling back to Gemini...');
+            try {
+                raw = await geminiAsk(
+                    dynamicSystemPrompt,
+                    `Analyse these ${stocks.length} stocks:\n${stockData}`,
+                    { maxTokens: 1200, temperature: 0.2 }
+                );
+            } catch (geminiErr: any) {
+                console.warn('[AI Advisor] Gemini failed. Falling back to Groq...');
+                raw = await groqAsk(
+                    dynamicSystemPrompt,
+                    `Analyse these ${stocks.length} stocks:\n${stockData}`,
+                    { maxTokens: 1200, temperature: 0.2 }
+                );
+            }
         }
 
         // Strip any accidental markdown fences
@@ -143,11 +169,41 @@ Use this data to penalize failing setup types and prioritize working ones. If a 
         if (!jsonMatch) throw new Error('No JSON array found in response');
 
         const parsed: AIAssessment[] = JSON.parse(jsonMatch[0]);
+
+        // ── Phase 4: Devil's Advocate Check ──
         for (const item of parsed) {
-            if (item.ticker) results.set(item.ticker, item);
+            if (item.ticker) {
+                if (item.signal === 'BUY' || item.signal === 'LIGHT BUY') {
+                    const originalStock = stocks.find(s => (s.ticker ?? s.Ticker) === item.ticker);
+                    if (originalStock) {
+                        try {
+                            // Try Claude first for Bear Case, then Gemini
+                            let bearResponse = '';
+                            try {
+                                bearResponse = await claudeAsk(
+                                    DEVILS_ADVOCATE_PROMPT,
+                                    `Critique this ${item.signal} setup for ${item.ticker}:\n${JSON.stringify(item)}\nTechnical Data: ${JSON.stringify(originalStock)}`,
+                                    { maxTokens: 150, temperature: 0.7 }
+                                );
+                            } catch {
+                                bearResponse = await geminiAsk(
+                                    DEVILS_ADVOCATE_PROMPT,
+                                    `Critique this ${item.signal} setup for ${item.ticker}:\n${JSON.stringify(item)}\nTechnical Data: ${JSON.stringify(originalStock)}`,
+                                    { maxTokens: 150, temperature: 0.7 }
+                                );
+                            }
+                            const bearJson = JSON.parse(bearResponse.replace(/```json|```/g, '').trim());
+                            item.bear_case = bearJson.bear_case;
+                        } catch (e) {
+                            item.bear_case = "Contrarian analysis unavailable.";
+                        }
+                    }
+                }
+                results.set(item.ticker, item);
+            }
         }
 
-        console.log(`[AI Advisor] Claude analysed ${parsed.length}/${stocks.length} stocks ✓`);
+        console.log(`[AI Advisor] Claude analysed ${parsed.length}/${stocks.length} stocks (with Devil's Advocate for ${parsed.filter(p => p.bear_case).length} setups) ✓`);
     } catch (err: any) {
         console.error('[AI Advisor] Claude error:', err.message);
         const reason = err.message?.includes('ANTHROPIC_API_KEY')

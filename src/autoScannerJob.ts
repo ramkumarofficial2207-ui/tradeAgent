@@ -3,6 +3,8 @@ import axios from 'axios';
 import { pushEvent } from './agentEvents';
 import prisma from './prismaClient';
 import { fetchHistoricalData } from './dataService';
+import { runTriggerMonitoring } from './triggerMonitor';
+import { runActivePositionManagement } from './positionManager';
 
 /**
  * Initializes the fully autonomous scanning chron job.
@@ -83,6 +85,36 @@ export function initAutoScanner() {
             }
         } catch (e: any) {
             console.error('[Intraday Squawk] Error:', e.message);
+        }
+    });
+
+    // ── Phase 1: High-Frequency Trigger Monitoring (Every 1 min) ──
+    cron.schedule('* 9-15 * * 1-5', async () => {
+        const now = new Date();
+        const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        const h = istTime.getHours();
+        const m = istTime.getMinutes();
+        if ((h === 9 && m < 15) || (h === 15 && m > 30)) return;
+
+        try {
+            await runTriggerMonitoring();
+        } catch (e: any) {
+            console.error('[TriggerMonitor Job] Error:', e.message);
+        }
+    });
+
+    // ── Phase 2: Active Position Manager (Every 15 mins) ──
+    cron.schedule('*/15 9-15 * * 1-5', async () => {
+        const now = new Date();
+        const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        const h = istTime.getHours();
+        const m = istTime.getMinutes();
+        if ((h === 9 && m < 15) || (h === 15 && m > 30)) return;
+
+        try {
+            await runActivePositionManagement();
+        } catch (e: any) {
+            console.error('[PositionManager Job] Error:', e.message);
         }
     });
 
