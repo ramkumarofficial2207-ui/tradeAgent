@@ -966,7 +966,7 @@ function computeNextScan(): string {
 setNextScan(computeNextScan());
 
 // ——————————————————————————————————————————
-app.listen(PORT, () => {
+app.listen(Number(PORT), '0.0.0.0', () => {
     console.log('');
     console.log('╔══════════════════════════════════════════════════════╗');
     console.log('║   🧠  StockSage AI — Agentic Trading Assistant        ║');
