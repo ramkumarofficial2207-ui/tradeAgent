@@ -988,6 +988,3 @@ app.listen(Number(PORT), '0.0.0.0', () => {
 
     pushEvent('SYSTEM', 'success', 'Server Started', `StockSage AI agent running on port ${PORT}`);
 });
-app.listen(PORT, () => {
-    console.log(`[SERVER] Running on port ${PORT}`);
-})
