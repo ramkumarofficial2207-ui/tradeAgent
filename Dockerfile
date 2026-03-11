@@ -37,4 +37,4 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 # Expose port and start
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/index.js"]
+CMD ["node", "dist/index.js"]
