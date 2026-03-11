@@ -35,6 +35,31 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// In production, serve the built React frontend
+const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
+
+// ——————————————————————————————————————————
+// 🚀 EMERGENCY BOOT: BIND PORT IMMEDIATELY
+// ——————————————————————————————————————————
+app.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`\n[System] EMERGERNCY BOOT: StockSage AI Port ${PORT} Bound.`);
+    console.log(`[System] Mode: ${process.env.NODE_ENV}`);
+});
+
+// Root & Health for Railway
+app.get('/api/health', (req, res) => res.status(200).send('OK'));
+app.get('/', (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    } else {
+        res.status(200).send('StockSage AI Backend Operational');
+    }
+});
+
+if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(FRONTEND_DIST));
+}
+
 console.log('[System] Process starting...');
 process.on('uncaughtException', (err) => {
     console.error('[System] Uncaught Exception:', err);
@@ -42,15 +67,6 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[System] Unhandled Rejection at:', promise, 'reason:', reason);
 });
-
-// In production, serve the built React frontend from frontend/dist
-const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
-if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(FRONTEND_DIST));
-}
-
-// Health check for Railway
-app.get('/api/health', (req, res) => res.status(200).send('OK'));
 
 // Cache last scan result
 let lastScan: ScanResult | null = null;
