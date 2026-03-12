@@ -1,5 +1,5 @@
-// StockSage Pro — Prisma Schema (Phase 3 — Multi-User)
-// SQLite for local dev, PostgreSQL for production (set DATABASE_URL in .env)
+// StockSage Pro - Prisma Schema (Phase 3 - Multi-User)
+// PostgreSQL (set DATABASE_URL). For SQLite local dev, change provider to "sqlite".
 
 generator client {
   provider      = "prisma-client-js"

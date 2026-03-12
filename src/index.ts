@@ -1,8 +1,6 @@
 // =====================================================
 // index.ts — Express Server + Cron Scheduler
 // =====================================================
-console.log('[System] 🚀 Starting StockSage AI Engine...');
-
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -41,8 +39,8 @@ const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
 // ——————————————————————————————————————————
 // 🚀 EMERGENCY BOOT: BIND PORT IMMEDIATELY
 // ——————————————————————————————————————————
-app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`\n[System] EMERGERNCY BOOT: StockSage AI Port ${PORT} Bound.`);
+app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
+    console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
     console.log(`[System] Mode: ${process.env.NODE_ENV}`);
 });
 
@@ -50,7 +48,10 @@ app.listen(Number(PORT), '0.0.0.0', () => {
 app.get('/api/health', (req, res) => res.status(200).send('OK'));
 app.get('/', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
-        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+        const indexPath = path.join(FRONTEND_DIST, 'index.html');
+        res.sendFile(indexPath, (err) => {
+            if (err) res.status(200).send('StockSage AI Backend Operational (Frontend loading...)');
+        });
     } else {
         res.status(200).send('StockSage AI Backend Operational');
     }
@@ -60,7 +61,7 @@ if (process.env.NODE_ENV === 'production') {
     app.use(express.static(FRONTEND_DIST));
 }
 
-console.log('[System] Process starting...');
+// Global process handlers
 process.on('uncaughtException', (err) => {
     console.error('[System] Uncaught Exception:', err);
 });
@@ -70,12 +71,41 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Cache last scan result
 let lastScan: ScanResult | null = null;
-const broker = getTradingApiFromEnv();
-const tradingApi = broker.api;
+let broker: any = null;
+let tradingApi: any = null;
+
+// ——————————————————————————————————————————
+// ⚡ BACKGROUND INITIALIZATION (Non-blocking)
+// ——————————————————————————————————————————
+setTimeout(() => {
+    try {
+        const result = getTradingApiFromEnv();
+        broker = result;
+        tradingApi = result.api;
+        console.log('[System] Heavy modules & Broker API initialized.');
+    } catch (e: any) {
+        console.error('[System] Deferred initialization failed:', e.message);
+    }
+}, 1500);
 
 // ——————————————————————————————————————————
 // ROUTES
 // ——————————————————————————————————————————
+
+app.get('/api/broker/status', (_req: Request, res: Response) => {
+    if (!broker) {
+        res.json({ success: true, data: { provider: 'initializing', live: false, note: 'Broker system starting...' } });
+        return;
+    }
+    res.json({
+        success: true,
+        data: {
+            provider: broker.provider,
+            live: broker.live,
+            note: broker.live ? 'Live broker mode' : 'Paper mode fallback',
+        },
+    });
+});
 
 // ═══════════════════════════════════════════
 // AUTH — Register / Login / Me / Logout

@@ -1,3 +1,8 @@
+databases:
+  - name: swingedge-db
+    plan: free
+    region: singapore
+
 services:
   - type: web
     name: swingedge
@@ -8,7 +13,9 @@ services:
     startCommand: npm start
     envVars:
       - key: DATABASE_URL
-        value: file:./prod.db
+        fromDatabase:
+          name: swingedge-db
+          property: connectionString
       - key: GEMINI_API_KEY
         sync: false
       - key: SCREENER_SESSION
