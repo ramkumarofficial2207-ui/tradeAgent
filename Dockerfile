@@ -12,6 +12,9 @@ RUN apk add --no-cache openssl libc6-compat tzdata
 WORKDIR /app
 COPY package*.json ./
 COPY prisma/ ./prisma/
+WORKDIR /app
+COPY package*.json ./
+COPY prisma/ ./prisma/
 RUN npm ci
 COPY src/ ./src/
 COPY tsconfig.json ./
@@ -22,6 +25,7 @@ RUN npm run build
 FROM node:20-alpine
 RUN apk add --no-cache openssl libc6-compat tzdata
 ENV TZ=Asia/Kolkata
+ENV NODE_ENV=production
 WORKDIR /app
 
 # Install runtime dependencies only
@@ -39,4 +43,4 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 # Expose port and start
 EXPOSE 3000
-CMD ["node", "dist/index.js"]
+CMD ["npm", "start"]

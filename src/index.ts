@@ -15,6 +15,8 @@ import { sendPreMarketAlert } from './alerter';
 import { NSE_UNIVERSE } from './dataService';
 import axios from 'axios';
 import { claudeAsk } from './claudeClient';
+import { groqAsk } from './groqClient';
+import { geminiAsk } from './geminiClient';
 import {
     pushEvent, getEvents, getUnreadCount, markAllRead, markRead,
     setAgentState, getAgentStatus, incrementTasksCompleted,
@@ -29,6 +31,26 @@ import { requireAuth, generateToken, AuthRequest } from './authMiddleware';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Helper to sanitize database/system errors for the UI
+function sanitizeError(err: any): string {
+    const raw = (err && typeof err === 'object' && err.message) ? String(err.message) : String(err || '');
+    const msg = raw.toLowerCase();
+    
+    // Explicit Prisma/Database/Connection checks
+    if (msg.includes('prisma') || msg.includes('database') || msg.includes('connection') || 
+        msg.includes('postgresql') || msg.includes('psql') || msg.includes('sql') ||
+        msg.includes('invocation') || msg.includes('env(')) {
+        return 'Database is temporarily unavailable. Please try again later.';
+    }
+    
+    // AI Provider checks
+    if (msg.includes('anthropic') || msg.includes('gemini') || msg.includes('groq') || msg.includes('api_key')) {
+        return 'AI service configuration error. Please check server logs.';
+    }
+
+    return 'Something went wrong on our end. Please try again later.';
+}
 
 app.use(cors());
 app.use(express.json());
@@ -136,7 +158,8 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
         const token = generateToken(user.id, user.email);
         res.json({ success: true, token, user });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Register] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -162,7 +185,8 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
         const { password: _, ...safeUser } = user as any;
         res.json({ success: true, token, user: safeUser });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Login] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -176,7 +200,8 @@ app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res: Response) => 
         if (!user) { res.status(404).json({ success: false, message: 'User not found.' }); return; }
         res.json({ success: true, user });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Auth-Me] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -198,7 +223,8 @@ app.get('/api/watchlist', requireAuth, async (req: AuthRequest, res: Response) =
         });
         res.json({ success: true, data: items });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Watchlist-GET] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -214,7 +240,8 @@ app.post('/api/watchlist', requireAuth, async (req: AuthRequest, res: Response) 
         });
         res.json({ success: true, data: item });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Watchlist-POST] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -225,7 +252,8 @@ app.delete('/api/watchlist/:ticker', requireAuth, async (req: AuthRequest, res: 
         await prisma.watchlistItem.deleteMany({ where: { userId: req.userId, ticker } });
         res.json({ success: true });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Watchlist-DELETE] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -291,8 +319,14 @@ app.get('/api/scan', async (req: Request, res: Response) => {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
-            const aiBuys = setups.filter(s => s.aiSignal === 'BUY' && s.confidenceScore >= 7);
-            for (const s of aiBuys) {
+            // Log BUY, LIGHT BUY and interesting WATCH signals
+            const signalsToTrack = setups.filter(s => 
+                (s.aiSignal === 'BUY' && s.confidenceScore >= 7) || 
+                (s.aiSignal === 'LIGHT BUY' && s.confidenceScore >= 6) ||
+                (s.aiSignal === 'WATCH' && s.confidenceScore >= 8)
+            );
+
+            for (const s of signalsToTrack) {
                 const exists = await prisma.historicalSetup.findFirst({
                     where: { ticker: s.ticker, status: 'IN_PROGRESS', createdAt: { gte: today } }
                 });
@@ -303,11 +337,12 @@ app.get('/api/scan', async (req: Request, res: Response) => {
                             ticker: s.ticker,
                             setupType: s.setupType,
                             timeframe: s.timeframe,
-                            aiSignal: s.aiSignal || 'BUY',
+                            aiSignal: s.aiSignal || 'WATCH',
                             confidenceScore: s.confidenceScore,
                             entryPrice: s.buyZone,
                             targetPrice: s.target,
                             stopLoss: s.stopLoss,
+                            aiLogic: s.aiLogic, // Added aiLogic tracking
                             status: 'IN_PROGRESS'
                         }
                     });
@@ -333,8 +368,8 @@ app.get('/api/scan', async (req: Request, res: Response) => {
     } catch (error: any) {
         console.error('[API] Scan error:', error.message);
         setAgentState('IDLE');
-        pushEvent('SCAN_FAILED', 'critical', 'Scan Failed', error.message);
-        res.status(500).json({ success: false, message: error.message });
+        pushEvent('SCAN_FAILED', 'critical', 'Scan Failed', 'System error during market scan. Check logs.');
+        res.status(500).json({ success: false, message: sanitizeError(error) });
     }
 });
 
@@ -373,7 +408,8 @@ app.get('/api/performance', async (req: Request, res: Response) => {
 
         res.json({ success: true, data: { stats, history } });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Performance] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -484,7 +520,7 @@ app.get('/api/chart/:ticker', async (req: Request, res: Response) => {
         res.json({ success: true, data: chartData });
     } catch (error: any) {
         console.error('[API] Chart error:', error.message);
-        res.status(500).json({ success: false, message: error.message });
+        res.status(500).json({ success: false, message: sanitizeError(error) });
     }
 });
 
@@ -575,7 +611,8 @@ app.get('/api/market-pulse', async (_req: Request, res: Response) => {
         pulseCache = { data, ts: Date.now() };
         res.json({ success: true, data });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Pulse] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 
@@ -650,11 +687,12 @@ app.get('/api/market-outlook', async (req: Request, res: Response) => {
         outlookTime = Date.now();
         res.json({ success: true, summary: cachedOutlook, news: cachedNews });
     } catch (e: any) {
-        res.status(500).json({ success: false, message: e.message });
+        console.error('[Outlook] Error:', e);
+        res.status(500).json({ success: false, message: sanitizeError(e) });
     }
 });
 
-// POST /api/chat — AI Stock Research Chatbot powered by Anthropic Claude AI
+// POST /api/chat — AI Stock Research Chatbot powered by Gemini AI
 app.post('/api/chat', async (req: Request, res: Response) => {
     const { message } = req.body || {};
     if (!message || typeof message !== 'string') {
@@ -781,7 +819,7 @@ ${headlines.join('\n')}
         } catch { /* proceed without news */ }
     }
 
-    // Always inject current date/time so Claude knows it's not 2024
+    // Always inject current date/time so the AI knows it's not 2024
     const nowIST = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
 
     const topSetups = lastScan?.setups?.slice(0, 5).map(s =>
@@ -807,7 +845,21 @@ Rules:
 - If asked what's in the news today: summarize the live headlines provided, don't say you can't access the internet`;
 
     try {
-        const reply = await claudeAsk(systemPrompt, message, { maxTokens: 350, temperature: 0.5 });
+        let reply = '';
+        try {
+            // Try Gemini primary (User preference for live context)
+            reply = await geminiAsk(systemPrompt, message, { maxTokens: 450, temperature: 0.4 });
+        } catch (GeminiErr: any) {
+            console.warn('[Chat] Gemini failed, falling back to Claude...', GeminiErr.message);
+            try {
+                // Fallback to Claude
+                reply = await claudeAsk(systemPrompt, message, { maxTokens: 450, temperature: 0.4 });
+            } catch (ClaudeErr: any) {
+                console.warn('[Chat] Claude failed, falling back to Groq...', ClaudeErr.message);
+                // Last resort: Groq (Llama 3.3 70B)
+                reply = await groqAsk(systemPrompt, message, { maxTokens: 450, temperature: 0.5 });
+            }
+        }
         res.json({ success: true, reply, stockCard: stockCardData });
     } catch (error: any) {
         const errMsg = error?.message ?? 'Unknown error';
@@ -822,7 +874,7 @@ Rules:
         } else {
             res.status(500).json({
                 success: false,
-                reply: `⚠️ AI error: ${errMsg}. Please try again.`,
+                reply: `⚠️ AI agent is temporarily unavailable. Please try again in few moments.`,
                 stockCard: null,
             });
         }
@@ -985,7 +1037,8 @@ app.get('/api/sectors', async (_req: Request, res: Response) => {
         sectorCache = { data: { sectors, fetchedAt: new Date().toISOString() }, ts: Date.now() };
         res.json({ success: true, data: sectorCache.data });
     } catch (err: any) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Sectors] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 

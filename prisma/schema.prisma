@@ -141,6 +141,7 @@ model HistoricalSetup {
   entryPrice      Float
   targetPrice     Float
   stopLoss        Float
+  aiLogic         String?   
 
   status          String    @default("IN_PROGRESS") // IN_PROGRESS, WON, LOST
   resultPct       Float?    

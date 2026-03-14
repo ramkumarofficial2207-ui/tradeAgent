@@ -73,13 +73,13 @@ export async function analyzeStocksWithAI(stocks: any[]): Promise<Map<string, AI
         stop_loss: 'N/A',
     });
 
-    // Check if Anthropic key is available
-    const claudeKey = process.env.ANTHROPIC_API_KEY;
-    if (!claudeKey || claudeKey === 'paste_your_anthropic_key_here') {
-        console.warn('[AI Advisor] ANTHROPIC_API_KEY not set — using WATCH fallback for all stocks.');
+    // Check if Gemini key is available
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+        console.warn('[AI Advisor] GEMINI_API_KEY not set — using WATCH fallback for all stocks.');
         for (const s of stocks) {
             const t = s.ticker ?? s.Ticker;
-            results.set(t, fallback(t, 'AI Advisor requires ANTHROPIC_API_KEY for Claude integration.'));
+            results.set(t, fallback(t, 'AI Advisor requires GEMINI_API_KEY for StockSage AI integration.'));
         }
         return results;
     }
@@ -140,21 +140,22 @@ Use this data to penalize failing setup types and prioritize working ones. If a 
     try {
         let raw = '';
         try {
-            raw = await claudeAsk(
+            // Try Gemini primary (User request)
+            raw = await geminiAsk(
                 dynamicSystemPrompt,
                 `Analyse these ${stocks.length} stocks:\n${stockData}`,
                 { maxTokens: 1200, temperature: 0.2 }
             );
-        } catch (claudeErr: any) {
-            console.warn('[AI Advisor] Claude failed. Falling back to Gemini...');
+        } catch (geminiErr: any) {
+            console.warn('[AI Advisor] Gemini failed. Falling back to Claude...');
             try {
-                raw = await geminiAsk(
+                raw = await claudeAsk(
                     dynamicSystemPrompt,
                     `Analyse these ${stocks.length} stocks:\n${stockData}`,
                     { maxTokens: 1200, temperature: 0.2 }
                 );
-            } catch (geminiErr: any) {
-                console.warn('[AI Advisor] Gemini failed. Falling back to Groq...');
+            } catch (claudeErr: any) {
+                console.warn('[AI Advisor] Claude failed. Falling back to Groq...');
                 raw = await groqAsk(
                     dynamicSystemPrompt,
                     `Analyse these ${stocks.length} stocks:\n${stockData}`,
@@ -177,16 +178,17 @@ Use this data to penalize failing setup types and prioritize working ones. If a 
                     const originalStock = stocks.find(s => (s.ticker ?? s.Ticker) === item.ticker);
                     if (originalStock) {
                         try {
-                            // Try Claude first for Bear Case, then Gemini
+                            // Try Gemini first for Bear Case (User preference)
                             let bearResponse = '';
                             try {
-                                bearResponse = await claudeAsk(
+                                bearResponse = await geminiAsk(
                                     DEVILS_ADVOCATE_PROMPT,
                                     `Critique this ${item.signal} setup for ${item.ticker}:\n${JSON.stringify(item)}\nTechnical Data: ${JSON.stringify(originalStock)}`,
                                     { maxTokens: 150, temperature: 0.7 }
                                 );
                             } catch {
-                                bearResponse = await geminiAsk(
+                                // Fallback to Claude
+                                bearResponse = await claudeAsk(
                                     DEVILS_ADVOCATE_PROMPT,
                                     `Critique this ${item.signal} setup for ${item.ticker}:\n${JSON.stringify(item)}\nTechnical Data: ${JSON.stringify(originalStock)}`,
                                     { maxTokens: 150, temperature: 0.7 }
@@ -203,12 +205,12 @@ Use this data to penalize failing setup types and prioritize working ones. If a 
             }
         }
 
-        console.log(`[AI Advisor] Claude analysed ${parsed.length}/${stocks.length} stocks (with Devil's Advocate for ${parsed.filter(p => p.bear_case).length} setups) ✓`);
+        console.log(`[AI Advisor] Gemini analysed ${parsed.length}/${stocks.length} stocks (with Devil's Advocate for ${parsed.filter(p => p.bear_case).length} setups) ✓`);
     } catch (err: any) {
-        console.error('[AI Advisor] Claude error:', err.message);
-        const reason = err.message?.includes('ANTHROPIC_API_KEY')
-            ? err.message
-            : `AI unavailable (${err.message?.slice(0, 80)}). Review manually.`;
+        console.error('[AI Advisor] Gemini error:', err.message);
+        const reason = err.message?.includes('GEMINI_API_KEY')
+            ? 'AI service configuration error. Please check server logs.'
+            : `AI analysis is temporarily unavailable. Review technicals manually.`;
         for (const s of stocks) {
             const t = s.ticker ?? s.Ticker;
             if (!results.has(t)) results.set(t, fallback(t, reason));
