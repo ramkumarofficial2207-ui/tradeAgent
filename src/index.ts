@@ -72,7 +72,7 @@ app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
 });
 
 // Root & Health for Railway
-app.get('/api/health', (req, res) => res.status(200).send('OK'));
+app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-1' }));
 app.get('/', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
