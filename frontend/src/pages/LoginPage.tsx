@@ -19,7 +19,7 @@ export default function LoginPage() {
         setError('')
         setLoading(true)
         try {
-            const { data } = await axios.post('/api/auth/login', { email, passwd: password })
+            const { data } = await axios.post('/api/auth/login', { email, secret: password })
             if (data.success) {
                 login(data.token, data.user)
                 navigate('/', { replace: true })
