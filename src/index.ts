@@ -72,7 +72,7 @@ app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
 });
 
 // Root & Health for Railway
-app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-4' }));
+app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-5' }));
 app.get('/', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
@@ -150,6 +150,7 @@ app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) 
         return;
     }
     try {
+        return res.json({ success: true, debug: 'Reached internal handler', body: req.body });
         const existing = await prisma.user.findUnique({ where: { email } });
         if (existing) {
             res.status(409).json({ success: false, message: 'An account with this email already exists.' });
