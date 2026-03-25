@@ -34,6 +34,7 @@ import { createTrade, closeTrade, getPortfolioSummary, updateTradeCurrentPrice }
 import { sendBuyAlert, sendPreMarketDigest } from './whatsappAlert';
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // Helper to sanitize database/system errors for the UI

@@ -25,6 +25,9 @@ const prismaClient_1 = __importDefault(require("./prismaClient"));
 const performanceJob_1 = require("./performanceJob");
 const autoScannerJob_1 = require("./autoScannerJob");
 const authMiddleware_1 = require("./authMiddleware");
+const rateLimiter_1 = require("./rateLimiter");
+const subscriptionMiddleware_1 = require("./subscriptionMiddleware");
+const portfolioService_1 = require("./portfolioService");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3000;
 // Helper to sanitize database/system errors for the UI
@@ -117,7 +120,7 @@ app.get('/api/broker/status', (_req, res) => {
 // AUTH — Register / Login / Me / Logout
 // ═══════════════════════════════════════════
 // POST /api/auth/register
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', rateLimiter_1.authLimiter, async (req, res) => {
     const { name, email, password } = req.body || {};
     if (!name || !email || !password) {
         res.status(400).json({ success: false, message: 'Name, email and password are required.' });
@@ -134,12 +137,19 @@ app.post('/api/auth/register', async (req, res) => {
             return;
         }
         const hashed = await bcryptjs_1.default.hash(password, 12);
+        // Grant a 7-day trial for all new registrations
+        const trialExpiry = new Date();
+        trialExpiry.setDate(trialExpiry.getDate() + 7);
         const user = await prismaClient_1.default.user.create({
-            data: { name, email, password: hashed },
+            data: {
+                name, email, password: hashed,
+                subscriptionStatus: 'TRIAL',
+                subscriptionExpiry: trialExpiry,
+            },
             select: { id: true, name: true, email: true, createdAt: true },
         });
         const token = (0, authMiddleware_1.generateToken)(user.id, user.email);
-        res.json({ success: true, token, user });
+        res.json({ success: true, token, user, trialDaysLeft: 7 });
     }
     catch (err) {
         console.error('[Register] Error:', err);
@@ -147,7 +157,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 // POST /api/auth/login
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', rateLimiter_1.authLimiter, async (req, res) => {
     const { email, password } = req.body || {};
     if (!email || !password) {
         res.status(400).json({ success: false, message: 'Email and password are required.' });
@@ -244,8 +254,8 @@ app.delete('/api/watchlist/:ticker', authMiddleware_1.requireAuth, async (req, r
         res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
-// GET /api/scan — Run the full Phase 1+2 scanner
-app.get('/api/scan', async (req, res) => {
+// GET /api/scan — Run the full Phase 1+2 scanner (rate limited + subscription gated)
+app.get('/api/scan', rateLimiter_1.scanLimiter, authMiddleware_1.requireAuth, subscriptionMiddleware_1.requireSubscription, async (req, res) => {
     try {
         console.log('\n[API] /api/scan called');
         const force = req.query.force === 'true';
@@ -631,8 +641,8 @@ app.get('/api/market-outlook', async (req, res) => {
         res.status(500).json({ success: false, message: sanitizeError(e) });
     }
 });
-// POST /api/chat — AI Stock Research Chatbot powered by Gemini AI
-app.post('/api/chat', async (req, res) => {
+// POST /api/chat — AI Stock Research Chatbot powered by Gemini AI (rate limited + subscription gated)
+app.post('/api/chat', rateLimiter_1.chatLimiter, authMiddleware_1.requireAuth, subscriptionMiddleware_1.requireSubscription, async (req, res) => {
     const { message } = req.body || {};
     if (!message || typeof message !== 'string') {
         res.status(400).json({ success: false, message: 'Missing message' });
@@ -983,6 +993,219 @@ setTimeout(() => {
         console.error('[System] Background Init Failed:', e.message);
     }
 }, 3000);
+// ══════════════════════════════════════════════
+// PORTFOLIO ROUTES
+// ══════════════════════════════════════════════
+// GET /api/portfolio — list all user trades
+app.get('/api/portfolio', authMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const trades = await prismaClient_1.default.trade.findMany({
+            where: { userId: req.userId },
+            orderBy: { entryDate: 'desc' },
+        });
+        res.json({ success: true, data: trades });
+    }
+    catch (err) {
+        console.error('[Portfolio-GET] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// GET /api/portfolio/summary — aggregated P&L stats
+app.get('/api/portfolio/summary', authMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const summary = await (0, portfolioService_1.getPortfolioSummary)(req.userId);
+        res.json({ success: true, data: summary });
+    }
+    catch (err) {
+        console.error('[Portfolio-Summary] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// POST /api/portfolio/trade — log a new trade entry
+app.post('/api/portfolio/trade', authMiddleware_1.requireAuth, async (req, res) => {
+    const { ticker, entryPrice, quantity, stopLossInit, target1, target2, companyName, sector, capCategory, setupType, regimeAtEntry, confidenceScore, notes } = req.body || {};
+    if (!ticker || !entryPrice || !quantity || !stopLossInit || !target1) {
+        res.status(400).json({ success: false, message: 'ticker, entryPrice, quantity, stopLossInit, target1 are required.' });
+        return;
+    }
+    try {
+        const trade = await (0, portfolioService_1.createTrade)(req.userId, {
+            ticker, entryPrice: +entryPrice, quantity: +quantity,
+            stopLossInit: +stopLossInit, target1: +target1, target2: target2 ? +target2 : undefined,
+            companyName, sector, capCategory, setupType, regimeAtEntry,
+            confidenceScore: confidenceScore ? +confidenceScore : undefined, notes,
+        });
+        res.json({ success: true, data: trade });
+    }
+    catch (err) {
+        console.error('[Portfolio-POST] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// PUT /api/portfolio/trade/:id — close a trade or update
+app.put('/api/portfolio/trade/:id', authMiddleware_1.requireAuth, async (req, res) => {
+    const { exitPrice, exitReason, currentPrice, notes } = req.body || {};
+    try {
+        if (exitPrice && exitReason) {
+            const trade = await (0, portfolioService_1.closeTrade)(req.userId, req.params.id, { exitPrice: +exitPrice, exitReason });
+            res.json({ success: true, data: trade });
+        }
+        else if (currentPrice) {
+            const trade = await (0, portfolioService_1.updateTradeCurrentPrice)(req.params.id, +currentPrice);
+            res.json({ success: true, data: trade });
+        }
+        else {
+            const trade = await prismaClient_1.default.trade.update({
+                where: { id: req.params.id },
+                data: { notes },
+            });
+            res.json({ success: true, data: trade });
+        }
+    }
+    catch (err) {
+        console.error('[Portfolio-PUT] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// DELETE /api/portfolio/trade/:id
+app.delete('/api/portfolio/trade/:id', authMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        await prismaClient_1.default.trade.deleteMany({ where: { id: req.params.id, userId: req.userId } });
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error('[Portfolio-DELETE] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// ══════════════════════════════════════════════
+// USER PREFERENCES (WhatsApp + Notifications)
+// ══════════════════════════════════════════════
+// GET /api/user/preferences
+app.get('/api/user/preferences', authMiddleware_1.requireAuth, async (req, res) => {
+    try {
+        const user = await prismaClient_1.default.user.findUnique({
+            where: { id: req.userId },
+            select: {
+                id: true, name: true, email: true,
+                subscriptionStatus: true, subscriptionExpiry: true,
+                telegramChatId: true, notifyBuySignals: true, notifyEmail: true,
+            },
+        });
+        res.json({ success: true, data: user });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// POST /api/user/preferences — update notification settings
+app.post('/api/user/preferences', authMiddleware_1.requireAuth, async (req, res) => {
+    const { whatsappNumber, notifyBuySignals, notifyEmail, name } = req.body || {};
+    try {
+        const update = {};
+        if (whatsappNumber !== undefined)
+            update.telegramChatId = whatsappNumber; // stored in telegramChatId field
+        if (notifyBuySignals !== undefined)
+            update.notifyBuySignals = !!notifyBuySignals;
+        if (notifyEmail !== undefined)
+            update.notifyEmail = !!notifyEmail;
+        if (name)
+            update.name = name;
+        const user = await prismaClient_1.default.user.update({ where: { id: req.userId }, data: update });
+        res.json({ success: true, data: { id: user.id, name: user.name, email: user.email } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// ══════════════════════════════════════════════
+// ADMIN — Activate Subscription
+// ══════════════════════════════════════════════
+app.post('/api/admin/activate', async (req, res) => {
+    const adminSecret = req.headers['x-admin-secret'];
+    if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+        res.status(403).json({ success: false, message: 'Forbidden.' });
+        return;
+    }
+    const { email, planDays = 30 } = req.body || {};
+    if (!email) {
+        res.status(400).json({ success: false, message: 'email required.' });
+        return;
+    }
+    try {
+        const expiry = new Date();
+        expiry.setDate(expiry.getDate() + (+planDays));
+        const user = await prismaClient_1.default.user.update({
+            where: { email },
+            data: { subscriptionStatus: 'ACTIVE', subscriptionExpiry: expiry },
+        });
+        res.json({ success: true, message: `Activated ${planDays}-day plan for ${user.email}. Expires: ${expiry.toDateString()}` });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+// ══════════════════════════════════════════════
+// ECONOMIC CALENDAR
+// ══════════════════════════════════════════════
+app.get('/api/economic-calendar', (_req, res) => {
+    const now = new Date();
+    const year = now.getFullYear();
+    // Key recurring NSE/RBI events (static + computed)
+    const events = [
+        // F&O expiry — last Thursday of each month
+        ...Array.from({ length: 12 }, (_, m) => {
+            const last = new Date(year, m + 1, 0);
+            const day = last.getDay();
+            const daysBack = (day - 4 + 7) % 7;
+            const expiry = new Date(year, m, last.getDate() - daysBack);
+            return { date: expiry.toISOString().split('T')[0], label: 'Monthly F&O Expiry', type: 'FNO', importance: 'HIGH' };
+        }),
+        // RBI policy meetings 2026 (approximate — 6 per year)
+        { date: `${year}-04-09`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-06-04`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-08-06`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-10-08`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-12-03`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        // Q4 Results season
+        { date: `${year}-04-15`, label: 'Q4 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        { date: `${year}-07-15`, label: 'Q1 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        { date: `${year}-10-15`, label: 'Q2 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        { date: `${year + 1}-01-15`, label: 'Q3 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        // Budget
+        { date: `${year + 1}-02-01`, label: 'Union Budget', type: 'BUDGET', importance: 'CRITICAL' },
+    ]
+        .filter(e => new Date(e.date) >= now)
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        .slice(0, 8);
+    res.json({ success: true, data: events });
+});
+// ══════════════════════════════════════════════
+// FII/DII DATA
+// ══════════════════════════════════════════════
+let fiiDiiCache = null;
+app.get('/api/fii-dii', async (_req, res) => {
+    if (fiiDiiCache && Date.now() - fiiDiiCache.ts < 60 * 60 * 1000) {
+        return res.json({ success: true, data: fiiDiiCache.data });
+    }
+    try {
+        const response = await axios_1.default.get('https://www.nseindia.com/api/fiidiiTradeReact', { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Referer': 'https://www.nseindia.com' }, timeout: 8000 });
+        const data = response.data?.data || [];
+        // Get last 5 trading days
+        const recent = data.slice(0, 5).map((d) => ({
+            date: d.date,
+            fiiBuy: d.fiiBuy, fiiSell: d.fiiSell, fiiNet: d.fiiNet,
+            diiBuy: d.diiBuy, diiSell: d.diiSell, diiNet: d.diiNet,
+        }));
+        fiiDiiCache = { data: recent, ts: Date.now() };
+        res.json({ success: true, data: recent });
+    }
+    catch (err) {
+        console.error('[FII-DII] NSE fetch failed:', err.message);
+        // Return fallback zeros to avoid frontend crash
+        res.json({ success: true, data: [], note: 'NSE data temporarily unavailable.' });
+    }
+});
 // SPA fallback — must be after all API routes so React Router handles all non-API paths
 if (process.env.NODE_ENV === 'production') {
     app.get('*', (_req, res) => {

@@ -25,8 +25,6 @@ export const chatLimiter = rateLimit({
     }
 });
 
-// ── Auth: 10 requests / 15 min per IP ────────────────────────────
-// Prevents brute-force login attacks
 export const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10,
