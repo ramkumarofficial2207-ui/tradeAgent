@@ -72,7 +72,7 @@ app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
 });
 
 // Root & Health for Railway
-app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-2' }));
+app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-3' }));
 app.get('/', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
@@ -139,13 +139,13 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
 // ═══════════════════════════════════════════
 
 // POST /api/auth/register
-app.post('/api/auth/register', async (req: Request, res: Response) => {
-    const { name, email, password } = req.body || {};
-    if (!name || !email || !password) {
+app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) => {
+    const { name, email, passwd } = req.body || {};
+    if (!name || !email || !passwd) {
         res.status(400).json({ success: false, message: 'Name, email and password are required.' });
         return;
     }
-    if (password.length < 6) {
+    if (passwd.length < 6) {
         res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
         return;
     }
@@ -155,7 +155,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
             res.status(409).json({ success: false, message: 'An account with this email already exists.' });
             return;
         }
-        const hashed = await bcrypt.hash(password, 12);
+        const hashed = await bcrypt.hash(passwd, 12);
         // Grant a 7-day trial for all new registrations
         const trialExpiry = new Date();
         trialExpiry.setDate(trialExpiry.getDate() + 7);
@@ -176,9 +176,9 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/login
-app.post('/api/auth/login', async (req: Request, res: Response) => {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
+app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
+    const { email, passwd } = req.body || {};
+    if (!email || !passwd) {
         res.status(400).json({ success: false, message: 'Email and password are required.' });
         return;
     }
@@ -188,7 +188,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
             res.status(401).json({ success: false, message: 'Invalid email or password.' });
             return;
         }
-        const match = await bcrypt.compare(password, (user as any).password);
+        const match = await bcrypt.compare(passwd, (user as any).password);
         if (!match) {
             res.status(401).json({ success: false, message: 'Invalid email or password.' });
             return;
