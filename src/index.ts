@@ -72,7 +72,7 @@ app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
 });
 
 // Root & Health for Railway
-app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-1' }));
+app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-2' }));
 app.get('/', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
@@ -139,7 +139,7 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
 // ═══════════════════════════════════════════
 
 // POST /api/auth/register
-app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) => {
+app.post('/api/auth/register', async (req: Request, res: Response) => {
     const { name, email, password } = req.body || {};
     if (!name || !email || !password) {
         res.status(400).json({ success: false, message: 'Name, email and password are required.' });
@@ -176,7 +176,7 @@ app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) 
 });
 
 // POST /api/auth/login
-app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
+app.post('/api/auth/login', async (req: Request, res: Response) => {
     const { email, password } = req.body || {};
     if (!email || !password) {
         res.status(400).json({ success: false, message: 'Email and password are required.' });
