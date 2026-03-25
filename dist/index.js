@@ -1,11 +1,11 @@
 "use strict";
-// =====================================================
-// index.ts — Express Server + Cron Scheduler
-// =====================================================
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+// =====================================================
+// index.ts — Express Server + Cron Scheduler
+// =====================================================
 require("dotenv/config");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
@@ -18,6 +18,8 @@ const fundamentalService_1 = require("./fundamentalService");
 const alerter_1 = require("./alerter");
 const axios_1 = __importDefault(require("axios"));
 const claudeClient_1 = require("./claudeClient");
+const groqClient_1 = require("./groqClient");
+const geminiClient_1 = require("./geminiClient");
 const agentEvents_1 = require("./agentEvents");
 const prismaClient_1 = __importDefault(require("./prismaClient"));
 const performanceJob_1 = require("./performanceJob");
@@ -25,20 +27,92 @@ const autoScannerJob_1 = require("./autoScannerJob");
 const authMiddleware_1 = require("./authMiddleware");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3000;
+// Helper to sanitize database/system errors for the UI
+function sanitizeError(err) {
+    const raw = (err && typeof err === 'object' && err.message) ? String(err.message) : String(err || '');
+    const msg = raw.toLowerCase();
+    // Explicit Prisma/Database/Connection checks
+    if (msg.includes('prisma') || msg.includes('database') || msg.includes('connection') ||
+        msg.includes('postgresql') || msg.includes('psql') || msg.includes('sql') ||
+        msg.includes('invocation') || msg.includes('env(')) {
+        return 'Database is temporarily unavailable. Please try again later.';
+    }
+    // AI Provider checks
+    if (msg.includes('anthropic') || msg.includes('gemini') || msg.includes('groq') || msg.includes('api_key')) {
+        return 'AI service configuration error. Please check server logs.';
+    }
+    return 'Something went wrong on our end. Please try again later.';
+}
 app.use((0, cors_1.default)());
 app.use(express_1.default.json());
-// In production, serve the built React frontend from frontend/dist
+// In production, serve the built React frontend
 const FRONTEND_DIST = path_1.default.join(__dirname, '..', 'frontend', 'dist');
+// ——————————————————————————————————————————
+// 🚀 EMERGENCY BOOT: BIND PORT IMMEDIATELY
+// ——————————————————————————————————————————
+app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
+    console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
+    console.log(`[System] Mode: ${process.env.NODE_ENV}`);
+});
+// Root & Health for Railway
+app.get('/api/health', (req, res) => res.status(200).send('OK'));
+app.get('/', (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+        const indexPath = path_1.default.join(FRONTEND_DIST, 'index.html');
+        res.sendFile(indexPath, (err) => {
+            if (err)
+                res.status(200).send('StockSage AI Backend Operational (Frontend loading...)');
+        });
+    }
+    else {
+        res.status(200).send('StockSage AI Backend Operational');
+    }
+});
 if (process.env.NODE_ENV === 'production') {
     app.use(express_1.default.static(FRONTEND_DIST));
 }
+// Global process handlers
+process.on('uncaughtException', (err) => {
+    console.error('[System] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[System] Unhandled Rejection at:', promise, 'reason:', reason);
+});
 // Cache last scan result
 let lastScan = null;
-const broker = (0, dataService_1.getTradingApiFromEnv)();
-const tradingApi = broker.api;
+let broker = null;
+let tradingApi = null;
+// ——————————————————————————————————————————
+// ⚡ BACKGROUND INITIALIZATION (Non-blocking)
+// ——————————————————————————————————————————
+setTimeout(() => {
+    try {
+        const result = (0, dataService_1.getTradingApiFromEnv)();
+        broker = result;
+        tradingApi = result.api;
+        console.log('[System] Heavy modules & Broker API initialized.');
+    }
+    catch (e) {
+        console.error('[System] Deferred initialization failed:', e.message);
+    }
+}, 1500);
 // ——————————————————————————————————————————
 // ROUTES
 // ——————————————————————————————————————————
+app.get('/api/broker/status', (_req, res) => {
+    if (!broker) {
+        res.json({ success: true, data: { provider: 'initializing', live: false, note: 'Broker system starting...' } });
+        return;
+    }
+    res.json({
+        success: true,
+        data: {
+            provider: broker.provider,
+            live: broker.live,
+            note: broker.live ? 'Live broker mode' : 'Paper mode fallback',
+        },
+    });
+});
 // ═══════════════════════════════════════════
 // AUTH — Register / Login / Me / Logout
 // ═══════════════════════════════════════════
@@ -68,7 +142,8 @@ app.post('/api/auth/register', async (req, res) => {
         res.json({ success: true, token, user });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Register] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // POST /api/auth/login
@@ -94,7 +169,8 @@ app.post('/api/auth/login', async (req, res) => {
         res.json({ success: true, token, user: safeUser });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Login] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // GET /api/auth/me
@@ -111,7 +187,8 @@ app.get('/api/auth/me', authMiddleware_1.requireAuth, async (req, res) => {
         res.json({ success: true, user });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Auth-Me] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // POST /api/auth/logout — Stateless JWT: just acknowledge (client deletes token)
@@ -131,7 +208,8 @@ app.get('/api/watchlist', authMiddleware_1.requireAuth, async (req, res) => {
         res.json({ success: true, data: items });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Watchlist-GET] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // POST /api/watchlist
@@ -150,7 +228,8 @@ app.post('/api/watchlist', authMiddleware_1.requireAuth, async (req, res) => {
         res.json({ success: true, data: item });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Watchlist-POST] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // DELETE /api/watchlist/:ticker
@@ -161,7 +240,8 @@ app.delete('/api/watchlist/:ticker', authMiddleware_1.requireAuth, async (req, r
         res.json({ success: true });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Watchlist-DELETE] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // GET /api/scan — Run the full Phase 1+2 scanner
@@ -207,8 +287,11 @@ app.get('/api/scan', async (req, res) => {
         try {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
-            const aiBuys = setups.filter(s => s.aiSignal === 'BUY' && s.confidenceScore >= 7);
-            for (const s of aiBuys) {
+            // Log BUY, LIGHT BUY and interesting WATCH signals
+            const signalsToTrack = setups.filter(s => (s.aiSignal === 'BUY' && s.confidenceScore >= 7) ||
+                (s.aiSignal === 'LIGHT BUY' && s.confidenceScore >= 6) ||
+                (s.aiSignal === 'WATCH' && s.confidenceScore >= 8));
+            for (const s of signalsToTrack) {
                 const exists = await prismaClient_1.default.historicalSetup.findFirst({
                     where: { ticker: s.ticker, status: 'IN_PROGRESS', createdAt: { gte: today } }
                 });
@@ -218,11 +301,12 @@ app.get('/api/scan', async (req, res) => {
                             ticker: s.ticker,
                             setupType: s.setupType,
                             timeframe: s.timeframe,
-                            aiSignal: s.aiSignal || 'BUY',
+                            aiSignal: s.aiSignal || 'WATCH',
                             confidenceScore: s.confidenceScore,
                             entryPrice: s.buyZone,
                             targetPrice: s.target,
                             stopLoss: s.stopLoss,
+                            aiLogic: s.aiLogic, // Added aiLogic tracking
                             status: 'IN_PROGRESS'
                         }
                     });
@@ -248,8 +332,8 @@ app.get('/api/scan', async (req, res) => {
     catch (error) {
         console.error('[API] Scan error:', error.message);
         (0, agentEvents_1.setAgentState)('IDLE');
-        (0, agentEvents_1.pushEvent)('SCAN_FAILED', 'critical', 'Scan Failed', error.message);
-        res.status(500).json({ success: false, message: error.message });
+        (0, agentEvents_1.pushEvent)('SCAN_FAILED', 'critical', 'Scan Failed', 'System error during market scan. Check logs.');
+        res.status(500).json({ success: false, message: sanitizeError(error) });
     }
 });
 // GET /api/performance — Fetch AI Track Record
@@ -283,7 +367,8 @@ app.get('/api/performance', async (req, res) => {
         res.json({ success: true, data: { stats, history } });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Performance] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // GET /api/chart/:ticker — Historical OHLCV + indicators for frontend chart
@@ -402,7 +487,7 @@ app.get('/api/chart/:ticker', async (req, res) => {
     }
     catch (error) {
         console.error('[API] Chart error:', error.message);
-        res.status(500).json({ success: false, message: error.message });
+        res.status(500).json({ success: false, message: sanitizeError(error) });
     }
 });
 // ── MARKET PULSE ───────────────────────────────────
@@ -479,7 +564,8 @@ app.get('/api/market-pulse', async (_req, res) => {
         res.json({ success: true, data });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Pulse] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 let cachedOutlook = '';
@@ -541,10 +627,11 @@ app.get('/api/market-outlook', async (req, res) => {
         res.json({ success: true, summary: cachedOutlook, news: cachedNews });
     }
     catch (e) {
-        res.status(500).json({ success: false, message: e.message });
+        console.error('[Outlook] Error:', e);
+        res.status(500).json({ success: false, message: sanitizeError(e) });
     }
 });
-// POST /api/chat — AI Stock Research Chatbot powered by Anthropic Claude AI
+// POST /api/chat — AI Stock Research Chatbot powered by Gemini AI
 app.post('/api/chat', async (req, res) => {
     const { message } = req.body || {};
     if (!message || typeof message !== 'string') {
@@ -670,7 +757,7 @@ ${headlines.join('\n')}
         }
         catch { /* proceed without news */ }
     }
-    // Always inject current date/time so Claude knows it's not 2024
+    // Always inject current date/time so the AI knows it's not 2024
     const nowIST = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
     const topSetups = lastScan?.setups?.slice(0, 5).map(s => `${s.ticker} (${s.setupType}, Conf:${s.confidenceScore}/10, Signal:${s.aiSignal})`).join(', ') || 'No recent scan on record.';
     const systemPrompt = `You are StockSage AI — India's most helpful stock market research companion.
@@ -691,7 +778,23 @@ Rules:
 - Never promise returns or recommend position sizes
 - If asked what's in the news today: summarize the live headlines provided, don't say you can't access the internet`;
     try {
-        const reply = await (0, claudeClient_1.claudeAsk)(systemPrompt, message, { maxTokens: 350, temperature: 0.5 });
+        let reply = '';
+        try {
+            // Try Gemini primary (User preference for live context)
+            reply = await (0, geminiClient_1.geminiAsk)(systemPrompt, message, { maxTokens: 450, temperature: 0.4 });
+        }
+        catch (GeminiErr) {
+            console.warn('[Chat] Gemini failed, falling back to Claude...', GeminiErr.message);
+            try {
+                // Fallback to Claude
+                reply = await (0, claudeClient_1.claudeAsk)(systemPrompt, message, { maxTokens: 450, temperature: 0.4 });
+            }
+            catch (ClaudeErr) {
+                console.warn('[Chat] Claude failed, falling back to Groq...', ClaudeErr.message);
+                // Last resort: Groq (Llama 3.3 70B)
+                reply = await (0, groqClient_1.groqAsk)(systemPrompt, message, { maxTokens: 450, temperature: 0.5 });
+            }
+        }
         res.json({ success: true, reply, stockCard: stockCardData });
     }
     catch (error) {
@@ -708,7 +811,7 @@ Rules:
         else {
             res.status(500).json({
                 success: false,
-                reply: `⚠️ AI error: ${errMsg}. Please try again.`,
+                reply: `⚠️ AI agent is temporarily unavailable. Please try again in few moments.`,
                 stockCard: null,
             });
         }
@@ -850,17 +953,36 @@ app.get('/api/sectors', async (_req, res) => {
         res.json({ success: true, data: sectorCache.data });
     }
     catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('[Sectors] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 // Daily Performance Tracking Job (Run at 16:00 IST / 10:30 UTC)
 node_cron_1.default.schedule('30 10 * * 1-5', () => {
     (0, performanceJob_1.updatePerformanceRecords)();
 });
-// Start Level-1000 Autonomous Scanner Agent
-(0, autoScannerJob_1.initAutoScanner)();
 // ——————————————————————————————————————————
-// START
+// ⚡ BACKGROUND INITIALIZATION (Non-Blocking)
+// ——————————————————————————————————————————
+setTimeout(() => {
+    try {
+        console.log('[System] Background Init: Starting database cleanup...');
+        const { exec } = require('child_process');
+        exec('npx prisma migrate deploy', (err, stdout, stderr) => {
+            if (err)
+                console.error('[System] Background Migration Error:', stderr);
+            else
+                console.log('[System] Background Migration Complete:', stdout);
+        });
+        console.log('[System] Background Init: Starting AI Agent System...');
+        (0, autoScannerJob_1.initAutoScanner)();
+        (0, agentEvents_1.setNextScan)(computeNextScan());
+        (0, agentEvents_1.pushEvent)('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized in background.');
+    }
+    catch (e) {
+        console.error('[System] Background Init Failed:', e.message);
+    }
+}, 3000);
 // SPA fallback — must be after all API routes so React Router handles all non-API paths
 if (process.env.NODE_ENV === 'production') {
     app.get('*', (_req, res) => {
@@ -884,23 +1006,4 @@ function computeNextScan() {
     }
     return ist.toISOString();
 }
-(0, agentEvents_1.setNextScan)(computeNextScan());
-// ——————————————————————————————————————————
-app.listen(PORT, () => {
-    console.log('');
-    console.log('╔══════════════════════════════════════════════════════╗');
-    console.log('║   🧠  StockSage AI — Agentic Trading Assistant        ║');
-    console.log('║   India\'s AI Stock Research Companion                 ║');
-    console.log('╠══════════════════════════════════════════════════════╣');
-    console.log(`║   Dashboard : http://localhost:${PORT}                  ║`);
-    console.log('╠══════════════════════════════════════════════════════╣');
-    console.log('║   POST /api/chat           — AI Chatbot               ║');
-    console.log('║   GET  /api/scan           — Run stock scanner        ║');
-    console.log('║   GET  /api/agent/stream   — SSE live event stream    ║');
-    console.log('║   GET  /api/agent/status   — Agent status             ║');
-    console.log('║   GET  /api/sectors        — Live sector data         ║');
-    console.log('╚══════════════════════════════════════════════════════╝');
-    console.log('');
-    (0, agentEvents_1.pushEvent)('SYSTEM', 'success', 'Server Started', `StockSage AI agent running on port ${PORT}`);
-});
 //# sourceMappingURL=index.js.map

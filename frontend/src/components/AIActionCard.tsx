@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+/* ΓöÇΓöÇΓöÇ AIActionCard.tsx ΓÇö Premium trade setup cards with interactive chart ΓöÇΓöÇΓöÇ */
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion, useInView, useAnimation } from 'framer-motion'
 import {
-    Zap, MessageSquare, Bookmark, BookmarkCheck, TrendingUp,
-    Shield, Target, Activity, ChevronDown, ChevronUp, Copy, CheckCircle,
-    Star, Brain, LineChart, Cpu, BarChart3, Database
+    Zap, MessageSquare, Bookmark, BookmarkCheck, TrendingUp, TrendingDown,
+    Shield, Target, Activity, ChevronDown, ChevronUp, ExternalLink,
+    AlertTriangle, Clock, BarChart3, Brain, Copy, CheckCircle,
+    Star, ThumbsUp, Eye, LineChart
 } from 'lucide-react'
 import { toggleWatchlistItem, isWatched } from '../lib/watchlist'
 import StockChart from './StockChart'
@@ -26,7 +27,11 @@ interface TradeSetup {
     riskReward: number
     confidenceScore: number
     confidenceBreakdown?: {
-        scoreTrend: number; scoreVolume: number; scoreRS: number; scoreSetup: number; scoreRR: number
+        scoreTrend: number
+        scoreVolume: number
+        scoreRS: number
+        scoreSetup: number
+        scoreRR: number
     }
     volatilityHitProb: number
     momentumRank: number
@@ -36,54 +41,24 @@ interface TradeSetup {
     catalyst: string
     aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT'
     aiLogic?: string
-    institutionalDemand?: number
-    pcr?: number
-    derivativeStatus?: string
+    aiTargetRange?: string
+    aiStopLoss?: string
     headlines?: string[]
 }
 
-const fmt = (n: number) => '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const fmt = (n: number) => '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2 })
 
-// Simple CountUp animation for dynamic numbers
-function CountUp({ value, suffix = '', decimals = 0 }: { value: number; suffix?: string; decimals?: number }) {
-    const [count, setCount] = useState(0)
-    const ref = useRef(null)
-    const isInView = useInView(ref, { once: true })
+function confColor(s: number) { return s >= 7 ? '#34d399' : s >= 5 ? '#fbbf24' : '#f87171' }
+function glowRgb(sig?: string) { return sig === 'BUY' || sig === 'LIGHT BUY' ? '16,185,129' : sig === 'REJECT' ? '239,68,68' : '245,158,11' }
 
-    useEffect(() => {
-        if (!isInView) return
-        let start = 0
-        const end = value
-        if (start === end) return
-        const minTimer = 50
-        let stepTime = Math.abs(Math.floor(800 / (end - start)))
-        stepTime = Math.max(stepTime, minTimer)
-        const startTime = Date.now()
-        const duration = 800
-
-        const step = () => {
-            const now = Date.now()
-            const progress = Math.min((now - startTime) / duration, 1)
-            // ease out cubic
-            const easeProgress = 1 - Math.pow(1 - progress, 3)
-            setCount(start + (end - start) * easeProgress)
-            if (progress < 1) {
-                requestAnimationFrame(step)
-            } else {
-                setCount(end)
-            }
-        }
-        requestAnimationFrame(step)
-    }, [value, isInView])
-
-    return <span ref={ref}>{count.toFixed(decimals)}{suffix}</span>
-}
-
-// Glowing styles based on signal
-function getSignalStyles(signal?: string) {
-    if (signal === 'BUY' || signal === 'LIGHT BUY') return { color: 'neon-text-green', border: 'neon-border-green', hex: '#10b981', bg: 'rgba(16,185,129,0.05)' }
-    if (signal === 'REJECT') return { color: 'text-rose-400 drop-shadow-[0_0_8px_rgba(244,63,94,0.6)]', border: 'border-rose-500/50 shadow-[0_0_15px_rgba(244,63,94,0.3)]', hex: '#f43f5e', bg: 'rgba(244,63,94,0.05)' }
-    return { color: 'neon-text-amber', border: 'border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.3)]', hex: '#f59e0b', bg: 'rgba(245,158,11,0.05)' }
+// AI Satisfaction level based on confidence + signal
+function getSatisfaction(score: number, signal?: string): { label: string; emoji: string; color: string; stars: number } {
+    if (signal === 'BUY' && score >= 8) return { label: 'Highly Recommended', emoji: '\uD83D\uDD25', color: '#22c55e', stars: 5 }
+    if (signal === 'BUY' && score >= 7) return { label: 'Strong Setup', emoji: '\uD83D\uDCAA', color: '#34d399', stars: 4 }
+    if ((signal === 'BUY' || signal === 'LIGHT BUY') && score >= 5) return { label: 'Decent Opportunity', emoji: '\uD83D\uDC4D', color: '#fbbf24', stars: 3 }
+    if (signal === 'WATCH' && score >= 6) return { label: 'Worth Monitoring', emoji: '\uD83D\uDC40', color: '#60a5fa', stars: 3 }
+    if (signal === 'WATCH') return { label: 'On Watchlist', emoji: '\uD83D\uDCCB', color: '#94a3b8', stars: 2 }
+    return { label: 'Needs More Confirmation', emoji: '\u23F3', color: '#f87171', stars: 1 }
 }
 
 export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: number }) {
@@ -92,174 +67,348 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
     const [saved, setSaved] = useState(() => isWatched(s.ticker))
     const [copied, setCopied] = useState(false)
     const navigate = useNavigate()
-
-    const theme = getSignalStyles(s.aiSignal)
+    const rgb = glowRgb(s.aiSignal)
+    const satisfaction = getSatisfaction(s.confidenceScore, s.aiSignal)
 
     const handleCopySetup = () => {
-        const text = `${s.ticker} | ${s.setupType} | ${s.aiSignal}\nBuy: ${fmt(s.buyZone)} | Target: ${fmt(s.target)} (+${s.targetPct.toFixed(1)}%)\nSL: ${fmt(s.stopLoss)} (-${s.slPct.toFixed(1)}%) | RR: ${s.riskReward}:1\nPCR: ${s.pcr || 'N/A'}`
+        const text = `${s.ticker} | ${s.setupType} | ${s.aiSignal}\nBuy: ${fmt(s.buyZone)} | Target: ${fmt(s.target)} (+${s.targetPct.toFixed(1)}%)\nSL: ${fmt(s.stopLoss)} (-${s.slPct.toFixed(1)}%) | RR: ${s.riskReward}:1\nConfidence: ${s.confidenceScore}/10 | ${satisfaction.label}`
         navigator.clipboard.writeText(text).then(() => {
             setCopied(true)
             setTimeout(() => setCopied(false), 2000)
         })
     }
 
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay, ease: [0.16, 1, 0.3, 1] }}
-            whileHover={{ scale: 1.015, y: -4 }}
-            className={`glass-card ${theme.border} transition-all duration-300`}
-            style={{ backgroundImage: `linear-gradient(to bottom right, ${theme.bg}, transparent 60%)` }}
-        >
-            {/* Ambient Background Glow */}
-            <div className="absolute top-0 right-0 w-32 h-32 rounded-full blur-[60px] pointer-events-none" style={{ background: theme.hex, opacity: 0.15 }} />
+    // Capital required for 1 lot (rough estimate based on buyZone)
+    const estimatedLotSize = Math.max(1, Math.floor(50000 / s.buyZone))
+    const estimatedCapital = estimatedLotSize * s.buyZone
+    const expectedReturn = estimatedCapital * (s.targetPct / 100)
+    const maxLoss = estimatedCapital * (s.slPct / 100)
 
-            {/* Header */}
-            <div className="p-5 pb-3">
-                <div className="flex justify-between items-start mb-3">
+    return (
+        <div
+            style={{
+                background: `radial-gradient(circle at top right, rgba(${rgb},0.06), transparent 50%), var(--bg-card)`,
+                border: `1px solid rgba(${rgb}, 0.15)`,
+                borderRadius: 18, padding: 0,
+                boxShadow: `0 4px 28px rgba(${rgb}, 0.06), var(--card-shadow)`,
+                transition: 'all var(--t-normal)',
+                animation: `fadeUp 0.4s ease ${delay}s both`,
+                position: 'relative', overflow: 'hidden',
+            }}
+            onMouseEnter={e => { const el = e.currentTarget; el.style.transform = 'translateY(-4px)'; el.style.borderColor = `rgba(${rgb}, 0.28)`; el.style.boxShadow = `0 16px 44px rgba(${rgb}, 0.12), var(--card-shadow)` }}
+            onMouseLeave={e => { const el = e.currentTarget; el.style.transform = 'none'; el.style.borderColor = `rgba(${rgb}, 0.15)`; el.style.boxShadow = `0 4px 28px rgba(${rgb}, 0.06), var(--card-shadow)` }}
+        >
+            {/* Corner glow */}
+            <div style={{ position: 'absolute', top: -30, right: -30, width: 100, height: 100, borderRadius: '50%', background: `radial-gradient(circle, rgba(${rgb},0.1), transparent 70%)`, pointerEvents: 'none' }} />
+
+            {/* AI Signal Ribbon */}
+            {s.aiSignal === 'BUY' && s.confidenceScore >= 7 && (
+                <div style={{
+                    position: 'absolute', top: 10, right: -28, transform: 'rotate(45deg)',
+                    width: 100, textAlign: 'center', padding: '2px 0',
+                    background: 'linear-gradient(90deg, #10b981, #34d399)',
+                    fontSize: '0.5rem', fontWeight: 800, color: '#fff',
+                    letterSpacing: '0.08em', textTransform: 'uppercase',
+                    boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
+                }}>
+                    TOP PICK
+                </div>
+            )}
+
+            {/* ΓöÇΓöÇ Card body with padding ΓöÇΓöÇ */}
+            <div style={{ padding: '20px 22px 0' }}>
+
+                {/* Header */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, position: 'relative' }}>
                     <div>
-                        <div className="flex items-center gap-3 mb-1.5">
-                            <h2 className="font-display text-2xl font-bold tracking-tight text-white">{s.ticker}</h2>
-                            <div className={`px-2.5 py-0.5 rounded-full text-[0.65rem] font-bold uppercase tracking-wider border bg-black/40 ${theme.color} border-${theme.hex}/30`}>
-                                {s.aiSignal || 'WATCH'}
-                            </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                            <span style={{ fontFamily: 'var(--font-display)', fontSize: '1.35rem', fontWeight: 900, letterSpacing: '-0.025em' }}>{s.ticker}</span>
+                            <span style={{
+                                padding: '2px 8px', borderRadius: 99, fontSize: '0.62rem', fontWeight: 800,
+                                background: (s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') ? 'rgba(16,185,129,0.12)' : (s.aiSignal === 'REJECT') ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)',
+                                color: (s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') ? '#34d399' : (s.aiSignal === 'REJECT') ? '#f87171' : '#fcd34d',
+                                border: `1px solid ${(s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') ? 'rgba(16,185,129,0.3)' : (s.aiSignal === 'REJECT') ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`,
+                            }}>{s.aiSignal || 'WATCH'}</span>
                         </div>
-                        <div className="flex flex-wrap gap-2">
-                            <span className="px-2 py-0.5 bg-white/5 border border-white/10 rounded-md text-[0.65rem] text-slate-300 uppercase tracking-widest">{s.sector}</span>
-                            <span className="px-2 py-0.5 bg-white/5 border border-white/10 rounded-md text-[0.65rem] text-slate-300 uppercase tracking-widest">{s.setupType}</span>
+                        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                            <span className="badge badge-purple" style={{ fontSize: '0.54rem', fontWeight: 800, background: 'rgba(139,92,246,0.1)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.25)' }}>
+                                {s.timeframe || 'Swing'}
+                            </span>
+                            <span className="badge badge-neutral" style={{ fontSize: '0.56rem' }}>{s.setupType}</span>
+                            <span className="badge badge-neutral" style={{ fontSize: '0.56rem' }}>{s.sector}</span>
+                            {s.momentumRank > 0 && s.momentumRank <= 10 && <span className="badge badge-buy" style={{ fontSize: '0.54rem' }}>#{s.momentumRank} Momentum</span>}
                         </div>
                     </div>
-                    <div className="text-right">
-                        <div className="font-mono text-xl font-bold text-white tracking-tight">{fmt(s.ltp)}</div>
-                        <div className="flex gap-2 justify-end items-center mt-1">
-                            <span className="neon-text-green font-mono text-xs font-bold">+<CountUp value={s.targetPct} decimals={1} />%</span>
-                            <span className="text-[0.65rem] text-slate-400 font-medium tracking-wider">RR {s.riskReward}:1</span>
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.12rem', fontWeight: 700, marginBottom: 4 }}>{fmt(s.ltp)}</div>
+                        <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', fontWeight: 700, color: '#34d399' }}>+{s.targetPct.toFixed(1)}%</span>
+                            <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>RR {s.riskReward}:1</span>
                         </div>
                     </div>
                 </div>
 
-                {/* 3-Col Data (Buy, Target, SL) */}
-                <div className="grid grid-cols-3 gap-2 mb-4">
+                {/* 3-col price levels */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
                     {[
-                        { label: 'Buy Zone', value: fmt(s.buyZone), color: 'text-cyan-400', icon: Target },
-                        { label: 'Target', value: fmt(s.target), color: 'text-emerald-400', icon: TrendingUp },
-                        { label: 'Stop Loss', value: fmt(s.stopLoss), color: 'text-rose-400', icon: Shield },
+                        { label: 'Buy Zone', value: fmt(s.buyZone), color: 'var(--blue)', icon: <Target size={10} /> },
+                        { label: 'Target', value: fmt(s.target), color: '#34d399', icon: <TrendingUp size={10} /> },
+                        { label: 'Stop Loss', value: fmt(s.stopLoss), color: '#f87171', icon: <Shield size={10} /> },
                     ].map(m => (
-                        <div key={m.label} className="metric-box-cyber">
-                            <div className="flex items-center gap-1.5 text-[0.6rem] text-slate-400 uppercase tracking-wider font-bold mb-1">
-                                <m.icon size={10} /> {m.label}
+                        <div key={m.label} style={{
+                            padding: '8px 10px', background: 'var(--bg-elevated)', borderRadius: 10,
+                            border: '1px solid var(--border)', transition: 'border-color 0.15s',
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.56rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>
+                                {m.icon} {m.label}
                             </div>
-                            <div className={`font-mono text-sm font-bold ${m.color}`}>{m.value}</div>
+                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem', fontWeight: 700, color: m.color }}>{m.value}</div>
                         </div>
                     ))}
                 </div>
 
-                {/* Institutional X-Ray Row (Phase 6 Integration) */}
-                <div className="grid grid-cols-2 gap-2 mb-4">
-                    <div className="metric-box-cyber bg-cyan-950/10 border-cyan-500/20">
-                        <div className="flex items-center gap-1.5 text-[0.6rem] text-cyan-500/80 uppercase tracking-wider font-bold mb-1">
-                            <Database size={10} /> Options Flow (PCR)
-                        </div>
-                        <div className="flex items-end justify-between">
-                            <div className="font-mono text-sm font-bold neon-text-cyan">
-                                {s.pcr ? <CountUp value={s.pcr} decimals={2} /> : 'N/A'}
+                {/* ΓöÇΓöÇ AI Satisfaction Gauge ΓöÇΓöÇ */}
+                <div style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '10px 12px', marginBottom: 12,
+                    background: `${satisfaction.color}08`, borderRadius: 12,
+                    border: `1px solid ${satisfaction.color}18`,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: '1.2rem' }}>{satisfaction.emoji}</span>
+                        <div>
+                            <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.78rem', fontWeight: 800, color: satisfaction.color }}>
+                                {satisfaction.label}
                             </div>
-                            <div className="text-[0.6rem] text-cyan-400/60 uppercase">{s.derivativeStatus || 'Idle'}</div>
+                            <div style={{ display: 'flex', gap: 2, marginTop: 2 }}>
+                                {[1, 2, 3, 4, 5].map(i => (
+                                    <Star key={i} size={10} fill={i <= satisfaction.stars ? satisfaction.color : 'transparent'} color={i <= satisfaction.stars ? satisfaction.color : 'var(--text-muted)'} strokeWidth={1.5} />
+                                ))}
+                            </div>
                         </div>
                     </div>
-                    <div className="metric-box-cyber bg-purple-950/10 border-purple-500/20">
-                        <div className="flex items-center gap-1.5 text-[0.6rem] text-purple-500/80 uppercase tracking-wider font-bold mb-1">
-                            <BarChart3 size={10} /> Inst. Demand
-                        </div>
-                        <div className="flex items-end justify-between">
-                            <div className="font-mono text-sm font-bold neon-text-purple">
-                                {s.institutionalDemand ? <><CountUp value={s.institutionalDemand} />%</> : 'N/A'}
-                            </div>
-                            <div className="text-[0.6rem] text-purple-400/60 uppercase">Vol Avg</div>
+                    <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.1rem', fontWeight: 900, color: confColor(s.confidenceScore) }}>
+                            {s.confidenceScore}
+                            <span style={{ fontSize: '0.6rem', fontWeight: 500, color: 'var(--text-muted)' }}>/10</span>
                         </div>
                     </div>
                 </div>
 
-                {/* Confidence Bar */}
-                <div className="mb-4">
-                    <div className="flex justify-between items-end mb-1.5">
-                        <span className="text-[0.6rem] text-slate-400 uppercase tracking-wider font-bold flex items-center gap-1"><Cpu size={10} /> AI Confidence Score</span>
-                        <span className={`font-mono text-xs font-bold ${theme.color}`}><CountUp value={s.confidenceScore} decimals={1} />/10</span>
+                {/* Confidence progress bar */}
+                <div style={{ marginBottom: 12 }}>
+                    <div style={{ height: 4, background: 'var(--bg-hover)', borderRadius: 99, overflow: 'hidden' }}>
+                        <div style={{ width: `${s.confidenceScore * 10}%`, height: '100%', background: `linear-gradient(90deg, ${confColor(s.confidenceScore)}88, ${confColor(s.confidenceScore)})`, borderRadius: 99, transition: 'width 0.8s ease' }} />
                     </div>
-                    <div className="h-1.5 bg-slate-800/50 rounded-full overflow-hidden border border-white/5">
-                        <motion.div
-                            initial={{ width: 0 }}
-                            animate={{ width: `${s.confidenceScore * 10}%` }}
-                            transition={{ duration: 1.2, delay: delay + 0.3, ease: 'easeOut' }}
-                            className="h-full rounded-full"
-                            style={{ background: theme.hex, boxShadow: `0 0 10px ${theme.hex}` }}
-                        />
+                </div>
+
+                {/* Quick trade estimate for BUY signals */}
+                {(s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') && (
+                    <div style={{
+                        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 12,
+                        padding: '8px 10px', background: 'rgba(16,185,129,0.04)', borderRadius: 10,
+                        border: '1px solid rgba(16,185,129,0.1)',
+                    }}>
+                        <div>
+                            <div style={{ fontSize: '0.5rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>~Capital</div>
+                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700 }}>{fmt(estimatedCapital)}</div>
+                        </div>
+                        <div>
+                            <div style={{ fontSize: '0.5rem', color: '#34d399', fontWeight: 600, textTransform: 'uppercase' }}>Expected</div>
+                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700, color: '#34d399' }}>+{fmt(expectedReturn)}</div>
+                        </div>
+                        <div>
+                            <div style={{ fontSize: '0.5rem', color: '#f87171', fontWeight: 600, textTransform: 'uppercase' }}>Max Loss</div>
+                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700, color: '#f87171' }}>-{fmt(maxLoss)}</div>
+                        </div>
                     </div>
+                )}
+
+                {/* Tags */}
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
+                    <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>Vol {s.volumeSpike}</span>
+                    <span className={`badge ${s.trendStatus.includes('Bullish') ? 'badge-buy' : 'badge-watch'}`} style={{ fontSize: '0.54rem' }}>{s.trendStatus}</span>
+                    <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{s.entryTrigger}</span>
+                    {s.volatilityHitProb > 0 && (
+                        <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>Hit Prob {(s.volatilityHitProb * 100).toFixed(0)}%</span>
+                    )}
                 </div>
             </div>
 
-            {/* Interactive Chart Toggle */}
-            <div className="px-5 pb-3">
+            {/* ΓöÇΓöÇ Interactive Chart Toggle ΓöÇΓöÇ */}
+            <div style={{ padding: '0 22px 12px' }}>
                 <button
                     onClick={() => setShowChart(v => !v)}
-                    className="w-full flex items-center justify-between px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs font-bold text-slate-300 transition-all duration-300"
+                    style={{
+                        display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                        background: showChart ? 'rgba(59,130,246,0.08)' : 'var(--bg-elevated)',
+                        border: `1px solid ${showChart ? 'rgba(59,130,246,0.2)' : 'var(--border)'}`,
+                        borderRadius: 10, padding: '8px 12px',
+                        cursor: 'pointer', transition: 'all 0.15s',
+                        color: showChart ? '#60a5fa' : 'var(--text-secondary)',
+                        fontSize: '0.74rem', fontWeight: 700, fontFamily: 'var(--font-body)',
+                    }}
                 >
-                    <span className="flex items-center gap-2"><LineChart size={14} className="text-cyan-400" /> {showChart ? 'Hide X-Ray Chart' : 'Show X-Ray Chart'}</span>
-                    <motion.div animate={{ rotate: showChart ? 180 : 0 }}><ChevronDown size={14} /></motion.div>
+                    <LineChart size={14} />
+                    {showChart ? 'Hide Chart' : 'Show Chart'} {'\u2014'} SMA {'\u00B7'} EMA {'\u00B7'} RSI {'\u00B7'} Volume
+                    <ChevronDown size={12} style={{ marginLeft: 'auto', transform: showChart ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
                 </button>
             </div>
 
-            {/* Chart Panel */}
+            {/* ΓöÇΓöÇ Chart Panel ΓöÇΓöÇ */}
             {showChart && (
-                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="px-3 pb-3">
-                    <div className="bg-black/40 border border-white/5 rounded-xl overflow-hidden p-1">
-                        <StockChart ticker={s.ticker} buyZone={s.buyZone} target={s.target} stopLoss={s.stopLoss} ltp={s.ltp} />
-                    </div>
-                </motion.div>
+                <div style={{ padding: '0 12px 12px', animation: 'fadeUp 0.3s ease both' }}>
+                    <StockChart
+                        ticker={s.ticker}
+                        buyZone={s.buyZone}
+                        target={s.target}
+                        stopLoss={s.stopLoss}
+                        ltp={s.ltp}
+                    />
+                </div>
             )}
 
-            {/* AI Reasoning */}
-            <div className="px-5 pb-3">
-                <button
-                    onClick={() => setExpanded(v => !v)}
-                    className="w-full flex items-center justify-between px-4 py-2 bg-transparent text-xs font-bold text-slate-400 hover:text-white transition-colors"
-                >
-                    <span className="flex items-center gap-2"><Brain size={14} className="text-purple-400" /> Read AI Institutional Logic</span>
-                    <motion.div animate={{ rotate: expanded ? 180 : 0 }}><ChevronDown size={14} /></motion.div>
-                </button>
-                {expanded && (
-                    <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-2 text-xs text-slate-300 leading-relaxed bg-black/30 p-4 rounded-xl border border-white/5">
-                        {s.aiLogic || 'No detailed reasoning provided by the AI for this setup.'}
-                        {s.catalyst && (
-                            <div className="mt-3 p-3 bg-cyan-950/20 border border-cyan-500/20 rounded-lg">
-                                <span className="text-[0.6rem] text-cyan-400 font-bold uppercase tracking-wider block mb-1">Catalytic Driver</span>
-                                {s.catalyst}
-                            </div>
-                        )}
-                    </motion.div>
-                )}
-            </div>
-
-            {/* Quick Actions Footer */}
-            <div className="px-5 py-3 border-t border-white/5 bg-black/20 flex flex-wrap gap-2 justify-between items-center backdrop-blur-md">
-                <div className="flex gap-2">
-                    <button onClick={handleCopySetup} className="btn-cyber btn-cyber-ghost text-xs py-1.5 px-3">
-                        {copied ? <CheckCircle size={12} className="text-emerald-400" /> : <Copy size={12} />}
-                        {copied ? 'Copied Buffer' : 'Copy'}
+            {/* ΓöÇΓöÇ Enhanced AI Reasoning (expandable) ΓöÇΓöÇ */}
+            {(s.aiLogic || s.confidenceBreakdown) && (
+                <div style={{ padding: '0 22px 12px' }}>
+                    <button
+                        onClick={() => setExpanded(v => !v)}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none',
+                            cursor: 'pointer', color: 'var(--purple)', fontSize: '0.72rem', fontWeight: 600,
+                            padding: 0, fontFamily: 'var(--font-body)',
+                        }}
+                    >
+                        <Brain size={11} /> AI Reasoning & Analysis {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                     </button>
-                    <button onClick={() => navigate(`/chat?q=${encodeURIComponent(`Analyse ${s.ticker}`)}`)} className="btn-cyber btn-cyber-ghost text-xs py-1.5 px-3">
-                        <MessageSquare size={12} className="text-cyan-400" /> Query AI
+                    {expanded && (
+                        <div style={{ marginTop: 8, background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.14)', borderRadius: 12, padding: '14px 16px', animation: 'fadeUp 0.2s ease both' }}>
+
+                            {/* Confidence Breakdown Grid */}
+                            {s.confidenceBreakdown && (
+                                <div style={{ marginBottom: 14 }}>
+                                    <div style={{ fontSize: '0.58rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Score Breakdown</div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+                                        {[
+                                            { label: 'Trend', val: s.confidenceBreakdown.scoreTrend, max: 2, icon: <TrendingUp size={10} /> },
+                                            { label: 'Volume', val: s.confidenceBreakdown.scoreVolume, max: 2, icon: <BarChart3 size={10} /> },
+                                            { label: 'RS', val: s.confidenceBreakdown.scoreRS, max: 2, icon: <Activity size={10} /> },
+                                            { label: 'Setup', val: s.confidenceBreakdown.scoreSetup, max: 2, icon: <Target size={10} /> },
+                                            { label: 'RR', val: s.confidenceBreakdown.scoreRR, max: 2, icon: <Shield size={10} /> },
+                                        ].map(b => (
+                                            <div key={b.label} style={{
+                                                textAlign: 'center', padding: '6px 4px',
+                                                background: 'var(--bg-elevated)', borderRadius: 8,
+                                                border: '1px solid var(--border)',
+                                            }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, fontSize: '0.5rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                                                    {b.icon} {b.label}
+                                                </div>
+                                                <div style={{ fontSize: '0.88rem', fontWeight: 900, color: b.val >= 1.5 ? '#34d399' : b.val >= 1 ? '#fbbf24' : '#f87171' }}>
+                                                    {b.val}
+                                                </div>
+                                                {/* Mini bar */}
+                                                <div style={{ height: 2, background: 'var(--bg-hover)', borderRadius: 99, overflow: 'hidden', marginTop: 4 }}>
+                                                    <div style={{ width: `${(b.val / b.max) * 100}%`, height: '100%', background: b.val >= 1.5 ? '#34d399' : b.val >= 1 ? '#fbbf24' : '#f87171', borderRadius: 99 }} />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* AI Reasoning Text */}
+                            <div style={{
+                                fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.7,
+                                padding: '10px 12px', background: 'var(--bg-elevated)', borderRadius: 8,
+                                border: '1px solid var(--border)',
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, fontSize: '0.58rem', fontWeight: 700, color: 'var(--purple)', textTransform: 'uppercase' }}>
+                                    <Brain size={10} /> AI Analysis
+                                </div>
+                                {s.aiLogic || 'No detailed reasoning available.'}
+                            </div>
+
+                            {/* Catalyst if available */}
+                            {s.catalyst && (
+                                <div style={{
+                                    marginTop: 10, padding: '8px 12px', background: 'rgba(59,130,246,0.05)',
+                                    borderRadius: 8, border: '1px solid rgba(59,130,246,0.1)',
+                                    fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.5,
+                                }}>
+                                    <span style={{ fontSize: '0.52rem', fontWeight: 700, color: '#60a5fa', textTransform: 'uppercase' }}>Catalyst: </span>
+                                    {s.catalyst}
+                                </div>
+                            )}
+
+                            {/* News Headlines if available */}
+                            {s.headlines && s.headlines.length > 0 && (
+                                <div style={{
+                                    marginTop: 10, padding: '8px 12px', background: 'var(--bg-elevated)',
+                                    borderRadius: 8, border: '1px solid var(--border)',
+                                    display: 'flex', flexDirection: 'column', gap: 6,
+                                }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.55rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                                        {'\uD83D\uDCF0'} Context Engine: Recent Headlines
+                                    </div>
+                                    <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                        {s.headlines.slice(0, 3).map((h, i) => (
+                                            <li key={i} style={{ marginBottom: 4 }}>{h}</li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {/* Satisfaction verdict */}
+                            <div style={{
+                                marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                padding: '8px 12px', background: `${satisfaction.color}06`,
+                                borderRadius: 8, border: `1px solid ${satisfaction.color}15`,
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <span style={{ fontSize: '1rem' }}>{satisfaction.emoji}</span>
+                                    <div>
+                                        <div style={{ fontSize: '0.68rem', fontWeight: 800, color: satisfaction.color }}>{satisfaction.label}</div>
+                                        <div style={{ fontSize: '0.54rem', color: 'var(--text-muted)' }}>AI Satisfaction Level</div>
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: 2 }}>
+                                    {[1, 2, 3, 4, 5].map(i => (
+                                        <Star key={i} size={12} fill={i <= satisfaction.stars ? satisfaction.color : 'transparent'} color={i <= satisfaction.stars ? satisfaction.color : 'var(--text-muted)'} strokeWidth={1.5} />
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* ΓöÇΓöÇ Quick Actions Footer ΓöÇΓöÇ */}
+            <div style={{ padding: '12px 22px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 4, flexShrink: 0, alignItems: 'center' }}>
+                    {/* Chart toggle (small) */}
+                    <button onClick={() => setShowChart(v => !v)} className={`btn ${showChart ? 'btn-primary' : 'btn-ghost'}`} style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3, minWidth: 0 }} title="Toggle chart">
+                        <LineChart size={11} /> Chart
+                    </button>
+                    {/* Copy Setup */}
+                    <button onClick={handleCopySetup} className="btn btn-ghost" style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3, minWidth: 0 }} title="Copy setup to clipboard">
+                        {copied ? <CheckCircle size={11} style={{ color: '#34d399' }} /> : <Copy size={11} />}
+                        {copied ? 'Copied!' : 'Copy'}
+                    </button>
+                    {/* Ask AI */}
+                    <button onClick={() => navigate(`/chat?q=${encodeURIComponent(`Analyse ${s.ticker}`)}`)} className="btn btn-ghost" style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3 }}>
+                        <MessageSquare size={11} /> AI
+                    </button>
+                    {/* Save */}
+                    <button
+                        onClick={() => { toggleWatchlistItem({ ticker: s.ticker, sector: s.sector, signal: s.aiSignal, ltp: s.ltp, target: s.target, stopLoss: s.stopLoss, targetPct: s.targetPct, slPct: s.slPct, riskReward: s.riskReward, confidenceScore: s.confidenceScore, setupType: s.setupType, buyZone: s.buyZone }); setSaved(v => !v) }}
+                        className={`btn ${saved ? 'btn-purple' : 'btn-ghost'}`} style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3 }}
+                    >
+                        {saved ? <BookmarkCheck size={11} /> : <Bookmark size={11} />}
+                        {saved ? 'Saved' : 'Save'}
                     </button>
                 </div>
-                <button
-                    onClick={() => { toggleWatchlistItem({ ticker: s.ticker, sector: s.sector, signal: s.aiSignal, ltp: s.ltp, target: s.target, stopLoss: s.stopLoss, targetPct: s.targetPct, slPct: s.slPct, riskReward: s.riskReward, confidenceScore: s.confidenceScore, setupType: s.setupType, buyZone: s.buyZone }); setSaved(v => !v) }}
-                    className={`btn-cyber ${saved ? 'bg-purple-600/20 border-purple-500/40 text-purple-300' : 'btn-cyber-ghost'} text-xs py-1.5 px-3`}
-                >
-                    {saved ? <BookmarkCheck size={12} className="text-purple-400" /> : <Bookmark size={12} />}
-                    {saved ? 'Tracked' : 'Track'}
-                </button>
             </div>
-        </motion.div>
+        </div>
     )
 }

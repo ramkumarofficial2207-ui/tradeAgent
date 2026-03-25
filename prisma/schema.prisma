@@ -19,6 +19,15 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Subscription
+  subscriptionStatus  String    @default("TRIAL")  // TRIAL | ACTIVE | FREE | EXPIRED
+  subscriptionExpiry  DateTime?
+
+  // Notification preferences
+  telegramChatId      String?
+  notifyBuySignals    Boolean   @default(true)
+  notifyEmail         Boolean   @default(true)
+
   brokerConfig    BrokerConfig?
   trades          Trade[]
   screenerPresets ScreenerPreset[]

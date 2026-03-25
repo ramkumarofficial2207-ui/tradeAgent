@@ -28,6 +28,10 @@ import prisma from './prismaClient';
 import { updatePerformanceRecords } from './performanceJob';
 import { initAutoScanner } from './autoScannerJob';
 import { requireAuth, generateToken, AuthRequest } from './authMiddleware';
+import { scanLimiter, chatLimiter, authLimiter } from './rateLimiter';
+import { requireSubscription } from './subscriptionMiddleware';
+import { createTrade, closeTrade, getPortfolioSummary, updateTradeCurrentPrice } from './portfolioService';
+import { sendBuyAlert, sendPreMarketDigest } from './whatsappAlert';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -134,7 +138,7 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
 // ═══════════════════════════════════════════
 
 // POST /api/auth/register
-app.post('/api/auth/register', async (req: Request, res: Response) => {
+app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) => {
     const { name, email, password } = req.body || {};
     if (!name || !email || !password) {
         res.status(400).json({ success: false, message: 'Name, email and password are required.' });
@@ -151,12 +155,19 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
             return;
         }
         const hashed = await bcrypt.hash(password, 12);
+        // Grant a 7-day trial for all new registrations
+        const trialExpiry = new Date();
+        trialExpiry.setDate(trialExpiry.getDate() + 7);
         const user = await prisma.user.create({
-            data: { name, email, password: hashed },
+            data: { 
+                name, email, password: hashed,
+                subscriptionStatus: 'TRIAL',
+                subscriptionExpiry: trialExpiry,
+            },
             select: { id: true, name: true, email: true, createdAt: true },
         });
         const token = generateToken(user.id, user.email);
-        res.json({ success: true, token, user });
+        res.json({ success: true, token, user, trialDaysLeft: 7 });
     } catch (err: any) {
         console.error('[Register] Error:', err);
         res.status(500).json({ success: false, message: sanitizeError(err) });
@@ -164,7 +175,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/login
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
     const { email, password } = req.body || {};
     if (!email || !password) {
         res.status(400).json({ success: false, message: 'Email and password are required.' });
@@ -258,8 +269,8 @@ app.delete('/api/watchlist/:ticker', requireAuth, async (req: AuthRequest, res: 
 });
 
 
-// GET /api/scan — Run the full Phase 1+2 scanner
-app.get('/api/scan', async (req: Request, res: Response) => {
+// GET /api/scan — Run the full Phase 1+2 scanner (rate limited + subscription gated)
+app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: AuthRequest, res: Response) => {
     try {
         console.log('\n[API] /api/scan called');
         const force = req.query.force === 'true';
@@ -692,8 +703,8 @@ app.get('/api/market-outlook', async (req: Request, res: Response) => {
     }
 });
 
-// POST /api/chat — AI Stock Research Chatbot powered by Gemini AI
-app.post('/api/chat', async (req: Request, res: Response) => {
+// POST /api/chat — AI Stock Research Chatbot powered by Gemini AI (rate limited + subscription gated)
+app.post('/api/chat', chatLimiter, requireAuth, requireSubscription, async (req: AuthRequest, res: Response) => {
     const { message } = req.body || {};
     if (!message || typeof message !== 'string') {
         res.status(400).json({ success: false, message: 'Missing message' });
@@ -1068,6 +1079,220 @@ setTimeout(() => {
     }
 }, 3000);
 
+
+// ══════════════════════════════════════════════
+// PORTFOLIO ROUTES
+// ══════════════════════════════════════════════
+
+// GET /api/portfolio — list all user trades
+app.get('/api/portfolio', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const trades = await prisma.trade.findMany({
+            where: { userId: req.userId },
+            orderBy: { entryDate: 'desc' },
+        });
+        res.json({ success: true, data: trades });
+    } catch (err: any) {
+        console.error('[Portfolio-GET] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// GET /api/portfolio/summary — aggregated P&L stats
+app.get('/api/portfolio/summary', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const summary = await getPortfolioSummary(req.userId!);
+        res.json({ success: true, data: summary });
+    } catch (err: any) {
+        console.error('[Portfolio-Summary] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// POST /api/portfolio/trade — log a new trade entry
+app.post('/api/portfolio/trade', requireAuth, async (req: AuthRequest, res: Response) => {
+    const { ticker, entryPrice, quantity, stopLossInit, target1, target2,
+            companyName, sector, capCategory, setupType, regimeAtEntry,
+            confidenceScore, notes } = req.body || {};
+    if (!ticker || !entryPrice || !quantity || !stopLossInit || !target1) {
+        res.status(400).json({ success: false, message: 'ticker, entryPrice, quantity, stopLossInit, target1 are required.' });
+        return;
+    }
+    try {
+        const trade = await createTrade(req.userId!, {
+            ticker, entryPrice: +entryPrice, quantity: +quantity,
+            stopLossInit: +stopLossInit, target1: +target1, target2: target2 ? +target2 : undefined,
+            companyName, sector, capCategory, setupType, regimeAtEntry,
+            confidenceScore: confidenceScore ? +confidenceScore : undefined, notes,
+        });
+        res.json({ success: true, data: trade });
+    } catch (err: any) {
+        console.error('[Portfolio-POST] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// PUT /api/portfolio/trade/:id — close a trade or update
+app.put('/api/portfolio/trade/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+    const { exitPrice, exitReason, currentPrice, notes } = req.body || {};
+    try {
+        if (exitPrice && exitReason) {
+            const trade = await closeTrade(req.userId!, req.params.id,
+                { exitPrice: +exitPrice, exitReason });
+            res.json({ success: true, data: trade });
+        } else if (currentPrice) {
+            const trade = await updateTradeCurrentPrice(req.params.id, +currentPrice);
+            res.json({ success: true, data: trade });
+        } else {
+            const trade = await prisma.trade.update({
+                where: { id: req.params.id },
+                data: { notes },
+            });
+            res.json({ success: true, data: trade });
+        }
+    } catch (err: any) {
+        console.error('[Portfolio-PUT] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// DELETE /api/portfolio/trade/:id
+app.delete('/api/portfolio/trade/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        await prisma.trade.deleteMany({ where: { id: req.params.id, userId: req.userId } });
+        res.json({ success: true });
+    } catch (err: any) {
+        console.error('[Portfolio-DELETE] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// ══════════════════════════════════════════════
+// USER PREFERENCES (WhatsApp + Notifications)
+// ══════════════════════════════════════════════
+
+// GET /api/user/preferences
+app.get('/api/user/preferences', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const user = await prisma.user.findUnique({
+            where: { id: req.userId },
+            select: { 
+                id: true, name: true, email: true,
+                subscriptionStatus: true, subscriptionExpiry: true,
+                telegramChatId: true, notifyBuySignals: true, notifyEmail: true,
+            },
+        });
+        res.json({ success: true, data: user });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// POST /api/user/preferences — update notification settings
+app.post('/api/user/preferences', requireAuth, async (req: AuthRequest, res: Response) => {
+    const { whatsappNumber, notifyBuySignals, notifyEmail, name } = req.body || {};
+    try {
+        const update: any = {};
+        if (whatsappNumber !== undefined) update.telegramChatId = whatsappNumber; // stored in telegramChatId field
+        if (notifyBuySignals !== undefined) update.notifyBuySignals = !!notifyBuySignals;
+        if (notifyEmail !== undefined) update.notifyEmail = !!notifyEmail;
+        if (name) update.name = name;
+        const user = await prisma.user.update({ where: { id: req.userId }, data: update });
+        res.json({ success: true, data: { id: user.id, name: user.name, email: user.email } });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// ══════════════════════════════════════════════
+// ADMIN — Activate Subscription
+// ══════════════════════════════════════════════
+app.post('/api/admin/activate', async (req: Request, res: Response) => {
+    const adminSecret = req.headers['x-admin-secret'];
+    if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+        res.status(403).json({ success: false, message: 'Forbidden.' });
+        return;
+    }
+    const { email, planDays = 30 } = req.body || {};
+    if (!email) { res.status(400).json({ success: false, message: 'email required.' }); return; }
+    try {
+        const expiry = new Date();
+        expiry.setDate(expiry.getDate() + (+planDays));
+        const user = await prisma.user.update({
+            where: { email },
+            data: { subscriptionStatus: 'ACTIVE', subscriptionExpiry: expiry },
+        });
+        res.json({ success: true, message: `Activated ${planDays}-day plan for ${user.email}. Expires: ${expiry.toDateString()}` });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// ══════════════════════════════════════════════
+// ECONOMIC CALENDAR
+// ══════════════════════════════════════════════
+app.get('/api/economic-calendar', (_req: Request, res: Response) => {
+    const now = new Date();
+    const year = now.getFullYear();
+    // Key recurring NSE/RBI events (static + computed)
+    const events = [
+        // F&O expiry — last Thursday of each month
+        ...Array.from({ length: 12 }, (_, m) => {
+            const last = new Date(year, m + 1, 0);
+            const day = last.getDay();
+            const daysBack = (day - 4 + 7) % 7;
+            const expiry = new Date(year, m, last.getDate() - daysBack);
+            return { date: expiry.toISOString().split('T')[0], label: 'Monthly F&O Expiry', type: 'FNO', importance: 'HIGH' };
+        }),
+        // RBI policy meetings 2026 (approximate — 6 per year)
+        { date: `${year}-04-09`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-06-04`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-08-06`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-10-08`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        { date: `${year}-12-03`, label: 'RBI MPC Meeting', type: 'RBI', importance: 'CRITICAL' },
+        // Q4 Results season
+        { date: `${year}-04-15`, label: 'Q4 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        { date: `${year}-07-15`, label: 'Q1 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        { date: `${year}-10-15`, label: 'Q2 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        { date: `${year+1}-01-15`, label: 'Q3 Results Season Begins', type: 'EARNINGS', importance: 'HIGH' },
+        // Budget
+        { date: `${year+1}-02-01`, label: 'Union Budget', type: 'BUDGET', importance: 'CRITICAL' },
+    ]
+    .filter(e => new Date(e.date) >= now)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .slice(0, 8);
+
+    res.json({ success: true, data: events });
+});
+
+// ══════════════════════════════════════════════
+// FII/DII DATA
+// ══════════════════════════════════════════════
+let fiiDiiCache: { data: any; ts: number } | null = null;
+app.get('/api/fii-dii', async (_req: Request, res: Response) => {
+    if (fiiDiiCache && Date.now() - fiiDiiCache.ts < 60 * 60 * 1000) {
+        return res.json({ success: true, data: fiiDiiCache.data });
+    }
+    try {
+        const response = await axios.get(
+            'https://www.nseindia.com/api/fiidiiTradeReact',
+            { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Referer': 'https://www.nseindia.com' }, timeout: 8000 }
+        );
+        const data = response.data?.data || [];
+        // Get last 5 trading days
+        const recent = data.slice(0, 5).map((d: any) => ({
+            date: d.date,
+            fiiBuy: d.fiiBuy, fiiSell: d.fiiSell, fiiNet: d.fiiNet,
+            diiBuy: d.diiBuy, diiSell: d.diiSell, diiNet: d.diiNet,
+        }));
+        fiiDiiCache = { data: recent, ts: Date.now() };
+        res.json({ success: true, data: recent });
+    } catch (err: any) {
+        console.error('[FII-DII] NSE fetch failed:', err.message);
+        // Return fallback zeros to avoid frontend crash
+        res.json({ success: true, data: [], note: 'NSE data temporarily unavailable.' });
+    }
+});
 
 // SPA fallback — must be after all API routes so React Router handles all non-API paths
 if (process.env.NODE_ENV === 'production') {

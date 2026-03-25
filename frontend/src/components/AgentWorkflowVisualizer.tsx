@@ -13,7 +13,7 @@ interface StageInfo {
 const PIPELINE_STAGES: StageInfo[] = [
     { id: 'fetch', label: 'Data Fetch', detail: 'NSE + Yahoo Finance', icon: <Database size={16} />, color: '#3b82f6' },
     { id: 'tech', label: 'Technicals', detail: 'DMA, RSI, EMA, Volume', icon: <BarChart3 size={16} />, color: '#8b5cf6' },
-    { id: 'ai', label: 'AI Analysis', detail: 'Claude 3.5 Sonnet', icon: <Brain size={16} />, color: '#06b6d4' },
+    { id: 'ai', label: 'AI Analysis', detail: 'Gemini 1.5 Pro', icon: <Brain size={16} />, color: '#06b6d4' },
     { id: 'eval', label: 'Evaluation', detail: 'Score & Rank Setups', icon: <Target size={16} />, color: '#f59e0b' },
     { id: 'output', label: 'Output', detail: 'Generate Trade Cards', icon: <Zap size={16} />, color: '#10b981' },
 ]

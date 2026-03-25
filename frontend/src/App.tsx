@@ -8,11 +8,14 @@ import WatchlistPage from './pages/WatchlistPage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import ProfilePage from './pages/ProfilePage'
+import PortfolioPage from './pages/PortfolioPage'
+import OnboardingTour from './components/OnboardingTour'
 
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <OnboardingTour />
         <Routes>
           {/* Public routes */}
           <Route path="/login" element={<LoginPage />} />
@@ -27,6 +30,7 @@ export default function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/watchlist" element={<WatchlistPage />} />
+            <Route path="/portfolio" element={<PortfolioPage />} />
             <Route path="/profile" element={<ProfilePage />} />
           </Route>
         </Routes>

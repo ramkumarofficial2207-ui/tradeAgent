@@ -371,7 +371,7 @@ export default function ChatPage() {
                     role: 'assistant',
                     content: data.reply || 'No response received.',
                     stockCard: data.stockCard || null,
-                    sources: data.sources || ['NSE India', 'Claude AI'],
+                    sources: data.sources || ['NSE India', 'Gemini AI'],
                     timestamp: new Date(),
                     feedback: null,
                 },
@@ -432,7 +432,7 @@ export default function ChatPage() {
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                    <span className="badge badge-vcp" style={{ fontSize: '0.62rem' }}>Claude AI</span>
+                    <span className="badge badge-vcp" style={{ fontSize: '0.62rem' }}>Gemini AI</span>
                     <span className="badge badge-buy" style={{ fontSize: '0.62rem' }}>Live NSE Data</span>
                     <button onClick={handleReset} className="btn btn-icon btn-ghost" title="New conversation" style={{ width: 30, height: 30 }}>
                         <RotateCcw size={12} />

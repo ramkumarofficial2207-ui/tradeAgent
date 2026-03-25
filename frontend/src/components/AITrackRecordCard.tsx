@@ -26,9 +26,20 @@ export const AITrackRecordCard = ({ trade }: { trade: any }) => {
                     <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{trade.setupType} &middot; {new Date(trade.createdAt).toLocaleDateString()}</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                    <span style={{ fontSize: '0.58rem', fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.12)', padding: '2px 8px', borderRadius: 99 }}>
-                        {trade.timeframe || 'Swing Trade'}
-                    </span>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.58rem', fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.12)', padding: '2px 8px', borderRadius: 99 }}>
+                            {trade.timeframe || 'Swing Trade'}
+                        </span>
+                        <span style={{ 
+                            fontSize: '0.58rem', fontWeight: 800, 
+                            padding: '2px 8px', borderRadius: 99,
+                            background: trade.aiSignal === 'BUY' ? 'rgba(16,185,129,0.12)' : trade.aiSignal === 'LIGHT BUY' ? 'rgba(52,211,153,0.12)' : 'rgba(245,158,11,0.12)',
+                            color: trade.aiSignal === 'BUY' ? '#34d399' : trade.aiSignal === 'LIGHT BUY' ? '#6ee7b7' : '#fcd34d',
+                            border: `1px solid ${trade.aiSignal === 'BUY' ? 'rgba(16,185,129,0.3)' : trade.aiSignal === 'LIGHT BUY' ? 'rgba(52,211,153,0.3)' : 'rgba(245,158,11,0.3)'}`
+                        }}>
+                            {trade.aiSignal || 'WATCH'}
+                        </span>
+                    </div>
                     <div style={{ fontSize: '0.68rem', fontWeight: 800, marginTop: 6, color: 'var(--text-secondary)' }}>
                         Score: {trade.confidenceScore}/10
                     </div>
@@ -38,15 +49,15 @@ export const AITrackRecordCard = ({ trade }: { trade: any }) => {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, background: 'var(--bg-hover)', padding: '10px', borderRadius: 8, marginBottom: 12 }}>
                 <div>
                     <div style={{ fontSize: '0.54rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Entry</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 800 }}>₹{trade.entryPrice}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 800 }}>{'\u20B9'}{trade.entryPrice}</div>
                 </div>
                 <div>
                     <div style={{ fontSize: '0.54rem', color: '#34d399', textTransform: 'uppercase' }}>Target</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 800 }}>₹{trade.targetPrice}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 800 }}>{'\u20B9'}{trade.targetPrice}</div>
                 </div>
                 <div>
                     <div style={{ fontSize: '0.54rem', color: '#f87171', textTransform: 'uppercase' }}>Stop</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 800 }}>₹{trade.stopLoss}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 800 }}>{'\u20B9'}{trade.stopLoss}</div>
                 </div>
             </div>
 
@@ -81,7 +92,7 @@ export const AITrackRecordCard = ({ trade }: { trade: any }) => {
                             background: 'rgba(139,92,246,0.05)', border: '1px solid rgba(139,92,246,0.15)',
                             fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5
                         }}>
-                            <div style={{ fontWeight: 700, color: '#a78bfa', marginBottom: 4, fontSize: '0.65rem', textTransform: 'uppercase' }}>Claude AI Reasoning</div>
+                            <div style={{ fontWeight: 700, color: '#a78bfa', marginBottom: 4, fontSize: '0.65rem', textTransform: 'uppercase' }}>Gemini AI Reasoning</div>
                             {trade.aiLogic}
                         </div>
                     )}

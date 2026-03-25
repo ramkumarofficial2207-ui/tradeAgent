@@ -3,7 +3,7 @@ import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import {
     BarChart2, Heart, Sun, Moon, Menu, X, Zap,
     TrendingUp, TrendingDown, Bell, BellRing,
-    Activity, Cpu, Wifi, WifiOff, CheckCircle2, AlertCircle, Clock, Bot, User, LogOut
+    Activity, Cpu, Wifi, WifiOff, CheckCircle2, AlertCircle, Clock, Bot, User, LogOut, Briefcase
 } from 'lucide-react'
 import axios from 'axios'
 import { useAgentSSE, AgentEvent } from '../lib/useAgentSSE'
@@ -15,6 +15,7 @@ interface Tick { label: string; value: string; positive: boolean }
 const NAV_ITEMS = [
     { path: '/', label: 'Dashboard', Icon: BarChart2 },
     { path: '/watchlist', label: 'Watchlist', Icon: Heart },
+    { path: '/portfolio', label: 'Portfolio', Icon: Briefcase },
 ]
 
 const SEVERITY_COLORS: Record<string, string> = {
@@ -272,18 +273,6 @@ export default function AppLayout() {
                                 {mobile ? <X size={18} /> : <Menu size={18} />}
                             </button>
 
-                            {/* Run Scanner */}
-                            <button
-                                onClick={() => { navigate('/'); window.dispatchEvent(new CustomEvent('trigger-scan')) }}
-                                className="btn btn-primary"
-                                style={{ padding: '6px 14px', fontSize: '0.78rem', gap: 5 }}
-                            >
-                                {status?.state === 'SCANNING'
-                                    ? <><span style={{ width: 11, height: 11, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid #fff', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> Scanning...</>
-                                    : <><Zap size={13} /> Run Scanner</>
-                                }
-                            </button>
-
                             {/* Notification bell */}
                             <button
                                 onClick={() => setShowNotifs(v => !v)}
@@ -407,7 +396,7 @@ export default function AppLayout() {
                     <strong style={{ color: 'var(--text-secondary)' }}>Disclaimer:</strong> StockSage AI is for educational and research purposes only. Not financial advice. Always consult a SEBI-registered advisor.
                 </p>
                 <p style={{ fontSize: '0.56rem', color: 'var(--text-muted)', marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-                    <Cpu size={8} /> StockSage AI &copy; 2026 &mdash; Agentic Trading Assistant &middot; Powered by Claude AI
+                    <Cpu size={8} /> StockSage AI &copy; 2026 {'\u2014'} Agentic Trading Assistant {'\u00B7'} Powered by Gemini AI
                 </p>
             </footer>
 

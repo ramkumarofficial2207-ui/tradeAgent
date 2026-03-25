@@ -13,6 +13,8 @@ import AgentWorkflowVisualizer from '../components/AgentWorkflowVisualizer'
 import MarketDashboardWidget from '../components/MarketDashboardWidget'
 import { AITrackRecordCard } from '../components/AITrackRecordCard'
 import { EquityCurveChart } from '../components/EquityCurveChart'
+import EconomicCalendarWidget from '../components/EconomicCalendarWidget'
+import FiiDiiWidget from '../components/FiiDiiWidget'
 
 /* ΓöÇΓöÇΓöÇ Types ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 interface MarketStatus {
@@ -201,6 +203,12 @@ function RightPanel({ navigate, sectors, sectorTime, watchlist }: { navigate: (p
 
             {/* Live Market + Sectors Widget */}
             <MarketDashboardWidget sectors={sectors} sectorTime={sectorTime} />
+
+            {/* Economic Calendar & FII/DII Widgets */}
+            <div style={{ padding: '0 4px', display: 'flex', flexDirection: 'column', gap: 16, marginTop: 4, marginBottom: 8 }}>
+                <EconomicCalendarWidget />
+                <FiiDiiWidget />
+            </div>
 
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 6 }}>

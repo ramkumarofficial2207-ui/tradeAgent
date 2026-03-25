@@ -11,6 +11,11 @@ export default function ProfilePage() {
     const [stats, setStats] = useState<{ total: number; won: number; lost: number; winRate: number } | null>(null)
     const [watchlistCount, setWatchlistCount] = useState(0)
 
+    const [whatsappNumber, setWhatsappNumber] = useState('')
+    const [notifyBuySignals, setNotifyBuySignals] = useState(true)
+    const [savingPrefs, setSavingPrefs] = useState(false)
+    const [saveMsg, setSaveMsg] = useState('')
+
     useEffect(() => {
         axios.get('/api/performance').then(({ data }) => {
             if (data.success) setStats(data.data.stats)
@@ -18,7 +23,27 @@ export default function ProfilePage() {
         axios.get('/api/watchlist').then(({ data }) => {
             if (data.success) setWatchlistCount(data.data.length)
         }).catch(() => { })
+        axios.get('/api/user/preferences').then(({ data }) => {
+            if (data.success && data.data) {
+                setWhatsappNumber(data.data.telegramChatId || '')
+                setNotifyBuySignals(data.data.notifyBuySignals !== false)
+            }
+        }).catch(() => {})
     }, [])
+
+    const savePrefs = async () => {
+        setSavingPrefs(true)
+        setSaveMsg('')
+        try {
+            await axios.post('/api/user/preferences', { whatsappNumber, notifyBuySignals })
+            setSaveMsg('Settings saved successfully')
+            setTimeout(() => setSaveMsg(''), 3000)
+        } catch (e) {
+            setSaveMsg('Failed to save settings')
+        } finally {
+            setSavingPrefs(false)
+        }
+    }
 
     const handleLogout = () => {
         logout()
@@ -67,7 +92,7 @@ export default function ProfilePage() {
             </div>
 
             {/* Quick actions */}
-            <div className="card" style={{ padding: '20px 20px' }}>
+            <div className="card" style={{ padding: '20px 20px', marginBottom: 24 }}>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.9rem', marginBottom: 14 }}>Quick Actions</div>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                     <button onClick={() => navigate('/')} className="btn btn-primary" style={{ gap: 6, fontSize: '0.78rem' }}>
@@ -79,6 +104,31 @@ export default function ProfilePage() {
                     <button onClick={handleLogout} className="btn btn-ghost" style={{ gap: 6, fontSize: '0.78rem', color: '#f87171' }}>
                         <LogOut size={13} /> Sign Out
                     </button>
+                </div>
+            </div>
+
+            {/* Notification Settings */}
+            <div className="card" style={{ padding: '20px 20px' }}>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.9rem', marginBottom: 6 }}>WhatsApp Alerts</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 16 }}>Receive high-confidence BUY signals directly on WhatsApp.</div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)' }}>WhatsApp Number</label>
+                        <input type="text" value={whatsappNumber} onChange={e => setWhatsappNumber(e.target.value)} placeholder="+919876543210 (include country code)" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: '0.85rem', color: 'var(--text-primary)', outline: 'none' }} />
+                    </div>
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginTop: 4 }}>
+                        <input type="checkbox" checked={notifyBuySignals} onChange={e => setNotifyBuySignals(e.target.checked)} style={{ width: 16, height: 16, accentColor: 'var(--blue)' }} />
+                        <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Send alerts for new BUY setups</span>
+                    </label>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+                        <button onClick={savePrefs} disabled={savingPrefs} className="btn btn-primary" style={{ padding: '8px 20px', fontSize: '0.82rem' }}>
+                            {savingPrefs ? 'Saving...' : 'Save Settings'}
+                        </button>
+                        {saveMsg && <span style={{ fontSize: '0.75rem', color: saveMsg.includes('Failed') ? '#f87171' : '#34d399', fontWeight: 600 }}>{saveMsg}</span>}
+                    </div>
                 </div>
             </div>
 
