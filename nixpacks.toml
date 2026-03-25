@@ -1,0 +1,12 @@
+[providers.node]
+nodeVersion = "20"
+
+[phases.build]
+cmds = ["npm install --include=dev", "npx prisma generate", "tsc", "cd frontend && npm install --include=dev && npm run build"]
+
+[phases.setup]
+cmds = []
+
+[environment]
+NIXPACKS_PRISMA_NO_GENERATE = "1"
+NIXPACKS_PRISMA_NO_MIGRATE = "1"
