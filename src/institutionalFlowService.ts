@@ -79,20 +79,27 @@ function parseTradingDate(value: unknown): Date | null {
     }
 
     const raw = String(value).trim();
+    const match = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+    if (match) {
+        const [, dayRaw, monthRaw, yearRaw] = match;
+        const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+        const monthIndex = months.indexOf(monthRaw.toLowerCase());
+        if (monthIndex === -1) return null;
+        return new Date(Date.UTC(Number(yearRaw), monthIndex, Number(dayRaw)));
+    }
+
+    const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) {
+        const [, yearRaw, monthRaw, dayRaw] = isoMatch;
+        return new Date(Date.UTC(Number(yearRaw), Number(monthRaw) - 1, Number(dayRaw)));
+    }
+
     const direct = new Date(raw);
     if (!Number.isNaN(direct.getTime())) {
         return new Date(Date.UTC(direct.getUTCFullYear(), direct.getUTCMonth(), direct.getUTCDate()));
     }
 
-    const match = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
-    if (!match) return null;
-
-    const [, dayRaw, monthRaw, yearRaw] = match;
-    const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-    const monthIndex = months.indexOf(monthRaw.toLowerCase());
-    if (monthIndex === -1) return null;
-
-    return new Date(Date.UTC(Number(yearRaw), monthIndex, Number(dayRaw)));
+    return null;
 }
 
 function toIsoDate(value: Date): string {
