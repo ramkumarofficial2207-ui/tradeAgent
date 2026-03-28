@@ -71,9 +71,8 @@ app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
     console.log(`[System] Mode: ${process.env.NODE_ENV}`);
 });
 
-// Root & Health for Railway
-app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-7' }));
-app.get('/', (req, res) => {
+app.get('/api/health', (_req, res) => res.status(200).json({ status: 'OK', v: 'fix-8' }));
+app.get('/', (_req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
         res.sendFile(indexPath, (err) => {
@@ -161,8 +160,10 @@ app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) 
         const trialExpiry = new Date();
         trialExpiry.setDate(trialExpiry.getDate() + 7);
         const user = await prisma.user.create({
-            data: { 
-                name, email, password: hashed,
+            data: {
+                name,
+                email,
+                password: hashed,
                 subscriptionStatus: 'TRIAL',
                 subscriptionExpiry: trialExpiry,
             },
