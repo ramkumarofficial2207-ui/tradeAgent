@@ -1,7 +1,7 @@
 // StockSage AI — Service Worker
 // Cache-first for static assets, network-first for API calls
 
-const CACHE_NAME = 'stocksage-v1';
+const CACHE_NAME = 'stocksage-v2';
 const STATIC_ASSETS = ['/', '/index.html'];
 
 self.addEventListener('install', (event) => {
@@ -31,6 +31,23 @@ self.addEventListener('fetch', (event) => {
                     headers: { 'Content-Type': 'application/json' }
                 })
             )
+        );
+        return;
+    }
+
+    // Network-first for navigation shell to avoid stale black-screen deploys
+    if (event.request.mode === 'navigate' || event.request.destination === 'document') {
+        event.respondWith(
+            fetch(event.request).then(response => {
+                if (response.ok) {
+                    const clone = response.clone();
+                    caches.open(CACHE_NAME).then(cache => cache.put('/index.html', clone));
+                }
+                return response;
+            }).catch(async () => {
+                const cached = await caches.match('/index.html');
+                return cached || Response.error();
+            })
         );
         return;
     }

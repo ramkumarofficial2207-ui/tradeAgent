@@ -9,10 +9,28 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>,
 )
 
-// Register service worker for PWA support
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {})
-  })
+async function clearServiceWorkerState() {
+  const registrations = await navigator.serviceWorker.getRegistrations()
+  await Promise.all(registrations.map(registration => registration.unregister()))
+
+  if ('caches' in window) {
+    const cacheKeys = await caches.keys()
+    await Promise.all(cacheKeys.map(key => caches.delete(key)))
+  }
 }
 
+// Register service worker for PWA support, but disable it on Railway backend domains.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    const isRailwayHost = window.location.hostname.endsWith('.railway.app')
+
+    if (isRailwayHost) {
+      clearServiceWorkerState().catch(() => {})
+      return
+    }
+
+    navigator.serviceWorker.register('/sw.js').then(registration => {
+      registration.update().catch(() => {})
+    }).catch(() => {})
+  })
+}
