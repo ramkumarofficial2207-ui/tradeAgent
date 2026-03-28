@@ -240,18 +240,33 @@ const FALLBACK_SECTORS = [
 
 
 /* ΓöÇΓöÇΓöÇ Right Panel ΓÇö Market + Sectors + Watchlist ΓöÇΓöÇΓöÇΓöÇ */
-function RightPanel({ navigate, sectors, sectorTime, watchlist }: { navigate: (p: string) => void; sectors: { n: string; v: number }[]; sectorTime: string | null; watchlist: any[] }) {
+function RightPanel({
+    navigate,
+    sectors,
+    sectorTime,
+    watchlist,
+    mobile = false,
+}: {
+    navigate: (p: string) => void
+    sectors: { n: string; v: number }[]
+    sectorTime: string | null
+    watchlist: any[]
+    mobile?: boolean
+}) {
     const buyCount = watchlist.filter(w => w.signal === 'BUY' || w.signal === 'LIGHT BUY').length
     const watchCount = watchlist.filter(w => w.signal === 'WATCH').length
+    const containerStyle: React.CSSProperties = mobile
+        ? { width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }
+        : { width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto', scrollbarWidth: 'none' }
 
     return (
-        <aside className="hide-xl" style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto', scrollbarWidth: 'none' }}>
+        <aside className={mobile ? undefined : 'hide-xl'} style={containerStyle}>
 
             {/* Live Market + Sectors Widget */}
             <MarketDashboardWidget sectors={sectors} sectorTime={sectorTime} />
 
             {/* Economic Calendar & FII/DII Widgets */}
-            <div style={{ padding: '0 4px', display: 'flex', flexDirection: 'column', gap: 16, marginTop: 4, marginBottom: 8 }}>
+            <div style={{ padding: mobile ? 0 : '0 4px', display: 'flex', flexDirection: 'column', gap: 16, marginTop: 4, marginBottom: 8 }}>
                 <EconomicCalendarWidget />
                 <FiiDiiWidget />
             </div>
@@ -287,6 +302,7 @@ function RightPanel({ navigate, sectors, sectorTime, watchlist }: { navigate: (p
                         background: 'var(--bg-card)', border: `1px solid ${sigColor}22`,
                         borderRadius: 12, padding: '11px 13px',
                         transition: 'all 0.2s',
+                        marginBottom: mobile ? 10 : 0,
                     }}
                         onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-2px)'}
                         onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.transform = 'none'}
@@ -585,6 +601,16 @@ export default function DashboardPage() {
                     </div>
 
                     {/* ΓöÇΓöÇΓöÇ TRACK RECORD UI ΓöÇΓöÇΓöÇ */}
+                    {isMobile && (
+                        <RightPanel
+                            mobile
+                            navigate={navigate}
+                            sectors={sectors}
+                            sectorTime={sectorTime}
+                            watchlist={watchlist}
+                        />
+                    )}
+
                     {showTracker && (
                         <div style={{ animation: 'fade-in 0.3s ease-out' }}>
                             {/* Stats Bar */}
