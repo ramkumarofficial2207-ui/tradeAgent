@@ -7,6 +7,7 @@ import cors from 'cors';
 import path from 'path';
 import cron from 'node-cron';
 import bcrypt from 'bcryptjs';
+import { exec } from 'child_process';
 import { runScanner, buildTradeSetups } from './scanner';
 import { ScanResult } from './types';
 import { getTradingApiFromEnv, fetchHistoricalData, fetchNiftyData } from './dataService';
@@ -47,6 +48,8 @@ const dbHealth: {
     checkedAt: null,
     message: null,
 };
+let dbRepairAttempted = false;
+let dbRepairInFlight = false;
 
 function isDatabaseError(err: any): boolean {
     const raw = (err && typeof err === 'object' && err.message) ? String(err.message) : String(err || '');
@@ -69,6 +72,14 @@ function summarizeDbError(err: any): string {
     return normalized.slice(0, 240);
 }
 
+function shouldAttemptDatabaseRepair(err: any): boolean {
+    if (!isDatabaseError(err)) return false;
+    const message = summarizeDbError(err).toLowerCase();
+    return message.includes('does not exist in the current database') ||
+        message.includes('table') && message.includes('does not exist') ||
+        message.includes('has not been created yet');
+}
+
 function markDatabaseHealthy(): void {
     dbHealth.status = 'ready';
     dbHealth.checkedAt = new Date().toISOString();
@@ -79,6 +90,22 @@ function markDatabaseError(err: any): void {
     dbHealth.status = 'error';
     dbHealth.checkedAt = new Date().toISOString();
     dbHealth.message = summarizeDbError(err);
+}
+
+function attemptDatabaseRepair(reason: any): void {
+    if (dbRepairAttempted || dbRepairInFlight || !shouldAttemptDatabaseRepair(reason)) return;
+    dbRepairAttempted = true;
+    dbRepairInFlight = true;
+    console.warn('[System] Database schema mismatch detected. Attempting one-time prisma db push...');
+    exec('npx prisma db push', { cwd: process.cwd() }, async (err, stdout, stderr) => {
+        dbRepairInFlight = false;
+        if (err) {
+            console.error('[System] Database repair failed:', (stderr || err.message || '').trim());
+            return;
+        }
+        if (stdout?.trim()) console.log('[System] Database repair output:', stdout.trim());
+        await verifyDatabaseConnection();
+    });
 }
 
 async function verifyDatabaseConnection(): Promise<void> {
@@ -95,6 +122,7 @@ async function verifyDatabaseConnection(): Promise<void> {
     } catch (err: any) {
         markDatabaseError(err);
         console.error('[System] Database connection failed:', summarizeDbError(err));
+        attemptDatabaseRepair(err);
     }
 }
 
@@ -105,6 +133,7 @@ function sanitizeError(err: any): string {
     
     if (isDatabaseError(err)) {
         markDatabaseError(err);
+        attemptDatabaseRepair(err);
         return 'Database is temporarily unavailable. Please try again later.';
     }
     
