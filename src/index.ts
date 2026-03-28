@@ -197,6 +197,8 @@ app.get('/api/ready', (_req, res) => {
 app.get('/', (_req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
+        // Prevent caching of index.html to ensure clients always get the latest hashed asset references
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.sendFile(indexPath, (err) => {
             if (err) {
                 console.error('[Static] Failed to serve index.html:', err.message);
@@ -853,7 +855,10 @@ app.post('/api/portfolio/trade', requireAuth, async (req: AuthRequest, res: Resp
 
 // SPA Fallback
 if (process.env.NODE_ENV === 'production') {
-    app.get('*', (_req, res) => res.sendFile(path.join(FRONTEND_DIST, 'index.html')));
+    app.get('*', (_req, res) => {
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
 }
 
 function computeNextScan(): string {
