@@ -131,14 +131,10 @@ app.use((0, cors_1.default)());
 app.use(express_1.default.json());
 // In production, serve the built React frontend
 const FRONTEND_DIST = path_1.default.join(__dirname, '..', 'frontend', 'dist');
-// ——————————————————————————————————————————
-// 🚀 EMERGENCY BOOT: BIND PORT IMMEDIATELY
-// ——————————————————————————————————————————
-app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
-    console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
-    console.log(`[System] Mode: ${process.env.NODE_ENV}`);
-    void verifyDatabaseConnection();
-});
+if (process.env.NODE_ENV === 'production') {
+    app.use(express_1.default.static(FRONTEND_DIST));
+}
+// Routes
 app.get('/api/health', (_req, res) => res.status(200).json({
     status: 'OK',
     v: 'fix-Intelligence5.0',
@@ -160,17 +156,16 @@ app.get('/', (_req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path_1.default.join(FRONTEND_DIST, 'index.html');
         res.sendFile(indexPath, (err) => {
-            if (err)
-                res.status(200).send('StockSage AI Backend Operational (Frontend loading...)');
+            if (err) {
+                console.error('[Static] Failed to serve index.html:', err.message);
+                res.status(200).send('StockSage AI Backend Operational (Initial Booting...)');
+            }
         });
     }
     else {
-        res.status(200).send('StockSage AI Backend Operational');
+        res.status(200).send('StockSage AI Backend Operational (Development Mode)');
     }
 });
-if (process.env.NODE_ENV === 'production') {
-    app.use(express_1.default.static(FRONTEND_DIST));
-}
 // Global process handlers
 process.on('uncaughtException', (err) => {
     console.error('[System] Uncaught Exception:', err);
@@ -680,21 +675,73 @@ app.post('/api/chat', rateLimiter_1.chatLimiter, authMiddleware_1.requireAuth, s
                 const closes = candles.map(c => c.close);
                 const ltp = closes[closes.length - 1];
                 const dma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / Math.min(200, closes.length);
-                const rawCandles = candles.slice(-10).map(c => `[${c.date.split('T')[0]}] O:${c.open.toFixed(1)} C:${c.close.toFixed(1)}`).join('\n');
-                technicalContext = `\n[QUANT DATA] ${detectedTicker}: CMP ₹${ltp.toFixed(2)}, DMA200 ₹${dma200.toFixed(2)}\n[RAW PRICE ACTION]\n${rawCandles}`;
-                stockCardData = { ticker: detectedTicker, price: +ltp.toFixed(2), signal: ltp > dma200 ? 'BUY' : 'WATCH' };
+                const ema20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+                // Accurate RSI(14) with Wilder's Smoothing
+                let avgGain = 0, avgLoss = 0;
+                for (let i = 1; i <= 14; i++) {
+                    const diff = closes[closes.length - 15 + i] - closes[closes.length - 16 + i];
+                    if (diff > 0)
+                        avgGain += diff;
+                    else
+                        avgLoss += Math.abs(diff);
+                }
+                avgGain /= 14;
+                avgLoss /= 14;
+                // Smoothing step (if more data exists)
+                const smoothingPeriods = Math.min(closes.length - 15, 5); // 5 extra sessions for smoothing
+                for (let i = 1; i <= smoothingPeriods; i++) {
+                    const diff = closes[closes.length - smoothingPeriods + i] - closes[closes.length - smoothingPeriods + i - 1];
+                    const gain = diff > 0 ? diff : 0;
+                    const loss = diff < 0 ? Math.abs(diff) : 0;
+                    avgGain = (avgGain * 13 + gain) / 14;
+                    avgLoss = (avgLoss * 13 + loss) / 14;
+                }
+                const rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / (avgLoss || 1))));
+                const rawCandles = candles.slice(-10).map(c => `[${c.date.split('T')[0]}] O:${c.open.toFixed(1)} H:${c.high.toFixed(1)} L:${c.low.toFixed(1)} C:${c.close.toFixed(1)} Vol:${(c.volume / 1000).toFixed(0)}k`).join('\n');
+                technicalContext = `
+[QUANT DATA] Live Technicals for ${detectedTicker} (NSE):
+- CMP: ₹${ltp.toFixed(2)} | RSI(14): ${rsi.toFixed(1)}
+- 200 DMA: ₹${dma200.toFixed(2)} (Current price is ${ltp > dma200 ? 'ABOVE' : 'BELOW'})
+- 20 EMA: ₹${ema20.toFixed(2)} (Short-term trend: ${ltp > ema20 ? 'Bullish' : 'Bearish'})
+- Sector: ${fund?.sector || dataService_1.SECTOR_MAP[detectedTicker] || 'N/A'}
+
+[RAW PRICE ACTION - LAST 10 SESSIONS]
+${rawCandles}
+`;
+                const conf = (ltp > dma200 && rsi < 65) ? 8 : (ltp > dma200) ? 6 : 4;
+                stockCardData = {
+                    ticker: detectedTicker,
+                    price: +ltp.toFixed(2),
+                    signal: conf >= 7 ? 'BUY' : 'WATCH',
+                    buyZone: +ltp.toFixed(2),
+                    target: +(ltp * 1.08).toFixed(2),
+                    stopLoss: +(ltp * 0.96).toFixed(2),
+                    confidenceScore: conf,
+                    sector: fund?.sector || dataService_1.SECTOR_MAP[detectedTicker] || 'NSE Stock',
+                    setupType: ltp > dma200 ? 'Trend Continuation' : 'Mean Reversion',
+                };
             }
         }
-        catch { }
+        catch { /* proceed */ }
     }
     const nowIST = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
-    const systemPrompt = `You are StockSage Intelligence — Multi-Agent Quant Trading system. 
-Time: ${nowIST}
+    const topSetups = lastSwingScan?.setups?.slice(0, 3).map(s => s.ticker).join(', ') || 'Scanning...';
+    const systemPrompt = `You are StockSage Intelligence — an autonomous Multi-Agent Quant Trading system.
+Current Time: ${nowIST} (IST)
+
+[CONTEXT]
+- Global Regime: ${lastSwingScan?.marketStatus?.regime || 'NEUTRAL'}
+- Active Scanner alerts: ${topSetups}
 ${technicalContext}
-Rules: 
-1. Use RAW PRICE ACTION to justify tactical stance.
-2. Speake as a Consensus Board. 
-3. Concise, professional, under 280 words.`;
+
+[RULES]
+1. Speak as a professional CONSENSUS BOARD consisting of three specialized personas:
+   - QUANT ANALYST: Analyze technical indicators and raw price action.
+   - MACRO STRATEGIST: Global regime and sentiment synthesis.
+   - RISK MANAGER: Final verdict, targets, and stop-loss levels.
+2. Use the "RAW PRICE ACTION" data to justify your tactical stance.
+3. Provide a clear "Final Verdict" for swing traders.
+4. Keep under 300 words. No "I am an AI" disclaimers.`;
     try {
         const reply = await (0, geminiClient_1.geminiAsk)(systemPrompt, message, { maxTokens: 450, temperature: 0.5 });
         res.json({ success: true, reply, stockCard: stockCardData });
@@ -765,4 +812,12 @@ if (process.env.NODE_ENV === 'production') {
 function computeNextScan() {
     return new Date().toISOString();
 }
+// =====================================================
+// 🚀 FINAL START: BIND PORT
+// =====================================================
+app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
+    console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
+    console.log(`[System] Mode: ${process.env.NODE_ENV || 'development'}`);
+    void verifyDatabaseConnection();
+});
 //# sourceMappingURL=index.js.map

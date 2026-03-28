@@ -172,15 +172,11 @@ app.use(express.json());
 // In production, serve the built React frontend
 const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
 
-// ——————————————————————————————————————————
-// 🚀 EMERGENCY BOOT: BIND PORT IMMEDIATELY
-// ——————————————————————————————————————————
-app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
-    console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
-    console.log(`[System] Mode: ${process.env.NODE_ENV}`);
-    void verifyDatabaseConnection();
-});
+if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(FRONTEND_DIST));
+}
 
+// Routes
 app.get('/api/health', (_req, res) => res.status(200).json({
     status: 'OK',
     v: 'fix-Intelligence5.0',
@@ -202,16 +198,15 @@ app.get('/', (_req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
         res.sendFile(indexPath, (err) => {
-            if (err) res.status(200).send('StockSage AI Backend Operational (Frontend loading...)');
+            if (err) {
+                console.error('[Static] Failed to serve index.html:', err.message);
+                res.status(200).send('StockSage AI Backend Operational (Initial Booting...)');
+            }
         });
     } else {
-        res.status(200).send('StockSage AI Backend Operational');
+        res.status(200).send('StockSage AI Backend Operational (Development Mode)');
     }
 });
-
-if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(FRONTEND_DIST));
-}
 
 // Global process handlers
 process.on('uncaughtException', (err) => {
@@ -864,3 +859,12 @@ if (process.env.NODE_ENV === 'production') {
 function computeNextScan(): string {
     return new Date().toISOString();
 }
+
+// =====================================================
+// 🚀 FINAL START: BIND PORT
+// =====================================================
+app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
+    console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
+    console.log(`[System] Mode: ${process.env.NODE_ENV || 'development'}`);
+    void verifyDatabaseConnection();
+});
