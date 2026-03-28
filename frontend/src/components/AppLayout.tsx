@@ -204,12 +204,12 @@ export default function AppLayout() {
                     borderBottom: '1px solid var(--border)',
                     boxShadow: '0 1px 0 rgba(255,255,255,0.03)',
                 }}>
-                    <div style={{ maxWidth: 1480, margin: '0 auto', padding: isMobile ? '0 12px' : '0 20px', height: 64, display: 'flex', alignItems: 'center', gap: 0 }}>
+                    <div style={{ maxWidth: 1480, margin: '0 auto', padding: isMobile ? '0 10px' : '0 20px', height: 64, display: 'flex', alignItems: 'center', gap: 0 }}>
 
                         {/* Logo */}
                         <button
                             onClick={() => navigate('/')}
-                            style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', cursor: 'pointer', padding: '0 16px 0 0', flexShrink: 0 }}
+                            style={{ display: 'flex', alignItems: 'center', gap: isPhone ? 8 : 10, background: 'none', border: 'none', cursor: 'pointer', padding: isPhone ? '0 8px 0 0' : '0 16px 0 0', flexShrink: 0, minWidth: 0 }}
                         >
                             <div style={{
                                 width: 34, height: 34, borderRadius: 10,
@@ -229,7 +229,7 @@ export default function AppLayout() {
                                 )}
                             </div>
                             <div>
-                                <div style={{ fontFamily: 'var(--font-display)', fontSize: isPhone ? '0.88rem' : '1rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)', lineHeight: 1.1 }}>StockSage AI</div>
+                                <div style={{ fontFamily: 'var(--font-display)', fontSize: isPhone ? '0.82rem' : '1rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)', lineHeight: 1.1, whiteSpace: 'nowrap' }}>StockSage AI</div>
                                 <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)', letterSpacing: '0.02em', marginTop: 1, display: isMobile ? 'none' : 'flex', alignItems: 'center', gap: 4 }}>
                                     <Cpu size={8} />
                                     Agentic Trading Assistant
@@ -266,13 +266,13 @@ export default function AppLayout() {
                         </nav>
 
                         {/* Right controls */}
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 'auto', flexShrink: 0, position: 'relative' }}>
+                        <div style={{ display: 'flex', gap: isPhone ? 4 : 6, alignItems: 'center', marginLeft: 'auto', flexShrink: 0, position: 'relative' }}>
                             {/* Mobile menu button */}
                             <button
                                 id="mobile-menu-btn"
                                 onClick={() => setMobile(!mobile)}
                                 className="btn btn-icon btn-ghost"
-                                style={{ display: 'none' }}
+                                style={{ display: 'none', width: isPhone ? 34 : undefined, height: isPhone ? 34 : undefined }}
                                 title="Menu"
                             >
                                 {mobile ? <X size={18} /> : <Menu size={18} />}
@@ -283,7 +283,7 @@ export default function AppLayout() {
                                 onClick={() => setShowNotifs(v => !v)}
                                 className="btn btn-icon btn-ghost"
                                 title="AI Agent Activity"
-                                style={{ position: 'relative' }}
+                                style={{ position: 'relative', width: isPhone ? 34 : undefined, height: isPhone ? 34 : undefined }}
                             >
                                 {unreadCount > 0 ? <BellRing size={15} style={{ color: '#fbbf24' }} /> : <Bell size={15} />}
                                 {unreadCount > 0 && (
@@ -307,24 +307,26 @@ export default function AppLayout() {
                             )}
 
                             {/* Theme toggle */}
-                            <button
-                                onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-                                className="btn btn-icon btn-ghost"
-                                title="Toggle theme"
-                            >
-                                {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-                            </button>
+                            {!isPhone && (
+                                <button
+                                    onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+                                    className="btn btn-icon btn-ghost"
+                                    title="Toggle theme"
+                                >
+                                    {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+                                </button>
+                            )}
                             {/* User Avatar */}
                             {user && (
                                 <div style={{ position: 'relative' }}>
                                     <button
                                         onClick={() => setShowUserMenu(v => !v)}
                                         style={{
-                                            width: 32, height: 32, borderRadius: '50%',
+                                            width: isPhone ? 30 : 32, height: isPhone ? 30 : 32, borderRadius: '50%',
                                             background: 'linear-gradient(135deg, #2563eb, #7c3aed)',
                                             border: 'none', cursor: 'pointer',
                                             display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                            fontFamily: 'var(--font-display)', fontSize: '0.62rem', fontWeight: 900, color: '#fff',
+                                            fontFamily: 'var(--font-display)', fontSize: isPhone ? '0.58rem' : '0.62rem', fontWeight: 900, color: '#fff',
                                             boxShadow: '0 0 12px rgba(124,58,237,0.35)',
                                         }}
                                         title={user.name || user.email}

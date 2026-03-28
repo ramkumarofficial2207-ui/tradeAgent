@@ -5,7 +5,6 @@ import {
     Zap, SlidersHorizontal, Cpu, CheckCircle2, Clock, Bookmark,
     TrendingUp, BarChart3, Target, Activity, ShieldCheck, History
 } from 'lucide-react'
-import { getWatchlist } from '../lib/watchlist'
 import { useWatchlist } from '../lib/useWatchlist'
 import { useAgentSSE } from '../lib/useAgentSSE'
 import AIActionCard from '../components/AIActionCard'
@@ -271,6 +270,8 @@ function RightPanel({
                 <FiiDiiWidget />
             </div>
 
+            {false && (
+            <>
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 6 }}>
                 <div>
@@ -332,7 +333,8 @@ function RightPanel({
                     </div>
                 )
             })}
-
+            </>
+            )}
         </aside>
     )
 }
@@ -474,28 +476,28 @@ export default function DashboardPage() {
                     {/* ΓöÇΓöÇ AI COMMAND CENTER v2 ΓöÇΓöÇ */}
                     <div className="gradient-border" style={{
                         background: 'linear-gradient(135deg, rgba(34,211,238,0.03), rgba(139,92,246,0.02))',
-                        borderRadius: 16, padding: isMobile ? '12px 12px' : '14px 18px',
+                        borderRadius: 16, padding: isMobile ? '10px 10px 12px' : '14px 18px',
                         position: 'relative', overflow: 'hidden',
                     }}>
                         {/* Ambient glow */}
                         <div style={{ position: 'absolute', top: -30, right: -30, width: 100, height: 100, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.08), transparent 70%)', pointerEvents: 'none' }} />
 
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, position: 'relative' }}>
+                        <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', flexWrap: 'wrap', gap: isMobile ? 10 : 12, position: 'relative' }}>
                             {/* Left ΓÇö Agent identity + status */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, width: isMobile ? '100%' : 'auto' }}>
                                 <div style={{
-                                    width: 36, height: 36, borderRadius: 10,
+                                    width: isMobile ? 32 : 36, height: isMobile ? 32 : 36, borderRadius: 10,
                                     background: 'linear-gradient(135deg, rgba(34,211,238,0.15), rgba(139,92,246,0.1))',
                                     border: '1px solid rgba(34,211,238,0.2)',
                                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                                     boxShadow: '0 0 16px rgba(34,211,238,0.12)',
                                     flexShrink: 0,
                                 }}>
-                                    <Cpu size={17} color="#22d3ee" strokeWidth={2} />
+                                    <Cpu size={isMobile ? 15 : 17} color="#22d3ee" strokeWidth={2} />
                                 </div>
-                                <div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                                        <span style={{ fontFamily: 'var(--font-display)', fontSize: isPhone ? '0.9rem' : '1rem', fontWeight: 900, letterSpacing: '-0.02em' }}>StockSage AI</span>
+                                <div style={{ minWidth: 0 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: isMobile ? 0 : 2, flexWrap: 'wrap' }}>
+                                        <span style={{ fontFamily: 'var(--font-display)', fontSize: isPhone ? '0.82rem' : '1rem', fontWeight: 900, letterSpacing: '-0.02em', lineHeight: 1.1 }}>StockSage AI</span>
                                         <span style={{
                                             fontSize: '0.52rem', fontWeight: 700,
                                             color: scanning ? '#a78bfa' : '#22d3ee',
@@ -508,7 +510,7 @@ export default function DashboardPage() {
                                             {scanning ? 'Scanning...' : status?.state === 'IDLE' ? 'Active' : 'Ready'}
                                         </span>
                                     </div>
-                                    <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: isPhone ? 'none' : 'block' }}>
+                                    <p style={{ fontSize: isMobile ? '0.58rem' : '0.68rem', color: 'var(--text-muted)', display: isPhone ? 'none' : 'block', marginTop: isMobile ? 3 : 0, lineHeight: 1.35 }}>
                                         {scanMode === 'intraday'
                                             ? 'Liquid NSE leaders · 5m momentum · EMA pullbacks · Volume expansion'
                                             : 'Nifty 1000 Universe · DMA200 · RSI · Volume · Gemini AI'}
@@ -542,8 +544,8 @@ export default function DashboardPage() {
                                 </div>
                             )}
 
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMobile ? 'stretch' : 'flex-end', gap: 6, width: isMobile ? '100%' : 'auto' }}>
-                                <div style={{ display: 'flex', gap: 6, padding: 4, borderRadius: 999, background: 'rgba(15,23,42,0.5)', border: '1px solid var(--border)' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMobile ? 'stretch' : 'flex-end', gap: isMobile ? 8 : 6, width: isMobile ? '100%' : 'auto' }}>
+                                <div style={{ display: 'flex', gap: 6, padding: 4, borderRadius: 999, background: 'rgba(15,23,42,0.5)', border: '1px solid var(--border)', width: isMobile ? '100%' : 'auto' }}>
                                     {[
                                         { key: 'swing', label: 'Swing' },
                                         { key: 'intraday', label: 'Intraday' },
@@ -553,19 +555,21 @@ export default function DashboardPage() {
                                             onClick={() => setScanMode(option.key as 'swing' | 'intraday')}
                                             className="btn"
                                             style={{
-                                                padding: '5px 10px',
-                                                fontSize: '0.68rem',
+                                                flex: isMobile ? 1 : undefined,
+                                                padding: isMobile ? '8px 10px' : '5px 10px',
+                                                fontSize: isMobile ? '0.74rem' : '0.68rem',
                                                 minWidth: 0,
                                                 background: scanMode === option.key ? 'linear-gradient(135deg, #2563eb, #4f46e5)' : 'transparent',
                                                 color: scanMode === option.key ? '#fff' : 'var(--text-secondary)',
                                                 border: scanMode === option.key ? '1px solid rgba(96,165,250,0.35)' : '1px solid transparent',
+                                                justifyContent: 'center',
                                             }}
                                         >
                                             {option.label}
                                         </button>
                                     ))}
                                 </div>
-                                <button onClick={runScan} disabled={scanning} className="btn btn-primary" style={{ padding: '8px 18px', fontSize: '0.82rem', gap: 6, flexShrink: 0, width: isMobile ? '100%' : 'auto', justifyContent: 'center' }}>
+                                <button onClick={runScan} disabled={scanning} className="btn btn-primary" style={{ padding: isMobile ? '10px 16px' : '8px 18px', minHeight: isMobile ? 46 : undefined, fontSize: isMobile ? '0.9rem' : '0.82rem', gap: 6, flexShrink: 0, width: isMobile ? '100%' : 'auto', justifyContent: 'center' }}>
                                     {scanning
                                         ? <><span style={{ width: 13, height: 13, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid #fff', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> Scanning...</>
                                         : <><Zap size={14} /> {scanMode === 'intraday' ? 'Run Intraday' : 'Run Scanner'}</>
@@ -581,20 +585,20 @@ export default function DashboardPage() {
                     </div>
 
                     {/* Filter bar and Toggle */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                    <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', flexWrap: 'wrap', gap: 10 }}>
                         {setups.length > 0 && !showTracker ? (
-                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', width: isMobile ? '100%' : 'auto' }}>
                                 {FILTER_OPTIONS.map(f => (
                                     <button key={f.key} onClick={() => setFilter(f.key)} className={`filter-pill ${filter === f.key ? 'active' : ''}`}>{f.label}</button>
                                 ))}
                                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: 4 }}>{filtered.length} result{filtered.length !== 1 ? 's' : ''}</span>
                             </div>
-                        ) : <div />}
+                        ) : <div style={{ display: isMobile ? 'none' : 'block' }} />}
 
                         <button
                             onClick={() => setShowTracker(!showTracker)}
                             className={`btn ${showTracker ? 'btn-primary' : 'btn-ghost'}`}
-                            style={{ padding: '6px 14px', fontSize: '0.78rem', gap: 6, borderRadius: 20 }}
+                            style={{ padding: isMobile ? '10px 14px' : '6px 14px', fontSize: '0.78rem', gap: 6, borderRadius: 20, width: isMobile ? '100%' : 'auto', justifyContent: 'center' }}
                         >
                             <History size={14} /> AI Track Record
                         </button>
