@@ -34,8 +34,14 @@ import { requireSubscription } from './subscriptionMiddleware';
 import { createTrade, closeTrade, getPortfolioSummary, updateTradeCurrentPrice } from './portfolioService';
 import { sendBuyAlert, sendPreMarketDigest } from './whatsappAlert';
 import { notifyUsersWithMorningDigest, notifyUsersWithPostMarketSummary } from './notificationService';
-import { getInstitutionalFlowSummary, refreshInstitutionalFlow } from './institutionalFlowService';
 import {
+    getInstitutionalFlowSummary,
+    importInstitutionalFlowCsv,
+    seedInstitutionalFlowIfEmpty,
+    syncInstitutionalFlowFromOfficialReport,
+} from './institutionalFlowService';
+import {
+    adminInstitutionalFlowImportSchema,
     adminActivateSchema,
     chatSchema,
     loginSchema,
@@ -1154,7 +1160,7 @@ cron.schedule('45 15 * * 1-5', async () => {
 // Refresh institutional flow after the market close data settles.
 cron.schedule('10 18 * * 1-5', async () => {
     try {
-        const summary = await refreshInstitutionalFlow(true);
+        const summary = await syncInstitutionalFlowFromOfficialReport();
         console.log(`[CRON] Institutional flow refresh complete (${summary.status})`);
     } catch (err: any) {
         console.error('[CRON] Institutional flow refresh failed:', err.message);
@@ -1254,7 +1260,7 @@ setTimeout(() => {
         setNextScan(computeNextScan());
         pushEvent('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized in background.');
         setImmediate(() => {
-            refreshInstitutionalFlow().catch((err: any) => {
+            seedInstitutionalFlowIfEmpty().catch((err: any) => {
                 console.error('[System] Institutional flow warm-up failed:', err.message);
             });
         });
@@ -1408,6 +1414,34 @@ app.post('/api/admin/activate', validateBody(adminActivateSchema), async (req: R
     }
 });
 
+app.post('/api/admin/fii-dii/refresh', async (req: Request, res: Response) => {
+    const adminSecret = req.headers['x-admin-secret'];
+    if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+        res.status(403).json({ success: false, message: 'Forbidden.' });
+        return;
+    }
+    try {
+        const summary = await syncInstitutionalFlowFromOfficialReport();
+        res.json({ success: true, data: summary });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.post('/api/admin/fii-dii/import', validateBody(adminInstitutionalFlowImportSchema), async (req: Request, res: Response) => {
+    const adminSecret = req.headers['x-admin-secret'];
+    if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+        res.status(403).json({ success: false, message: 'Forbidden.' });
+        return;
+    }
+    try {
+        const summary = await importInstitutionalFlowCsv(req.body.csv, req.body.source);
+        res.json({ success: true, data: summary });
+    } catch (err: any) {
+        res.status(400).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
 // ══════════════════════════════════════════════
 // ECONOMIC CALENDAR
 // ══════════════════════════════════════════════
@@ -1448,10 +1482,9 @@ app.get('/api/economic-calendar', (_req: Request, res: Response) => {
 // ══════════════════════════════════════════════
 // FII/DII DATA
 // ══════════════════════════════════════════════
-app.get('/api/fii-dii', async (req: Request, res: Response) => {
+app.get('/api/fii-dii', async (_req: Request, res: Response) => {
     try {
-        const forceRefresh = req.query.refresh === 'true';
-        const summary = await getInstitutionalFlowSummary(forceRefresh);
+        const summary = await getInstitutionalFlowSummary();
         res.json({ success: true, data: summary });
     } catch (err: any) {
         console.error('[FII-DII] Data fetch failed:', err.message);

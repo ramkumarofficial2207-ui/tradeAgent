@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { parse as parseCsv } from 'csv-parse/sync';
 import prisma from './prismaClient';
 
 export interface InstitutionalFlowDay {
@@ -16,7 +17,7 @@ export interface InstitutionalFlowDay {
 }
 
 export interface InstitutionalFlowSummary {
-    status: 'live' | 'database' | 'unavailable';
+    status: 'database' | 'sync' | 'unavailable';
     source: string;
     fetchedAt: string | null;
     lastTradingDate: string | null;
@@ -38,17 +39,30 @@ export interface InstitutionalFlowSummary {
     };
 }
 
-type CacheEntry = {
-    summary: InstitutionalFlowSummary;
-    ts: number;
+const HISTORY_LIMIT = 20;
+const REPORT_PAGE_URL = 'https://www.nseindia.com/reports/fii-dii';
+const NSE_ONLY_CSV_URL = 'https://www.nseindia.com/api/fiidiiTradeNse?csv=true';
+const DB_CACHE_TTL_MS = 30 * 60 * 1000;
+
+let summaryCache: { summary: InstitutionalFlowSummary; ts: number } | null = null;
+let syncInFlight: Promise<InstitutionalFlowSummary> | null = null;
+
+type RawSnapshot = {
+    tradingDate: Date;
+    fiiBuy: number;
+    fiiSell: number;
+    fiiNet: number;
+    diiBuy: number;
+    diiSell: number;
+    diiNet: number;
+    totalNet: number;
+    source: string;
+    fetchedAt: Date;
 };
 
-const CACHE_TTL_MS = 30 * 60 * 1000;
-const HISTORY_LIMIT = 20;
-const NSE_HOME_URL = 'https://www.nseindia.com/';
-const NSE_FLOW_URL = 'https://www.nseindia.com/api/fiidiiTradeReact';
-
-let summaryCache: CacheEntry | null = null;
+function roundCr(value: number): number {
+    return Number(value.toFixed(2));
+}
 
 function parseNumber(value: unknown): number {
     if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -83,10 +97,6 @@ function parseTradingDate(value: unknown): Date | null {
 
 function toIsoDate(value: Date): string {
     return value.toISOString().slice(0, 10);
-}
-
-function roundCr(value: number): number {
-    return Number(value.toFixed(2));
 }
 
 function classifyDay(totalNet: number): 'RISK_ON' | 'RISK_OFF' | 'MIXED' {
@@ -135,9 +145,6 @@ function summarizeTrend(series: InstitutionalFlowDay[]) {
         score += Math.sign(latest?.fiiNet ?? 0) > 0 ? 1 : -1;
     }
 
-    const bias: 'RISK_ON' | 'RISK_OFF' | 'MIXED' = score >= 2 ? 'RISK_ON' : score <= -2 ? 'RISK_OFF' : 'MIXED';
-    const detail = buildTrendDetail(score, latest, totalNet5d, totalNet20d);
-
     return {
         latest,
         totals: {
@@ -148,9 +155,9 @@ function summarizeTrend(series: InstitutionalFlowDay[]) {
             totalNet20dCr: totalNet20d,
         },
         trend: {
-            bias,
+            bias: score >= 2 ? 'RISK_ON' as const : score <= -2 ? 'RISK_OFF' as const : 'MIXED' as const,
             score,
-            detail,
+            detail: buildTrendDetail(score, latest, totalNet5d, totalNet20d),
         },
     };
 }
@@ -168,7 +175,7 @@ function createSummary(series: InstitutionalFlowDay[], status: InstitutionalFlow
 
     return {
         status,
-        source: latest?.source ?? 'NSE',
+        source: latest?.source ?? 'NSE Official Report',
         fetchedAt,
         lastTradingDate,
         isStale,
@@ -180,21 +187,92 @@ function createSummary(series: InstitutionalFlowDay[], status: InstitutionalFlow
     };
 }
 
-function getNseHeaders(cookie?: string) {
+function normalizeRow(record: Record<string, string>): { category: string; date: Date; buyValue: number; sellValue: number; netValue: number } | null {
+    const normalizedEntries = Object.entries(record).map(([key, value]) => [
+        key.replace(/\s+/g, ' ').replace(/[^\w/() ]/g, '').trim().toLowerCase(),
+        String(value ?? '').trim(),
+    ]);
+    const data = Object.fromEntries(normalizedEntries);
+
+    const category = String(data['category'] ?? '').toUpperCase();
+    const tradingDate = parseTradingDate(data['date']);
+    if (!category || !tradingDate) return null;
+
     return {
-        'Accept': 'application/json,text/plain,*/*',
+        category,
+        date: tradingDate,
+        buyValue: roundCr(parseNumber(data['buy value ( crores)'] ?? data['buy value ()'] ?? data['buy value'])),
+        sellValue: roundCr(parseNumber(data['sell value ( crores)'] ?? data['sell value ()'] ?? data['sell value'])),
+        netValue: roundCr(parseNumber(data['net value ( crores)'] ?? data['net value ()'] ?? data['net value'])),
+    };
+}
+
+function buildSnapshotFromRows(rows: Array<{ category: string; date: Date; buyValue: number; sellValue: number; netValue: number }>, source: string): RawSnapshot {
+    const fii = rows.find(row => row.category.includes('FII'));
+    const dii = rows.find(row => row.category.includes('DII'));
+    const tradingDate = fii?.date ?? dii?.date;
+
+    if (!tradingDate) {
+        throw new Error('Official FII/DII report did not contain a trading date');
+    }
+
+    const fiiBuy = roundCr(fii?.buyValue ?? 0);
+    const fiiSell = roundCr(fii?.sellValue ?? 0);
+    const fiiNet = roundCr(fii?.netValue ?? 0);
+    const diiBuy = roundCr(dii?.buyValue ?? 0);
+    const diiSell = roundCr(dii?.sellValue ?? 0);
+    const diiNet = roundCr(dii?.netValue ?? 0);
+    const totalNet = roundCr(fiiNet + diiNet);
+
+    return {
+        tradingDate,
+        fiiBuy,
+        fiiSell,
+        fiiNet,
+        diiBuy,
+        diiSell,
+        diiNet,
+        totalNet,
+        source,
+        fetchedAt: new Date(),
+    };
+}
+
+function snapshotToDay(snapshot: RawSnapshot): InstitutionalFlowDay {
+    return {
+        tradingDate: toIsoDate(snapshot.tradingDate),
+        fiiBuy: snapshot.fiiBuy,
+        fiiSell: snapshot.fiiSell,
+        fiiNet: snapshot.fiiNet,
+        diiBuy: snapshot.diiBuy,
+        diiSell: snapshot.diiSell,
+        diiNet: snapshot.diiNet,
+        totalNet: snapshot.totalNet,
+        marketBias: classifyDay(snapshot.totalNet),
+        source: snapshot.source,
+        fetchedAt: snapshot.fetchedAt.toISOString(),
+    };
+}
+
+function getOfficialHeaders(cookie?: string) {
+    return {
+        'Accept': 'text/csv,*/*;q=0.9',
         'Accept-Language': 'en-US,en;q=0.9',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
-        'Referer': NSE_HOME_URL,
+        'Origin': 'https://www.nseindia.com',
+        'Referer': `${REPORT_PAGE_URL}`,
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         ...(cookie ? { 'Cookie': cookie } : {}),
     };
 }
 
-async function fetchNseInstitutionalFlow(): Promise<InstitutionalFlowDay[]> {
-    const landing = await axios.get(NSE_HOME_URL, {
-        headers: getNseHeaders(),
+async function fetchOfficialNseCsv(): Promise<string> {
+    const landing = await axios.get(REPORT_PAGE_URL, {
+        headers: getOfficialHeaders(),
         timeout: 10000,
         validateStatus: status => status >= 200 && status < 400,
     });
@@ -203,75 +281,63 @@ async function fetchNseInstitutionalFlow(): Promise<InstitutionalFlowDay[]> {
         ? landing.headers['set-cookie'].map(value => value.split(';')[0]).join('; ')
         : undefined;
 
-    const response = await axios.get(NSE_FLOW_URL, {
-        headers: getNseHeaders(cookies),
+    const response = await axios.get(NSE_ONLY_CSV_URL, {
+        headers: getOfficialHeaders(cookies),
         timeout: 10000,
+        responseType: 'text',
     });
 
-    const rows = Array.isArray(response.data?.data) ? response.data.data : [];
-    const fetchedAt = new Date().toISOString();
-
-    return rows
-        .map((row: any) => {
-            const tradingDate = parseTradingDate(row.date);
-            if (!tradingDate) return null;
-
-            const fiiBuy = roundCr(parseNumber(row.fiiBuy));
-            const fiiSell = roundCr(parseNumber(row.fiiSell));
-            const fiiNet = roundCr(parseNumber(row.fiiNet));
-            const diiBuy = roundCr(parseNumber(row.diiBuy));
-            const diiSell = roundCr(parseNumber(row.diiSell));
-            const diiNet = roundCr(parseNumber(row.diiNet));
-            const totalNet = roundCr(fiiNet + diiNet);
-
-            return {
-                tradingDate: toIsoDate(tradingDate),
-                fiiBuy,
-                fiiSell,
-                fiiNet,
-                diiBuy,
-                diiSell,
-                diiNet,
-                totalNet,
-                marketBias: classifyDay(totalNet),
-                source: 'NSE',
-                fetchedAt,
-            } satisfies InstitutionalFlowDay;
-        })
-        .filter((row: InstitutionalFlowDay | null): row is InstitutionalFlowDay => Boolean(row))
-        .slice(0, HISTORY_LIMIT);
+    return typeof response.data === 'string' ? response.data : String(response.data ?? '');
 }
 
-async function persistSeries(series: InstitutionalFlowDay[]): Promise<void> {
-    if (!series.length) return;
-    await Promise.all(series.map(day => prisma.institutionalFlowSnapshot.upsert({
-        where: { tradingDate: new Date(`${day.tradingDate}T00:00:00.000Z`) },
+function parseOfficialCsv(csvText: string, source = 'NSE Official Report'): RawSnapshot {
+    const records = parseCsv(csvText, {
+        bom: true,
+        columns: true,
+        skip_empty_lines: true,
+        trim: true,
+    }) as Record<string, string>[];
+
+    const rows = records
+        .map(normalizeRow)
+        .filter((row): row is { category: string; date: Date; buyValue: number; sellValue: number; netValue: number } => Boolean(row));
+
+    if (!rows.length) {
+        throw new Error('Official FII/DII CSV did not contain any data rows');
+    }
+
+    return buildSnapshotFromRows(rows, source);
+}
+
+async function persistSnapshot(snapshot: RawSnapshot): Promise<void> {
+    await prisma.institutionalFlowSnapshot.upsert({
+        where: { tradingDate: snapshot.tradingDate },
         update: {
-            fiiBuy: day.fiiBuy,
-            fiiSell: day.fiiSell,
-            fiiNet: day.fiiNet,
-            diiBuy: day.diiBuy,
-            diiSell: day.diiSell,
-            diiNet: day.diiNet,
-            totalNet: day.totalNet,
-            marketBias: day.marketBias,
-            source: day.source,
-            fetchedAt: new Date(day.fetchedAt),
+            fiiBuy: snapshot.fiiBuy,
+            fiiSell: snapshot.fiiSell,
+            fiiNet: snapshot.fiiNet,
+            diiBuy: snapshot.diiBuy,
+            diiSell: snapshot.diiSell,
+            diiNet: snapshot.diiNet,
+            totalNet: snapshot.totalNet,
+            marketBias: classifyDay(snapshot.totalNet),
+            source: snapshot.source,
+            fetchedAt: snapshot.fetchedAt,
         },
         create: {
-            tradingDate: new Date(`${day.tradingDate}T00:00:00.000Z`),
-            fiiBuy: day.fiiBuy,
-            fiiSell: day.fiiSell,
-            fiiNet: day.fiiNet,
-            diiBuy: day.diiBuy,
-            diiSell: day.diiSell,
-            diiNet: day.diiNet,
-            totalNet: day.totalNet,
-            marketBias: day.marketBias,
-            source: day.source,
-            fetchedAt: new Date(day.fetchedAt),
+            tradingDate: snapshot.tradingDate,
+            fiiBuy: snapshot.fiiBuy,
+            fiiSell: snapshot.fiiSell,
+            fiiNet: snapshot.fiiNet,
+            diiBuy: snapshot.diiBuy,
+            diiSell: snapshot.diiSell,
+            diiNet: snapshot.diiNet,
+            totalNet: snapshot.totalNet,
+            marketBias: classifyDay(snapshot.totalNet),
+            source: snapshot.source,
+            fetchedAt: snapshot.fetchedAt,
         },
-    })));
+    });
 }
 
 async function loadSeriesFromDatabase(limit = HISTORY_LIMIT): Promise<InstitutionalFlowDay[]> {
@@ -280,19 +346,7 @@ async function loadSeriesFromDatabase(limit = HISTORY_LIMIT): Promise<Institutio
         orderBy: { tradingDate: 'desc' },
     });
 
-    return rows.map((row: {
-        tradingDate: Date;
-        fiiBuy: number;
-        fiiSell: number;
-        fiiNet: number;
-        diiBuy: number;
-        diiSell: number;
-        diiNet: number;
-        totalNet: number;
-        marketBias: string;
-        source: string;
-        fetchedAt: Date;
-    }) => ({
+    return rows.map(row => ({
         tradingDate: toIsoDate(row.tradingDate),
         fiiBuy: row.fiiBuy,
         fiiSell: row.fiiSell,
@@ -307,36 +361,56 @@ async function loadSeriesFromDatabase(limit = HISTORY_LIMIT): Promise<Institutio
     }));
 }
 
-export async function refreshInstitutionalFlow(force = false): Promise<InstitutionalFlowSummary> {
-    if (!force && summaryCache && Date.now() - summaryCache.ts < CACHE_TTL_MS) {
-        return summaryCache.summary;
-    }
+export async function importInstitutionalFlowCsv(csvText: string, source = 'Manual Official CSV Import'): Promise<InstitutionalFlowSummary> {
+    const snapshot = parseOfficialCsv(csvText, source);
+    await persistSnapshot(snapshot);
+    summaryCache = null;
+    return getInstitutionalFlowSummary({ bypassCache: true });
+}
 
-    try {
-        const liveSeries = await fetchNseInstitutionalFlow();
-        await persistSeries(liveSeries);
-        const summary = createSummary(liveSeries, 'live', null);
-        summaryCache = { summary, ts: Date.now() };
-        return summary;
-    } catch (error: any) {
-        const dbSeries = await loadSeriesFromDatabase();
-        if (!dbSeries.length) {
-            const summary = createSummary([], 'unavailable', error?.message ? String(error.message) : 'Institutional flow unavailable');
-            summaryCache = { summary, ts: Date.now() };
-            return summary;
+export async function syncInstitutionalFlowFromOfficialReport(): Promise<InstitutionalFlowSummary> {
+    if (syncInFlight) return syncInFlight;
+
+    syncInFlight = (async () => {
+        try {
+            const csv = await fetchOfficialNseCsv();
+            const snapshot = parseOfficialCsv(csv);
+            await persistSnapshot(snapshot);
+            summaryCache = null;
+            return getInstitutionalFlowSummary({ bypassCache: true, note: 'Synced from NSE official report.' });
+        } finally {
+            syncInFlight = null;
         }
+    })();
 
-        const summary = createSummary(dbSeries, 'database', 'Live NSE feed unavailable. Showing latest stored institutional flow.');
-        summaryCache = { summary, ts: Date.now() };
-        return summary;
+    return syncInFlight;
+}
+
+export async function seedInstitutionalFlowIfEmpty(): Promise<InstitutionalFlowSummary> {
+    const existing = await loadSeriesFromDatabase(1);
+    if (existing.length) {
+        return createSummary(existing, 'database', null);
+    }
+    try {
+        return await syncInstitutionalFlowFromOfficialReport();
+    } catch (error: any) {
+        return createSummary([], 'unavailable', error?.message ? String(error.message) : 'Institutional flow unavailable');
     }
 }
 
-export async function getInstitutionalFlowSummary(force = false): Promise<InstitutionalFlowSummary> {
-    if (!force && summaryCache && Date.now() - summaryCache.ts < CACHE_TTL_MS) {
+export async function getInstitutionalFlowSummary(options?: { bypassCache?: boolean; note?: string | null }): Promise<InstitutionalFlowSummary> {
+    const bypassCache = Boolean(options?.bypassCache);
+    if (!bypassCache && summaryCache && Date.now() - summaryCache.ts < DB_CACHE_TTL_MS) {
         return summaryCache.summary;
     }
-    return refreshInstitutionalFlow(force);
+
+    const dbSeries = await loadSeriesFromDatabase();
+    const summary = dbSeries.length
+        ? createSummary(dbSeries, 'database', options?.note ?? null)
+        : createSummary([], 'unavailable', options?.note ?? 'Institutional flow has not been synced yet.');
+
+    summaryCache = { summary, ts: Date.now() };
+    return summary;
 }
 
 export async function getInstitutionalFlowSignal(): Promise<InstitutionalFlowSummary['trend'] & {

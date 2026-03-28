@@ -88,6 +88,11 @@ export const adminActivateSchema = z.object({
     planDays: z.coerce.number().int().positive().max(365).optional(),
 });
 
+export const adminInstitutionalFlowImportSchema = z.object({
+    csv: z.string().min(20).max(50000),
+    source: z.string().trim().min(3).max(80).optional(),
+});
+
 export const watchlistCreateSchema = z.object({
     ticker: z.string().trim().min(1).max(20),
     sector: z.string().trim().max(120).optional(),

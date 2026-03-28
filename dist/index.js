@@ -1049,7 +1049,7 @@ node_cron_1.default.schedule('45 15 * * 1-5', async () => {
 // Refresh institutional flow after the market close data settles.
 node_cron_1.default.schedule('10 18 * * 1-5', async () => {
     try {
-        const summary = await (0, institutionalFlowService_1.refreshInstitutionalFlow)(true);
+        const summary = await (0, institutionalFlowService_1.syncInstitutionalFlowFromOfficialReport)();
         console.log(`[CRON] Institutional flow refresh complete (${summary.status})`);
     }
     catch (err) {
@@ -1141,7 +1141,7 @@ setTimeout(() => {
         (0, agentEvents_1.setNextScan)(computeNextScan());
         (0, agentEvents_1.pushEvent)('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized in background.');
         setImmediate(() => {
-            (0, institutionalFlowService_1.refreshInstitutionalFlow)().catch((err) => {
+            (0, institutionalFlowService_1.seedInstitutionalFlowIfEmpty)().catch((err) => {
                 console.error('[System] Institutional flow warm-up failed:', err.message);
             });
         });
@@ -1298,6 +1298,34 @@ app.post('/api/admin/activate', (0, validation_1.validateBody)(validation_1.admi
         res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
+app.post('/api/admin/fii-dii/refresh', async (req, res) => {
+    const adminSecret = req.headers['x-admin-secret'];
+    if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+        res.status(403).json({ success: false, message: 'Forbidden.' });
+        return;
+    }
+    try {
+        const summary = await (0, institutionalFlowService_1.syncInstitutionalFlowFromOfficialReport)();
+        res.json({ success: true, data: summary });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+app.post('/api/admin/fii-dii/import', (0, validation_1.validateBody)(validation_1.adminInstitutionalFlowImportSchema), async (req, res) => {
+    const adminSecret = req.headers['x-admin-secret'];
+    if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
+        res.status(403).json({ success: false, message: 'Forbidden.' });
+        return;
+    }
+    try {
+        const summary = await (0, institutionalFlowService_1.importInstitutionalFlowCsv)(req.body.csv, req.body.source);
+        res.json({ success: true, data: summary });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: sanitizeError(err) });
+    }
+});
 // ══════════════════════════════════════════════
 // ECONOMIC CALENDAR
 // ══════════════════════════════════════════════
@@ -1336,10 +1364,9 @@ app.get('/api/economic-calendar', (_req, res) => {
 // ══════════════════════════════════════════════
 // FII/DII DATA
 // ══════════════════════════════════════════════
-app.get('/api/fii-dii', async (req, res) => {
+app.get('/api/fii-dii', async (_req, res) => {
     try {
-        const forceRefresh = req.query.refresh === 'true';
-        const summary = await (0, institutionalFlowService_1.getInstitutionalFlowSummary)(forceRefresh);
+        const summary = await (0, institutionalFlowService_1.getInstitutionalFlowSummary)();
         res.json({ success: true, data: summary });
     }
     catch (err) {

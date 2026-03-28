@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import axios from 'axios'
-import { Building2, RefreshCw } from 'lucide-react'
+import { Building2 } from 'lucide-react'
 import { useViewport } from '../lib/useViewport'
 
 interface InstitutionalFlowDay {
@@ -16,7 +16,7 @@ interface InstitutionalFlowDay {
 }
 
 interface InstitutionalFlowSummary {
-    status: 'live' | 'database' | 'unavailable'
+    status: 'database' | 'sync' | 'unavailable'
     source: string
     fetchedAt: string | null
     lastTradingDate: string | null
@@ -81,18 +81,16 @@ export default function FiiDiiWidget() {
     const { isPhone } = useViewport()
     const [summary, setSummary] = useState<InstitutionalFlowSummary | null>(null)
     const [loading, setLoading] = useState(true)
-    const [refreshing, setRefreshing] = useState(false)
 
-    async function load(force = false) {
-        const setter = force ? setRefreshing : setLoading
-        setter(true)
+    async function load() {
+        setLoading(true)
         try {
-            const { data: res } = await axios.get(`/api/fii-dii${force ? '?refresh=true' : ''}`)
+            const { data: res } = await axios.get('/api/fii-dii')
             if (res.success) setSummary(res.data)
         } catch {
             setSummary(null)
         } finally {
-            setter(false)
+            setLoading(false)
         }
     }
 
@@ -137,16 +135,9 @@ export default function FiiDiiWidget() {
                         </div>
                     </div>
                 </div>
-                <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={() => load(true)}
-                    disabled={refreshing}
-                    style={{ padding: '6px 8px', gap: 6, fontSize: '0.68rem', flexShrink: 0 }}
-                >
-                    <RefreshCw size={12} style={{ animation: refreshing ? 'spin 1s linear infinite' : undefined }} />
-                    {refreshing ? 'Syncing' : 'Refresh'}
-                </button>
+                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textAlign: 'right', flexShrink: 0 }}>
+                    DB-backed
+                </div>
             </div>
 
             <div style={{
