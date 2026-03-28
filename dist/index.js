@@ -1141,7 +1141,8 @@ setTimeout(() => {
         (0, agentEvents_1.setNextScan)(computeNextScan());
         (0, agentEvents_1.pushEvent)('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized in background.');
         setImmediate(() => {
-            (0, institutionalFlowService_1.seedInstitutionalFlowIfEmpty)().catch((err) => {
+            (0, institutionalFlowService_1.syncInstitutionalFlowFromOfficialReport)().catch((err) => {
+                (0, institutionalFlowService_1.seedInstitutionalFlowIfEmpty)().catch(() => { });
                 console.error('[System] Institutional flow warm-up failed:', err.message);
             });
         });
