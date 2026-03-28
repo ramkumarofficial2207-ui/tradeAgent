@@ -101,12 +101,55 @@ export default function FiiDiiWidget() {
     if (loading) {
         return (
             <div className="card" style={{ padding: '14px 12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <Building2 size={14} style={{ color: 'var(--text-muted)' }} />
+                    <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                        FII / DII Flow
+                    </div>
+                </div>
                 <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Loading institutional flow...</div>
             </div>
         )
     }
 
-    if (!summary || !summary.series.length || !summary.latest) return null
+    if (!summary || !summary.series.length || !summary.latest) {
+        return (
+            <div className="card" style={{ padding: isPhone ? '14px 12px' : '16px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    <div style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 10,
+                        display: 'grid',
+                        placeItems: 'center',
+                        background: 'rgba(148,163,184,0.12)',
+                        border: '1px solid rgba(148,163,184,0.22)',
+                    }}>
+                        <Building2 size={14} style={{ color: 'var(--text-muted)' }} />
+                    </div>
+                    <div>
+                        <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                            FII / DII Flow
+                        </div>
+                        <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                            Institutional cash market activity
+                        </div>
+                    </div>
+                </div>
+                <div style={{
+                    borderRadius: 12,
+                    padding: '12px 13px',
+                    border: '1px solid var(--border)',
+                    background: 'rgba(255,255,255,0.03)',
+                    fontSize: '0.68rem',
+                    color: 'var(--text-muted)',
+                    lineHeight: 1.6,
+                }}>
+                    {summary?.note || 'Institutional flow has not been synced yet.'}
+                </div>
+            </div>
+        )
+    }
 
     const accent = toneForBias(summary.trend.bias)
     const maxAbs = Math.max(...summary.series.map(day => Math.max(Math.abs(day.fiiNet), Math.abs(day.diiNet), Math.abs(day.totalNet))), 1)
