@@ -100,6 +100,17 @@ export async function getPortfolioSummary(userId: string) {
     const avgLossPct = lost.length
         ? lost.reduce((s, t) => s + (t.pnlPct || 0), 0) / lost.length
         : 0;
+    const totalOpenRiskRs = open.reduce((s, t) => s + Math.max((t.initialRiskRs || 0), 0), 0);
+    const avgOpenRiskPct = totalCapitalDeployed > 0 ? (totalOpenRiskRs / totalCapitalDeployed) * 100 : 0;
+    const largestPositionRs = open.reduce((max, t) => Math.max(max, t.capitalDeployed || 0), 0);
+    const largestPositionPct = totalCapitalDeployed > 0 ? (largestPositionRs / totalCapitalDeployed) * 100 : 0;
+    const sectorExposure = open.reduce<Record<string, number>>((acc, trade) => {
+        const key = trade.sector || 'Unspecified';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+    }, {});
+    const [topSector = 'None', topSectorCount = 0] = Object.entries(sectorExposure)
+        .sort((a, b) => b[1] - a[1])[0] || [];
 
     return {
         openCount: open.length,
@@ -112,6 +123,11 @@ export async function getPortfolioSummary(userId: string) {
         avgLossPct: +avgLossPct.toFixed(2),
         totalCapitalDeployed: +totalCapitalDeployed.toFixed(2),
         totalRealizedPnL: +totalRealizedPnL.toFixed(2),
+        totalOpenRiskRs: +totalOpenRiskRs.toFixed(2),
+        avgOpenRiskPct: +avgOpenRiskPct.toFixed(2),
+        largestPositionPct: +largestPositionPct.toFixed(2),
+        topSector,
+        topSectorCount,
     };
 }
 

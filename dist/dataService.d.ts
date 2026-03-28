@@ -1,8 +1,8 @@
-import { Candle, GttOrderRequest, GttOrderResponse, TradingApi } from './types';
+import { Candle, GttOrderRequest, GttOrderResponse, MarketDataInterval, TradingApi } from './types';
 export declare const NSE_UNIVERSE: Record<string, string>;
 export declare const SECTOR_MAP: Record<string, string>;
 export declare const MARKET_CAP_CR_MAP: Record<string, number>;
-export declare function fetchHistoricalData(yahooTicker: string, days?: number): Promise<Candle[]>;
+export declare function fetchHistoricalData(yahooTicker: string, days?: number, interval?: MarketDataInterval): Promise<Candle[]>;
 export declare function fetchLtp(yahooTicker: string): Promise<number>;
 export interface MarketDataChange {
     niftyChange: number;
@@ -25,12 +25,12 @@ export declare class KiteLiveTradingApi implements TradingApi {
     private loadInstruments;
     private getInstrumentToken;
     getLtp(ticker: string): Promise<number>;
-    getHistoricalData(ticker: string, interval: '1d', days?: number): Promise<Candle[]>;
+    getHistoricalData(ticker: string, interval: MarketDataInterval, days?: number): Promise<Candle[]>;
     placeGttOrder(order: GttOrderRequest): Promise<GttOrderResponse>;
 }
 export declare class GrowwPaperTradingApi implements TradingApi {
     getLtp(ticker: string): Promise<number>;
-    getHistoricalData(ticker: string, _interval: '1d', days?: number): Promise<Candle[]>;
+    getHistoricalData(ticker: string, interval: MarketDataInterval, days?: number): Promise<Candle[]>;
     placeGttOrder(order: GttOrderRequest): Promise<GttOrderResponse>;
 }
 export declare function getTradingApiFromEnv(): {

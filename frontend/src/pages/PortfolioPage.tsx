@@ -4,6 +4,7 @@ import {
     Briefcase, Plus, X, TrendingUp, TrendingDown,
     CheckCircle2, Clock, Target, BarChart3, ShieldCheck, Activity, Zap
 } from 'lucide-react'
+import { useViewport } from '../lib/useViewport'
 
 interface Trade {
     id: string
@@ -42,6 +43,11 @@ interface Summary {
     avgLossPct: number
     totalCapitalDeployed: number
     totalRealizedPnL: number
+    totalOpenRiskRs: number
+    avgOpenRiskPct: number
+    largestPositionPct: number
+    topSector: string
+    topSectorCount: number
 }
 
 interface AddTradeForm {
@@ -57,6 +63,7 @@ interface AddTradeForm {
 }
 
 function AddTradeModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+    const { isMobile } = useViewport()
     const [form, setForm] = useState<AddTradeForm>({
         ticker: '', entryPrice: '', quantity: '', stopLossInit: '',
         target1: '', target2: '', sector: '', setupType: 'Manual', notes: '',
@@ -104,7 +111,7 @@ function AddTradeModal({ onClose, onAdded }: { onClose: () => void; onAdded: () 
         }}>
             <form onSubmit={save} style={{
                 background: 'var(--bg-card)', borderRadius: 16, border: '1px solid var(--border-md)',
-                width: '100%', maxWidth: 460, padding: 24, boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+                width: '100%', maxWidth: 460, padding: isMobile ? 18 : 24, boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
             }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                     <div style={{ fontFamily: 'var(--font-display)', fontWeight: 900, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -112,7 +119,7 @@ function AddTradeModal({ onClose, onAdded }: { onClose: () => void; onAdded: () 
                     </div>
                     <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={18} /></button>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 12 }}>
                     {field('Ticker *', 'ticker', 'text', 'e.g. RELIANCE')}
                     {field('Qty (Shares) *', 'quantity', 'number', '100')}
                     {field('Entry Price ₹ *', 'entryPrice', 'number', '2500.00')}
@@ -147,6 +154,7 @@ function AddTradeModal({ onClose, onAdded }: { onClose: () => void; onAdded: () 
 }
 
 function CloseTradeModal({ trade, onClose, onClosed }: { trade: Trade; onClose: () => void; onClosed: () => void }) {
+    const { isMobile } = useViewport()
     const [exitPrice, setExitPrice] = useState('')
     const [exitReason, setExitReason] = useState<'TARGET' | 'STOP' | 'TRAIL' | 'MANUAL'>('MANUAL')
     const [saving, setSaving] = useState(false)
@@ -166,7 +174,7 @@ function CloseTradeModal({ trade, onClose, onClosed }: { trade: Trade; onClose: 
 
     return (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-            <div style={{ background: 'var(--bg-card)', borderRadius: 16, border: '1px solid var(--border-md)', width: '100%', maxWidth: 360, padding: 24, boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}>
+            <div style={{ background: 'var(--bg-card)', borderRadius: 16, border: '1px solid var(--border-md)', width: '100%', maxWidth: 360, padding: isMobile ? 18 : 24, boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                     <span style={{ fontFamily: 'var(--font-display)', fontWeight: 900 }}>Close {trade.ticker}</span>
                     <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={18} /></button>
@@ -208,6 +216,7 @@ export default function PortfolioPage() {
     const [showAdd, setShowAdd] = useState(false)
     const [closingTrade, setClosingTrade] = useState<Trade | null>(null)
     const [tab, setTab] = useState<'open' | 'closed'>('open')
+    const { isMobile, isPhone } = useViewport()
 
     const load = useCallback(async () => {
         setLoading(true)
@@ -244,9 +253,9 @@ export default function PortfolioPage() {
     )
 
     return (
-        <div style={{ padding: '24px 22px', maxWidth: 1200, margin: '0 auto' }}>
+        <div style={{ padding: isMobile ? '16px 12px 24px' : '24px 22px', maxWidth: 1200, margin: '0 auto' }}>
             {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', marginBottom: 20, gap: 12, flexWrap: 'wrap' }}>
                 <div>
                     <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.4rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: 10 }}>
                         <Briefcase size={22} style={{ color: '#fbbf24' }} /> My Portfolio
@@ -255,7 +264,7 @@ export default function PortfolioPage() {
                         Track your trades, P&L, and win rate
                     </div>
                 </div>
-                <button onClick={() => setShowAdd(true)} className="btn btn-primary" style={{ gap: 6, fontSize: '0.85rem' }}>
+                <button onClick={() => setShowAdd(true)} className="btn btn-primary" style={{ gap: 6, fontSize: '0.85rem', width: isMobile ? '100%' : 'auto', justifyContent: 'center' }}>
                     <Plus size={14} /> Log Trade
                 </button>
             </div>
@@ -272,12 +281,24 @@ export default function PortfolioPage() {
                 </div>
             )}
 
+            {summary && (
+                <div className="card" style={{ padding: '18px 18px', marginBottom: 20 }}>
+                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.95rem', fontWeight: 900, marginBottom: 12 }}>Risk Dashboard</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+                        <StatCard icon={<ShieldCheck size={16} />} label="Open Risk" value={`â‚¹${summary.totalOpenRiskRs.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} color="#f87171" />
+                        <StatCard icon={<Activity size={16} />} label="Risk / Deployed" value={`${summary.avgOpenRiskPct}%`} color="#fbbf24" />
+                        <StatCard icon={<BarChart3 size={16} />} label="Largest Position" value={`${summary.largestPositionPct}%`} color="#60a5fa" />
+                        <StatCard icon={<Briefcase size={16} />} label="Top Sector" value={summary.topSectorCount > 0 ? `${summary.topSector} (${summary.topSectorCount})` : 'None'} color="#a78bfa" />
+                    </div>
+                </div>
+            )}
+
             {/* Tabs */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
                 {([['open', `Open (${open.length})`], ['closed', `Closed (${closed.length})`]] as const).map(([key, label]) => (
                     <button key={key} onClick={() => setTab(key)}
                         className={`btn ${tab === key ? 'btn-primary' : 'btn-ghost'}`}
-                        style={{ fontSize: '0.82rem', padding: '7px 16px' }}>
+                        style={{ fontSize: '0.82rem', padding: '7px 16px', flex: isPhone ? 1 : undefined, justifyContent: 'center' }}>
                         {label}
                     </button>
                 ))}
@@ -294,7 +315,7 @@ export default function PortfolioPage() {
                     </div>
                 </div>
             ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
                     {(tab === 'open' ? open : closed).map(trade => {
                         const unrealizedPct = trade.currentPrice
                             ? ((trade.currentPrice - trade.entryPrice) / trade.entryPrice * 100)
@@ -322,7 +343,7 @@ export default function PortfolioPage() {
                                     </div>
                                 </div>
 
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: isPhone ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
                                     {[
                                         { l: 'Entry', v: `₹${trade.entryPrice.toFixed(2)}` },
                                         { l: 'Target', v: `₹${trade.target1.toFixed(2)}` },
@@ -341,11 +362,11 @@ export default function PortfolioPage() {
                                 </div>
 
                                 {trade.status === 'OPEN' && (
-                                    <div style={{ display: 'flex', gap: 6 }}>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                                         <button onClick={() => setClosingTrade(trade)} className="btn btn-primary" style={{ flex: 1, fontSize: '0.75rem', padding: '6px' }}>
                                             <CheckCircle2 size={12} /> Close Trade
                                         </button>
-                                        <button onClick={() => deleteTrade(trade.id)} className="btn btn-ghost" style={{ fontSize: '0.75rem', padding: '6px 10px', color: '#f87171' }}>
+                                        <button onClick={() => deleteTrade(trade.id)} className="btn btn-ghost" style={{ fontSize: '0.75rem', padding: '6px 10px', color: '#f87171', width: isPhone ? '100%' : 'auto', justifyContent: 'center' }}>
                                             <X size={12} />
                                         </button>
                                     </div>

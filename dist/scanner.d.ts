@@ -5,3 +5,8 @@ export declare function runScanner(dataApi?: MarketDataApi | null): Promise<{
     marketStatus: MarketStatus;
 }>;
 export declare function buildTradeSetups(qualified: StockIndicators[]): Promise<TradeSetup[]>;
+export declare function runIntradayScanner(dataApi?: MarketDataApi | null): Promise<{
+    qualified: StockIndicators[];
+    marketStatus: MarketStatus;
+    setups: TradeSetup[];
+}>;

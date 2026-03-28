@@ -1,0 +1,69 @@
+import prisma from './prismaClient';
+import { TradeSetup } from './types';
+import { sendPreMarketDigestToEmail, sendPostMarketSummaryToEmail } from './alerter';
+import { sendPreMarketDigest as sendWhatsAppDigest } from './whatsappAlert';
+import { sendPreMarketDigest as sendTelegramDigest } from './telegramAlert';
+
+function parseAlertTarget(target?: string | null): { channel: 'whatsapp' | 'telegram'; value: string } | null {
+    if (!target) return null;
+    const trimmed = target.trim();
+    if (!trimmed) return null;
+    if (trimmed.toLowerCase().startsWith('telegram:')) {
+        const chatId = trimmed.slice('telegram:'.length).trim();
+        return chatId ? { channel: 'telegram', value: chatId } : null;
+    }
+    return { channel: 'whatsapp', value: trimmed };
+}
+
+function getPremiumSetups(setups: TradeSetup[]): TradeSetup[] {
+    return setups
+        .filter(s => (s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') && s.confidenceScore >= 7)
+        .slice(0, 8);
+}
+
+async function getNotificationUsers() {
+    return prisma.user.findMany({
+        where: {
+            OR: [
+                { notifyBuySignals: true },
+                { notifyEmail: true },
+            ],
+        },
+        select: {
+            id: true,
+            email: true,
+            telegramChatId: true,
+            notifyBuySignals: true,
+            notifyEmail: true,
+        },
+    });
+}
+
+export async function notifyUsersWithMorningDigest(setups: TradeSetup[], regime: string): Promise<void> {
+    const premiumSetups = getPremiumSetups(setups);
+    const users = await getNotificationUsers();
+
+    await Promise.allSettled(users.map(async user => {
+        if (user.notifyBuySignals) {
+            const target = parseAlertTarget(user.telegramChatId);
+            if (target?.channel === 'telegram') {
+                await sendTelegramDigest(target.value, premiumSetups, regime);
+            } else if (target?.channel === 'whatsapp') {
+                await sendWhatsAppDigest(target.value, premiumSetups, regime);
+            }
+        }
+
+        if (user.notifyEmail) {
+            await sendPreMarketDigestToEmail(user.email, premiumSetups, regime);
+        }
+    }));
+}
+
+export async function notifyUsersWithPostMarketSummary(setups: TradeSetup[], regime: string): Promise<void> {
+    const premiumSetups = getPremiumSetups(setups);
+    const users = await getNotificationUsers();
+
+    await Promise.allSettled(users
+        .filter(user => user.notifyEmail)
+        .map(user => sendPostMarketSummaryToEmail(user.email, premiumSetups, regime)));
+}

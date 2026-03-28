@@ -6,7 +6,7 @@
 // =====================================================
 
 import axios from 'axios';
-import { Candle, GttOrderRequest, GttOrderResponse, TradingApi } from './types';
+import { Candle, GttOrderRequest, GttOrderResponse, MarketDataInterval, TradingApi } from './types';
 
 // =====================================================
 // FULL NSE LARGE + MIDCAP + SMALLCAP UNIVERSE (Nifty 1000 equivalent)
@@ -1523,13 +1523,15 @@ export const SECTOR_MAP: Record<string, string> = {
 
 export const MARKET_CAP_CR_MAP: Record<string, number> = {};
 
-function parseYahooCandles(rawData: any): Candle[] {
+function parseYahooCandles(rawData: any, interval: MarketDataInterval = '1d'): Candle[] {
     const timestamps: number[] = rawData?.chart?.result?.[0]?.timestamp ?? [];
     const q = rawData?.chart?.result?.[0]?.indicators?.quote?.[0];
     if (!q || timestamps.length === 0) return [];
 
     return timestamps.map((ts, i) => ({
-        date: new Date(ts * 1000).toISOString().split('T')[0],
+        date: interval === '1d'
+            ? new Date(ts * 1000).toISOString().split('T')[0]
+            : new Date(ts * 1000).toISOString(),
         open: q.open[i] ?? 0,
         high: q.high[i] ?? 0,
         low: q.low[i] ?? 0,
@@ -1538,12 +1540,27 @@ function parseYahooCandles(rawData: any): Candle[] {
     })).filter(c => c.close > 0 && c.high > 0);
 }
 
-export async function fetchHistoricalData(yahooTicker: string, days: number = 250): Promise<Candle[]> {
+function resolveYahooIntervalConfig(interval: MarketDataInterval, requestedDays: number): { interval: string; days: number } {
+    if (interval === '5m') {
+        return { interval: '5m', days: Math.max(1, Math.min(requestedDays, 10)) };
+    }
+    if (interval === '15m') {
+        return { interval: '15m', days: Math.max(1, Math.min(requestedDays, 20)) };
+    }
+    return { interval: '1d', days: Math.max(5, Math.min(requestedDays, 365)) };
+}
+
+export async function fetchHistoricalData(
+    yahooTicker: string,
+    days: number = 250,
+    interval: MarketDataInterval = '1d'
+): Promise<Candle[]> {
     try {
+        const cfg = resolveYahooIntervalConfig(interval, days);
         const end = Math.floor(Date.now() / 1000);
-        const start = end - days * 86400;
+        const start = end - cfg.days * 86400;
         // Use v8 chart endpoint — most reliable for NSE
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?period1=${start}&period2=${end}&interval=1d&includePrePost=false`;
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?period1=${start}&period2=${end}&interval=${cfg.interval}&includePrePost=false`;
         const { data } = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -1551,7 +1568,7 @@ export async function fetchHistoricalData(yahooTicker: string, days: number = 25
             },
             timeout: 15000,
         });
-        return parseYahooCandles(data);
+        return parseYahooCandles(data, interval);
     } catch (err) {
         // Silently skip failed tickers (bad ticker format, delisted, etc.)
         return [];
@@ -1705,11 +1722,15 @@ export class KiteLiveTradingApi implements TradingApi {
         return lastPrice;
     }
 
-    async getHistoricalData(ticker: string, interval: '1d', days: number = 260): Promise<Candle[]> {
+    async getHistoricalData(ticker: string, interval: MarketDataInterval, days: number = 260): Promise<Candle[]> {
         const token = await this.getInstrumentToken(ticker);
         const to = new Date();
         const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
-        const kiteInterval = interval === '1d' ? 'day' : interval;
+        const kiteInterval = interval === '1d'
+            ? 'day'
+            : interval === '5m'
+                ? '5minute'
+                : '15minute';
         const url = `${this.baseUrl}/instruments/historical/${token}/${kiteInterval}`;
         const { data } = await axios.get(url, {
             params: {
@@ -1783,9 +1804,9 @@ export class GrowwPaperTradingApi implements TradingApi {
         return fetchLtp(yahooTicker);
     }
 
-    async getHistoricalData(ticker: string, _interval: '1d', days: number = 260): Promise<Candle[]> {
+    async getHistoricalData(ticker: string, interval: MarketDataInterval, days: number = 260): Promise<Candle[]> {
         const yahooTicker = NSE_UNIVERSE[ticker] ?? `${ticker}.NS`;
-        return fetchHistoricalData(yahooTicker, days);
+        return fetchHistoricalData(yahooTicker, days, interval);
     }
 
     async placeGttOrder(order: GttOrderRequest): Promise<GttOrderResponse> {

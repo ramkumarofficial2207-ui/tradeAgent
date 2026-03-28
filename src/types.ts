@@ -11,9 +11,11 @@ export interface Candle {
     volume: number;
 }
 
+export type MarketDataInterval = '1d' | '15m' | '5m';
+
 export interface MarketDataApi {
     getLtp(ticker: string): Promise<number>;
-    getHistoricalData(ticker: string, interval: '1d', days?: number): Promise<Candle[]>;
+    getHistoricalData(ticker: string, interval: MarketDataInterval, days?: number): Promise<Candle[]>;
 }
 
 export interface GttOrderRequest {
@@ -155,6 +157,13 @@ export interface MarketStatus {
     nifty200dma?: number;
     dmaCrossPct?: number;
     vixLevel?: number;
+    institutionalBias?: 'RISK_ON' | 'RISK_OFF' | 'MIXED';
+    institutionalScore?: number;
+    institutionalNet1dCr?: number;
+    institutionalNet5dCr?: number;
+    institutionalNet20dCr?: number;
+    institutionalLastTradingDate?: string;
+    institutionalDetail?: string;
 }
 
 

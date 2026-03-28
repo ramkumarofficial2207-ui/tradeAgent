@@ -1,5 +1,6 @@
 /* ─── useAgentSSE.ts — Real-time hook for agentic AI event stream ─── */
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { showBrowserNotification } from './browserNotifications'
 
 export interface AgentEvent {
     id: string
@@ -58,6 +59,12 @@ export function useAgentSSE() {
                     case 'event':
                         setEvents(prev => [msg.payload, ...prev].slice(0, 100))
                         setUnreadCount(c => c + 1)
+                        if (['SETUP_FOUND', 'TRADE_ALERT', 'MARKET_REGIME_CHANGE'].includes(msg.payload?.type)) {
+                            void showBrowserNotification(msg.payload.title, msg.payload.detail, {
+                                url: msg.payload?.ticker ? `/watchlist` : '/',
+                                tag: msg.payload.id,
+                            })
+                        }
                         break
                     case 'events_init':
                         setEvents(msg.payload || [])

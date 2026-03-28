@@ -161,3 +161,22 @@ model HistoricalSetup {
   @@index([status])
   @@index([ticker])
 }
+
+model InstitutionalFlowSnapshot {
+  id          String   @id @default(uuid())
+  tradingDate DateTime @unique
+  fiiBuy      Float
+  fiiSell     Float
+  fiiNet      Float
+  diiBuy      Float
+  diiSell     Float
+  diiNet      Float
+  totalNet    Float
+  marketBias  String
+  source      String   @default("NSE")
+  fetchedAt   DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tradingDate])
+}

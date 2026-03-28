@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { getWatchlist, toggleWatchlistItem } from '../lib/watchlist'
 import { useWatchlist } from '../lib/useWatchlist'
+import { useViewport } from '../lib/useViewport'
 
 /* ─── Types ───────────────────────────────────────────────── */
 interface StockCard {
@@ -103,6 +104,7 @@ function UserAvatar() {
 
 /* ─── Inline Stock Card ───────────────────────────────────── */
 function StockCardView({ card, watchlist, toggle }: { card: StockCard; watchlist: any[]; toggle: (item: any) => void }) {
+    const { isMobile, isPhone } = useViewport()
     const saved = watchlist.some(w => w.ticker === card.ticker)
     const [showMeta, setShowMeta] = useState(false)
     const SignalIcon = (card.signal === 'BUY' || card.signal === 'LIGHT BUY') ? CheckCircle : card.signal === 'REJECT' ? AlertTriangle : MinusCircle
@@ -137,7 +139,7 @@ function StockCardView({ card, watchlist, toggle }: { card: StockCard; watchlist
             animation: 'fadeUp 0.35s ease both',
         }}>
             {/* Header row */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, gap: 12, flexWrap: isPhone ? 'wrap' : 'nowrap' }}>
                 <div>
                     <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.35rem', fontWeight: 900, letterSpacing: '-0.02em', marginBottom: 4 }}>
                         {card.ticker}
@@ -146,7 +148,7 @@ function StockCardView({ card, watchlist, toggle }: { card: StockCard; watchlist
                         <span className="badge badge-neutral" style={{ fontSize: '0.62rem' }}>{card.sector}{card.setupType ? ` · ${card.setupType}` : ''}</span>
                     )}
                 </div>
-                <div style={{ textAlign: 'right' }}>
+                <div style={{ textAlign: isPhone ? 'left' : 'right', width: isPhone ? '100%' : 'auto' }}>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.15rem', fontWeight: 700, marginBottom: 6 }}>
                         {fmtPrice(card.price)}
                     </div>
@@ -161,7 +163,7 @@ function StockCardView({ card, watchlist, toggle }: { card: StockCard; watchlist
 
             {/* Metrics */}
             {(card.buyZone || card.target || card.stopLoss) && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 14 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1fr' : 'repeat(3, 1fr)', gap: 8, marginBottom: 14 }}>
                     <div className="metric-box">
                         <div className="metric-label">Buy Zone</div>
                         <div className="metric-value" style={{ color: 'var(--blue)', fontSize: '0.88rem' }}>
@@ -199,8 +201,8 @@ function StockCardView({ card, watchlist, toggle }: { card: StockCard; watchlist
             )}
 
             {/* Footer */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: '1px solid var(--border)', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     {card.riskReward && (
                         <span className="badge badge-neutral">RR {card.riskReward}:1</span>
                     )}
@@ -209,16 +211,16 @@ function StockCardView({ card, watchlist, toggle }: { card: StockCard; watchlist
                         {showMeta ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
                     </button>
                 </div>
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 6, width: isMobile ? '100%' : 'auto' }}>
                     <a
                         href={`https://www.nseindia.com/get-quotes/equity?symbol=${card.ticker}`}
                         target="_blank" rel="noreferrer"
                         className="btn btn-ghost"
-                        style={{ padding: '5px 10px', fontSize: '0.72rem', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 4 }}
+                        style={{ padding: '5px 10px', fontSize: '0.72rem', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 4, flex: isMobile ? 1 : undefined, justifyContent: 'center' }}
                     >
                         <ExternalLink size={11} /> NSE
                     </a>
-                    <button onClick={handleSave} className={`btn ${saved ? 'btn-purple' : 'btn-ghost'}`} style={{ padding: '5px 10px', fontSize: '0.72rem', borderRadius: 8 }}>
+                    <button onClick={handleSave} className={`btn ${saved ? 'btn-purple' : 'btn-ghost'}`} style={{ padding: '5px 10px', fontSize: '0.72rem', borderRadius: 8, flex: isMobile ? 1 : undefined, justifyContent: 'center' }}>
                         {saved ? <BookmarkCheck size={12} /> : <Bookmark size={12} />}
                         {saved ? 'Saved' : 'Save'}
                     </button>
@@ -257,6 +259,7 @@ function MessageBubble({
     watchlist: any[]
     toggle: (item: any) => void
 }) {
+    const { isMobile, isPhone } = useViewport()
     const isUser = msg.role === 'user'
     if (msg.isTyping) return <TypingIndicator />
 
@@ -266,7 +269,7 @@ function MessageBubble({
         >
             {isUser ? <UserAvatar /> : <AiAvatar />}
 
-            <div style={{ maxWidth: '78%', minWidth: 0 }}>
+            <div style={{ maxWidth: isMobile ? '100%' : '78%', minWidth: 0, width: isPhone ? 'calc(100% - 44px)' : 'auto' }}>
                 {isUser
                     ? <div className="bubble-user">{msg.content}</div>
                     : <div className="bubble-ai" style={{ lineHeight: 1.75 }}>
@@ -300,7 +303,7 @@ function MessageBubble({
                 {msg.stockCard && <StockCardView card={msg.stockCard} watchlist={watchlist} toggle={toggle} />}
 
                 {/* Metadata row */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6, flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6, flexWrap: 'wrap' }}>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'var(--text-muted)' }}>
                         {msg.timestamp.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                     </span>
@@ -310,7 +313,7 @@ function MessageBubble({
 
                     {/* AI feedback buttons */}
                     {!isUser && (
-                        <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+                        <div style={{ display: 'flex', gap: 4, marginLeft: isPhone ? 0 : 'auto', width: isPhone ? '100%' : 'auto', justifyContent: isPhone ? 'flex-end' : 'flex-start' }}>
                             <button onClick={() => onCopy(msg.content)} title="Copy" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: 3, borderRadius: 4, transition: 'color var(--t-fast)' }}
                                 onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-secondary)')}
                                 onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
@@ -339,6 +342,7 @@ export default function ChatPage() {
     const endRef = useRef<HTMLDivElement>(null)
     const inputRef = useRef<HTMLTextAreaElement>(null)
     const { items: watchlist, toggle } = useWatchlist()
+    const { isMobile, isPhone } = useViewport()
 
     useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -422,7 +426,7 @@ export default function ChatPage() {
         <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)', maxWidth: 860, margin: '0 auto', width: '100%' }}>
 
             {/* ── Chat header ──────────────────────────────────────── */}
-            <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', background: 'var(--bg-card)', display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+            <div style={{ padding: isMobile ? '12px 12px' : '14px 20px', borderBottom: '1px solid var(--border)', background: 'var(--bg-card)', display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
                 <AiAvatar />
                 <div style={{ flex: 1 }}>
                     <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.95rem', letterSpacing: '-0.01em' }}>StockSage AI</div>
@@ -432,8 +436,8 @@ export default function ChatPage() {
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                    <span className="badge badge-vcp" style={{ fontSize: '0.62rem' }}>Gemini AI</span>
-                    <span className="badge badge-buy" style={{ fontSize: '0.62rem' }}>Live NSE Data</span>
+                    {!isPhone && <span className="badge badge-vcp" style={{ fontSize: '0.62rem' }}>Gemini AI</span>}
+                    {!isPhone && <span className="badge badge-buy" style={{ fontSize: '0.62rem' }}>Live NSE Data</span>}
                     <button onClick={handleReset} className="btn btn-icon btn-ghost" title="New conversation" style={{ width: 30, height: 30 }}>
                         <RotateCcw size={12} />
                     </button>
@@ -442,7 +446,7 @@ export default function ChatPage() {
 
             {/* ── Messages ─────────────────────────────────────────── */}
             <div
-                style={{ flex: 1, overflowY: 'auto', padding: '24px 20px 12px', display: 'flex', flexDirection: 'column', gap: 22, scrollbarColor: 'var(--bg-hover) transparent' }}
+                style={{ flex: 1, overflowY: 'auto', padding: isMobile ? '16px 12px 8px' : '24px 20px 12px', display: 'flex', flexDirection: 'column', gap: 22, scrollbarColor: 'var(--bg-hover) transparent' }}
             >
                 {messages.map(m => (
                     <MessageBubble key={m.id} msg={m} onFeedback={handleFeedback} onCopy={handleCopy} watchlist={watchlist} toggle={toggle} />
@@ -452,7 +456,7 @@ export default function ChatPage() {
 
             {/* ── Suggestion chips ──────────────────────────────────── */}
             {showSuggestions && (
-                <div style={{ padding: '10px 20px 2px', display: 'flex', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
+                <div style={{ padding: isMobile ? '10px 12px 2px' : '10px 20px 2px', display: 'flex', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
                     {SUGGESTIONS.map(s => (
                         <button
                             key={s}
@@ -489,7 +493,7 @@ export default function ChatPage() {
             )}
 
             {/* ── Input bar ─────────────────────────────────────────── */}
-            <div style={{ padding: '12px 20px 18px', background: 'var(--bg-card)', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+                <div style={{ padding: isMobile ? '10px 12px 14px' : '12px 20px 18px', background: 'var(--bg-card)', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
                 <div style={{
                     display: 'flex',
                     gap: 10,
@@ -542,7 +546,7 @@ export default function ChatPage() {
                     </button>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 7 }}>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 7, flexWrap: 'wrap' }}>
                     {['Research and education only', 'Not financial advice', 'Always verify before trading'].map(t => (
                         <span key={t} style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{t}</span>
                     ))}

@@ -8,8 +8,8 @@ import path from 'path';
 import cron from 'node-cron';
 import bcrypt from 'bcryptjs';
 import { exec } from 'child_process';
-import { runScanner, buildTradeSetups } from './scanner';
-import { ScanResult } from './types';
+import { runScanner, buildTradeSetups, runIntradayScanner } from './scanner';
+import { MarketDataInterval, ScanResult } from './types';
 import { getTradingApiFromEnv, fetchHistoricalData, fetchNiftyData } from './dataService';
 import { fetchStockReport, batchPrefetch } from './fundamentalService';
 import { sendPreMarketAlert } from './alerter';
@@ -33,11 +33,25 @@ import { scanLimiter, chatLimiter, authLimiter } from './rateLimiter';
 import { requireSubscription } from './subscriptionMiddleware';
 import { createTrade, closeTrade, getPortfolioSummary, updateTradeCurrentPrice } from './portfolioService';
 import { sendBuyAlert, sendPreMarketDigest } from './whatsappAlert';
+import { notifyUsersWithMorningDigest, notifyUsersWithPostMarketSummary } from './notificationService';
+import { getInstitutionalFlowSummary, refreshInstitutionalFlow } from './institutionalFlowService';
+import {
+    adminActivateSchema,
+    chatSchema,
+    loginSchema,
+    portfolioTradeSchema,
+    portfolioTradeUpdateSchema,
+    registerSchema,
+    userPreferencesSchema,
+    validateBody,
+    watchlistCreateSchema,
+} from './validation';
 
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 type DbStatus = 'unknown' | 'ready' | 'error';
+type ScanMode = 'swing' | 'intraday';
 
 const dbHealth: {
     status: DbStatus;
@@ -117,6 +131,7 @@ async function verifyDatabaseConnection(): Promise<void> {
     try {
         await prisma.$connect();
         await prisma.$queryRawUnsafe('SELECT 1');
+        await prisma.institutionalFlowSnapshot.findFirst({ select: { id: true } });
         markDatabaseHealthy();
         console.log('[System] Database connection ready.');
     } catch (err: any) {
@@ -201,7 +216,24 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Cache last scan result
-let lastScan: ScanResult | null = null;
+let lastSwingScan: ScanResult | null = null;
+let lastIntradayScan: ScanResult | null = null;
+
+function normalizeScanMode(value: unknown): ScanMode {
+    return value === 'intraday' ? 'intraday' : 'swing';
+}
+
+function getCachedScan(mode: ScanMode): ScanResult | null {
+    return mode === 'intraday' ? lastIntradayScan : lastSwingScan;
+}
+
+function setCachedScan(mode: ScanMode, scan: ScanResult): void {
+    if (mode === 'intraday') {
+        lastIntradayScan = scan;
+        return;
+    }
+    lastSwingScan = scan;
+}
 let broker: any = null;
 let tradingApi: any = null;
 
@@ -243,7 +275,7 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
 // ═══════════════════════════════════════════
 
 // POST /api/auth/register
-app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) => {
+app.post('/api/auth/register', authLimiter, validateBody(registerSchema), async (req: Request, res: Response) => {
     const { name, email } = req.body || {};
     const password = req.body?.password ?? req.body?.secret;
     if (!name || !email || !password) {
@@ -283,7 +315,7 @@ app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) 
 });
 
 // POST /api/auth/login
-app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
+app.post('/api/auth/login', authLimiter, validateBody(loginSchema), async (req: Request, res: Response) => {
     const { email } = req.body || {};
     const password = req.body?.password ?? req.body?.secret;
     if (!email || !password) {
@@ -349,7 +381,7 @@ app.get('/api/watchlist', requireAuth, async (req: AuthRequest, res: Response) =
 });
 
 // POST /api/watchlist
-app.post('/api/watchlist', requireAuth, async (req: AuthRequest, res: Response) => {
+app.post('/api/watchlist', requireAuth, validateBody(watchlistCreateSchema), async (req: AuthRequest, res: Response) => {
     const { ticker, sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone } = req.body || {};
     if (!ticker) { res.status(400).json({ success: false, message: 'ticker is required.' }); return; }
     try {
@@ -383,41 +415,65 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
     try {
         console.log('\n[API] /api/scan called');
         const force = req.query.force === 'true';
+        const mode = normalizeScanMode(req.query.mode);
+        const cachedScan = getCachedScan(mode);
 
-        if (!force && lastScan) {
+        if (!force && cachedScan) {
             console.log('[API] Serving cached scan results');
-            res.json({ success: true, data: lastScan });
+            res.json({ success: true, data: cachedScan });
             return;
         }
 
         // ── Agentic: emit thinking steps ──
         clearThinkingSteps();
-        setAgentState('SCANNING', 'Running full market scan');
-        pushEvent('SCAN_START', 'info', 'Scanner Started', 'Running full Phase 1+2 scan across Nifty 1000 stocks');
+        setAgentState('SCANNING', mode === 'intraday' ? 'Running intraday momentum scan' : 'Running full market scan');
+        pushEvent(
+            'SCAN_START',
+            'info',
+            mode === 'intraday' ? 'Intraday Scanner Started' : 'Scanner Started',
+            mode === 'intraday'
+                ? 'Running 5-minute intraday scan across the liquid NSE universe'
+                : 'Running full Phase 1+2 scan across Nifty 1000 stocks'
+        );
 
         const s1 = addThinkingStep('Fetching live market data from NSE', 'running');
-        console.log('[API] Running full market scan...');
-        const { qualified, marketStatus } = await runScanner(tradingApi);
+        console.log(`[API] Running ${mode} market scan...`);
+        let qualified: any[] = [];
+        let marketStatus: any;
+        let setups: any[] = [];
+        if (mode === 'intraday') {
+            const intradayResult = await runIntradayScanner(tradingApi);
+            qualified = intradayResult.qualified;
+            marketStatus = intradayResult.marketStatus;
+            setups = intradayResult.setups;
+        } else {
+            const swingResult = await runScanner(tradingApi);
+            qualified = swingResult.qualified;
+            marketStatus = swingResult.marketStatus;
+        }
         updateThinkingStep(s1, 'done', `Market regime: ${marketStatus.regime || 'NEUTRAL'}`);
 
         const s2 = addThinkingStep('Computing technical indicators & AI signals', 'running');
-        const setups = await buildTradeSetups(qualified);
+        if (mode !== 'intraday') {
+            setups = await buildTradeSetups(qualified);
+        }
         updateThinkingStep(s2, 'done', `${setups.length} setups identified`);
 
         const s3 = addThinkingStep('Finalizing scan results', 'running');
         updateThinkingStep(s3, 'done', 'Ready');
 
-        lastScan = {
+        const scanPayload: ScanResult = {
             timestamp: new Date().toISOString(),
             marketStatus,
             setups,
         };
+        setCachedScan(mode, scanPayload);
 
         // Emit scan result events
         const buyCount = setups.filter(s => s.aiSignal === 'BUY').length;
         setAgentState('IDLE');
         incrementTasksCompleted();
-        setLastScan(lastScan.timestamp);
+        setLastScan(scanPayload.timestamp);
         setMonitoredStocks(setups.length);
         pushEvent('SCAN_COMPLETE', 'success',
             `Scan Complete — ${setups.length} Setups Found`,
@@ -479,7 +535,7 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
             pushEvent('MARKET_REGIME_CHANGE', 'success', '✅ BULLISH Regime', marketStatus.regimeDetail || 'Nifty above key moving averages');
         }
 
-        res.json({ success: true, data: lastScan });
+        res.json({ success: true, data: scanPayload });
 
         const scanTickers = setups.map(s => s.ticker);
         if (scanTickers.length) {
@@ -539,15 +595,20 @@ app.get('/api/chart/:ticker', async (req: Request, res: Response) => {
     try {
         const ticker = req.params.ticker.toUpperCase();
         const yahooBSE = `${ticker}.NS`;
-        const days = Math.min(Number(req.query.days) || 180, 365);
+        const interval = (['1d', '15m', '5m'].includes(String(req.query.interval))
+            ? String(req.query.interval)
+            : '1d') as MarketDataInterval;
+        const daysLimit = interval === '1d' ? 365 : interval === '15m' ? 20 : 10;
+        const days = Math.min(Number(req.query.days) || (interval === '1d' ? 180 : 5), daysLimit);
+        const cacheKey = `${ticker}:${interval}:${days}`;
 
         // Serve from cache if < 5 min old
-        const cached = chartCache[ticker];
+        const cached = chartCache[cacheKey];
         if (cached && Date.now() - cached.ts < 300_000) {
             return res.json({ success: true, data: cached.data });
         }
 
-        const candles = await fetchHistoricalData(yahooBSE, days);
+        const candles = await fetchHistoricalData(yahooBSE, days, interval);
         if (!candles.length) {
             return res.status(404).json({ success: false, message: 'No data found for ' + ticker });
         }
@@ -620,8 +681,9 @@ app.get('/api/chart/:ticker', async (req: Request, res: Response) => {
 
         const chartData = {
             ticker,
+            interval,
             candles: candles.map((c, i) => ({
-                time: c.date,
+                time: interval === '1d' ? c.date : Math.floor(new Date(c.date).getTime() / 1000),
                 open: c.open,
                 high: c.high,
                 low: c.low,
@@ -636,7 +698,7 @@ app.get('/api/chart/:ticker', async (req: Request, res: Response) => {
             })),
         };
 
-        chartCache[ticker] = { ts: Date.now(), data: chartData };
+        chartCache[cacheKey] = { ts: Date.now(), data: chartData };
         res.json({ success: true, data: chartData });
     } catch (error: any) {
         console.error('[API] Chart error:', error.message);
@@ -813,12 +875,8 @@ app.get('/api/market-outlook', async (req: Request, res: Response) => {
 });
 
 // POST /api/chat — AI Stock Research Chatbot powered by Gemini AI (rate limited + subscription gated)
-app.post('/api/chat', chatLimiter, requireAuth, requireSubscription, async (req: AuthRequest, res: Response) => {
+app.post('/api/chat', chatLimiter, requireAuth, requireSubscription, validateBody(chatSchema), async (req: AuthRequest, res: Response) => {
     const { message } = req.body || {};
-    if (!message || typeof message !== 'string') {
-        res.status(400).json({ success: false, message: 'Missing message' });
-        return;
-    }
 
     // Detect known stock tickers in the message
     const upperMsg = message.toUpperCase();
@@ -942,7 +1000,7 @@ ${headlines.join('\n')}
     // Always inject current date/time so the AI knows it's not 2024
     const nowIST = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
 
-    const topSetups = lastScan?.setups?.slice(0, 5).map(s =>
+    const topSetups = lastSwingScan?.setups?.slice(0, 5).map(s =>
         `${s.ticker} (${s.setupType}, Conf:${s.confidenceScore}/10, Signal:${s.aiSignal})`
     ).join(', ') || 'No recent scan on record.';
 
@@ -1015,11 +1073,13 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
 
 // GET /api/last — Return cached last scan result
 app.get('/api/last', (req: Request, res: Response) => {
-    if (!lastScan) {
+    const mode = normalizeScanMode(req.query.mode);
+    const cachedScan = getCachedScan(mode);
+    if (!cachedScan) {
         res.json({ success: false, message: 'No scan has been run yet. Hit /api/scan first.' });
         return;
     }
-    res.json({ success: true, data: lastScan });
+    res.json({ success: true, data: cachedScan });
 });
 
 
@@ -1040,7 +1100,7 @@ cron.schedule('45 8 * * 1-5', async () => {
             s.confidenceScore >= 7 && (s.aiSignal === 'BUY' || s.aiSignal === 'WATCH')
         );
 
-        lastScan = {
+        lastSwingScan = {
             timestamp: new Date().toISOString(),
             marketStatus,
             setups,
@@ -1048,6 +1108,7 @@ cron.schedule('45 8 * * 1-5', async () => {
 
         // Send email alert with filtered high-quality setups
         await sendPreMarketAlert(alertSetups);
+        await notifyUsersWithMorningDigest(alertSetups, marketStatus.regime || 'NEUTRAL');
         console.log(`[CRON] Pre-market scan complete: ${setups.length} total, ${alertSetups.length} high-quality alerts sent`);
     } catch (err: any) {
         console.error('[CRON] Pre-market scan failed:', err.message);
@@ -1059,7 +1120,7 @@ cron.schedule('20 9 * * 1-5', async () => {
     console.log('\n[CRON] Morning scan triggered at 9:20 AM IST');
     const { qualified, marketStatus } = await runScanner(tradingApi);
     const setups = await buildTradeSetups(qualified);
-    lastScan = {
+    lastSwingScan = {
         timestamp: new Date().toISOString(),
         marketStatus,
         setups,
@@ -1071,16 +1132,32 @@ cron.schedule('45 15 * * 1-5', async () => {
     console.log('\n[CRON] EOD Scan triggered at 3:45 PM IST');
     const { qualified, marketStatus } = await runScanner(tradingApi);
     const setups = await buildTradeSetups(qualified);
-    lastScan = {
+    lastSwingScan = {
         timestamp: new Date().toISOString(),
         marketStatus,
         setups,
     };
 
+    try {
+        await notifyUsersWithPostMarketSummary(setups, marketStatus.regime || 'NEUTRAL');
+    } catch (notifyErr: any) {
+        console.error('[CRON] Post-market summary failed:', notifyErr.message);
+    }
+
     // Background: pre-warm fundamentals for all qualified tickers
     const scanTickers = setups.map(s => s.ticker);
     if (scanTickers.length) {
         setImmediate(() => batchPrefetch(scanTickers).catch(() => { }));
+    }
+}, { timezone: 'Asia/Kolkata' });
+
+// Refresh institutional flow after the market close data settles.
+cron.schedule('10 18 * * 1-5', async () => {
+    try {
+        const summary = await refreshInstitutionalFlow(true);
+        console.log(`[CRON] Institutional flow refresh complete (${summary.status})`);
+    } catch (err: any) {
+        console.error('[CRON] Institutional flow refresh failed:', err.message);
     }
 }, { timezone: 'Asia/Kolkata' });
 
@@ -1176,6 +1253,11 @@ setTimeout(() => {
         initAutoScanner();
         setNextScan(computeNextScan());
         pushEvent('SYSTEM', 'success', 'StockSage AI Online', 'Autonomous agent systems initialized in background.');
+        setImmediate(() => {
+            refreshInstitutionalFlow().catch((err: any) => {
+                console.error('[System] Institutional flow warm-up failed:', err.message);
+            });
+        });
     } catch (e: any) {
         console.error('[System] Background Init Failed:', e.message);
     }
@@ -1212,14 +1294,10 @@ app.get('/api/portfolio/summary', requireAuth, async (req: AuthRequest, res: Res
 });
 
 // POST /api/portfolio/trade — log a new trade entry
-app.post('/api/portfolio/trade', requireAuth, async (req: AuthRequest, res: Response) => {
+app.post('/api/portfolio/trade', requireAuth, validateBody(portfolioTradeSchema), async (req: AuthRequest, res: Response) => {
     const { ticker, entryPrice, quantity, stopLossInit, target1, target2,
             companyName, sector, capCategory, setupType, regimeAtEntry,
             confidenceScore, notes } = req.body || {};
-    if (!ticker || !entryPrice || !quantity || !stopLossInit || !target1) {
-        res.status(400).json({ success: false, message: 'ticker, entryPrice, quantity, stopLossInit, target1 are required.' });
-        return;
-    }
     try {
         const trade = await createTrade(req.userId!, {
             ticker, entryPrice: +entryPrice, quantity: +quantity,
@@ -1235,7 +1313,7 @@ app.post('/api/portfolio/trade', requireAuth, async (req: AuthRequest, res: Resp
 });
 
 // PUT /api/portfolio/trade/:id — close a trade or update
-app.put('/api/portfolio/trade/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+app.put('/api/portfolio/trade/:id', requireAuth, validateBody(portfolioTradeUpdateSchema), async (req: AuthRequest, res: Response) => {
     const { exitPrice, exitReason, currentPrice, notes } = req.body || {};
     try {
         if (exitPrice && exitReason) {
@@ -1291,7 +1369,7 @@ app.get('/api/user/preferences', requireAuth, async (req: AuthRequest, res: Resp
 });
 
 // POST /api/user/preferences — update notification settings
-app.post('/api/user/preferences', requireAuth, async (req: AuthRequest, res: Response) => {
+app.post('/api/user/preferences', requireAuth, validateBody(userPreferencesSchema), async (req: AuthRequest, res: Response) => {
     const { whatsappNumber, notifyBuySignals, notifyEmail, name } = req.body || {};
     try {
         const update: any = {};
@@ -1309,7 +1387,7 @@ app.post('/api/user/preferences', requireAuth, async (req: AuthRequest, res: Res
 // ══════════════════════════════════════════════
 // ADMIN — Activate Subscription
 // ══════════════════════════════════════════════
-app.post('/api/admin/activate', async (req: Request, res: Response) => {
+app.post('/api/admin/activate', validateBody(adminActivateSchema), async (req: Request, res: Response) => {
     const adminSecret = req.headers['x-admin-secret'];
     if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
         res.status(403).json({ success: false, message: 'Forbidden.' });
@@ -1370,29 +1448,14 @@ app.get('/api/economic-calendar', (_req: Request, res: Response) => {
 // ══════════════════════════════════════════════
 // FII/DII DATA
 // ══════════════════════════════════════════════
-let fiiDiiCache: { data: any; ts: number } | null = null;
-app.get('/api/fii-dii', async (_req: Request, res: Response) => {
-    if (fiiDiiCache && Date.now() - fiiDiiCache.ts < 60 * 60 * 1000) {
-        return res.json({ success: true, data: fiiDiiCache.data });
-    }
+app.get('/api/fii-dii', async (req: Request, res: Response) => {
     try {
-        const response = await axios.get(
-            'https://www.nseindia.com/api/fiidiiTradeReact',
-            { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Referer': 'https://www.nseindia.com' }, timeout: 8000 }
-        );
-        const data = response.data?.data || [];
-        // Get last 5 trading days
-        const recent = data.slice(0, 5).map((d: any) => ({
-            date: d.date,
-            fiiBuy: d.fiiBuy, fiiSell: d.fiiSell, fiiNet: d.fiiNet,
-            diiBuy: d.diiBuy, diiSell: d.diiSell, diiNet: d.diiNet,
-        }));
-        fiiDiiCache = { data: recent, ts: Date.now() };
-        res.json({ success: true, data: recent });
+        const forceRefresh = req.query.refresh === 'true';
+        const summary = await getInstitutionalFlowSummary(forceRefresh);
+        res.json({ success: true, data: summary });
     } catch (err: any) {
-        console.error('[FII-DII] NSE fetch failed:', err.message);
-        // Return fallback zeros to avoid frontend crash
-        res.json({ success: true, data: [], note: 'NSE data temporarily unavailable.' });
+        console.error('[FII-DII] Data fetch failed:', err.message);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
 

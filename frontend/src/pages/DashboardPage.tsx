@@ -15,6 +15,7 @@ import { AITrackRecordCard } from '../components/AITrackRecordCard'
 import { EquityCurveChart } from '../components/EquityCurveChart'
 import EconomicCalendarWidget from '../components/EconomicCalendarWidget'
 import FiiDiiWidget from '../components/FiiDiiWidget'
+import { useViewport } from '../lib/useViewport'
 
 /* ΓöÇΓöÇΓöÇ Types ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 interface MarketStatus {
@@ -34,6 +35,13 @@ interface MarketStatus {
     nifty50dma?: number
     nifty200dma?: number
     dmaCrossPct?: number
+    institutionalBias?: 'RISK_ON' | 'RISK_OFF' | 'MIXED'
+    institutionalScore?: number
+    institutionalNet1dCr?: number
+    institutionalNet5dCr?: number
+    institutionalNet20dCr?: number
+    institutionalLastTradingDate?: string
+    institutionalDetail?: string
 }
 interface IndexData {
     price: number
@@ -87,10 +95,28 @@ interface TradeSetup {
 /* ΓöÇΓöÇΓöÇ Regime Banner (prominent, always visible) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 function RegimeBanner({ market }: { market: MarketStatus | null }) {
     if (!market?.regime) return null
-    const { regime, regimeColor, regimeLabel, regimeDetail, positionSizeMult, nifty50dma, nifty200dma, dmaCrossPct } = market
+    const {
+        regime,
+        regimeColor,
+        regimeLabel,
+        regimeDetail,
+        positionSizeMult,
+        nifty50dma,
+        nifty200dma,
+        dmaCrossPct,
+        institutionalBias,
+        institutionalNet5dCr,
+        institutionalDetail,
+    } = market
     const c = regimeColor || (regime === 'BULLISH' ? '#34d399' : regime === 'NEUTRAL' ? '#fbbf24' : '#f87171')
     const icon = regime === 'BULLISH' ? '\u2705' : regime === 'NEUTRAL' ? '\u26A0\uFE0F' : '\u26D4'
-    const sizeLabel = positionSizeMult === 1 ? 'Full size' : positionSizeMult === 0.5 ? 'Half size' : 'No new longs'
+    const sizeLabel = positionSizeMult === 1
+        ? 'Full size'
+        : positionSizeMult === 0.75
+            ? 'Reduced size'
+            : positionSizeMult === 0.5
+                ? 'Half size'
+                : 'No new longs'
 
     return (
         <div style={{
@@ -110,7 +136,14 @@ function RegimeBanner({ market }: { market: MarketStatus | null }) {
                     <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.88rem', fontWeight: 900, color: c }}>
                         {regimeLabel || regime} Regime
                     </div>
-                    <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 1 }}>{regimeDetail}</div>
+                    <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: 1 }}>
+                        {regimeDetail}
+                    </div>
+                    {institutionalDetail && (
+                        <div style={{ fontSize: '0.58rem', color: 'var(--text-secondary)', marginTop: 4 }}>
+                            Institutional flow: {institutionalDetail}
+                        </div>
+                    )}
                 </div>
             </div>
             <div style={{ display: 'flex', gap: 10, marginLeft: 'auto', flexWrap: 'wrap' }}>
@@ -123,6 +156,19 @@ function RegimeBanner({ market }: { market: MarketStatus | null }) {
                         <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)', marginBottom: 1 }}>50DMA vs 200DMA</div>
                         <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '0.78rem', color: (dmaCrossPct ?? 0) > 0 ? '#34d399' : '#f87171' }}>
                             {(dmaCrossPct ?? 0) > 0 ? '+' : ''}{(dmaCrossPct ?? 0).toFixed(2)}%
+                        </div>
+                    </div>
+                )}
+                {institutionalBias && institutionalNet5dCr != null && (
+                    <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)', marginBottom: 1 }}>Inst. 5D Flow</div>
+                        <div style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontWeight: 800,
+                            fontSize: '0.78rem',
+                            color: institutionalBias === 'RISK_ON' ? '#34d399' : institutionalBias === 'RISK_OFF' ? '#f87171' : '#fbbf24',
+                        }}>
+                            {institutionalNet5dCr >= 0 ? '+' : ''}{institutionalNet5dCr.toFixed(0)} Cr
                         </div>
                     </div>
                 )}
@@ -292,6 +338,7 @@ export default function DashboardPage() {
     const [market, setMarket] = useState<MarketStatus | null>(null)
     const [pulse, setPulse] = useState<MarketPulse | null>(null)
     const [scanning, setScanning] = useState(false)
+    const [scanMode, setScanMode] = useState<'swing' | 'intraday'>('swing')
     const [filter, setFilter] = useState('All')
     const [scanAge, setScanAge] = useState<string | null>(null)
     const [marketBrief, setMarketBrief] = useState<string | null>(null)
@@ -303,6 +350,7 @@ export default function DashboardPage() {
     const pulseRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const { status } = useAgentSSE()
     const { items: watchlist } = useWatchlist()
+    const { isMobile, isPhone } = useViewport()
 
     // Load live market pulse on mount + refresh every 5 min
     useEffect(() => {
@@ -318,13 +366,13 @@ export default function DashboardPage() {
 
     // Load last scan on mount
     useEffect(() => {
-        axios.get('/api/last').then(({ data }) => {
+        axios.get(`/api/last?mode=${scanMode}`).then(({ data }) => {
             if (!data.success) return
-            if (data.data?.setups?.length) { setSetups(data.data.setups); setScanAge(data.data.scannedAt) }
+            if (data.data?.setups?.length) { setSetups(data.data.setups); setScanAge(data.data.timestamp || data.data.scannedAt) }
             if (data.data?.marketStatus) setMarket(data.data.marketStatus)
             if (data.data?.marketBrief?.brief) setMarketBrief(data.data.marketBrief.brief)
         }).catch(() => { })
-    }, [])
+    }, [scanMode])
 
     // Fetch live sector data
     useEffect(() => {
@@ -359,7 +407,7 @@ export default function DashboardPage() {
         setScanning(true)
         setScanError(null)
         try {
-            const { data } = await axios.get('/api/scan?force=true', { timeout: 200000 })
+            const { data } = await axios.get(`/api/scan?force=true&mode=${scanMode}`, { timeout: 200000 })
             if (data.success) {
                 const scanData = data.data ?? data        // server wraps in .data
                 setSetups(scanData.setups || [])
@@ -374,7 +422,7 @@ export default function DashboardPage() {
             setScanError(e.response?.data?.message || 'Market scanner is temporarily busy. Please try again soon.')
         }
         finally { setScanning(false) }
-    }, [])
+    }, [scanMode])
 
     const filtered = setups.filter(s => {
         if (filter === 'All') return true
@@ -399,7 +447,7 @@ export default function DashboardPage() {
             )}
 
             {/* 2-column layout */}
-            <div style={{ flex: 1, display: 'flex', gap: 18, padding: '20px 22px 28px', maxWidth: 1480, margin: '0 auto', width: '100%' }}>
+            <div style={{ flex: 1, display: 'flex', gap: isMobile ? 12 : 18, padding: isMobile ? '14px 12px 22px' : '20px 22px 28px', maxWidth: 1480, margin: '0 auto', width: '100%' }}>
 
                 {/* MAIN CENTER */}
                 <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -410,7 +458,7 @@ export default function DashboardPage() {
                     {/* ΓöÇΓöÇ AI COMMAND CENTER v2 ΓöÇΓöÇ */}
                     <div className="gradient-border" style={{
                         background: 'linear-gradient(135deg, rgba(34,211,238,0.03), rgba(139,92,246,0.02))',
-                        borderRadius: 16, padding: '14px 18px',
+                        borderRadius: 16, padding: isMobile ? '12px 12px' : '14px 18px',
                         position: 'relative', overflow: 'hidden',
                     }}>
                         {/* Ambient glow */}
@@ -418,7 +466,7 @@ export default function DashboardPage() {
 
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, position: 'relative' }}>
                             {/* Left ΓÇö Agent identity + status */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 200 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
                                 <div style={{
                                     width: 36, height: 36, borderRadius: 10,
                                     background: 'linear-gradient(135deg, rgba(34,211,238,0.15), rgba(139,92,246,0.1))',
@@ -431,7 +479,7 @@ export default function DashboardPage() {
                                 </div>
                                 <div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                                        <span style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', fontWeight: 900, letterSpacing: '-0.02em' }}>StockSage AI</span>
+                                        <span style={{ fontFamily: 'var(--font-display)', fontSize: isPhone ? '0.9rem' : '1rem', fontWeight: 900, letterSpacing: '-0.02em' }}>StockSage AI</span>
                                         <span style={{
                                             fontSize: '0.52rem', fontWeight: 700,
                                             color: scanning ? '#a78bfa' : '#22d3ee',
@@ -444,15 +492,17 @@ export default function DashboardPage() {
                                             {scanning ? 'Scanning...' : status?.state === 'IDLE' ? 'Active' : 'Ready'}
                                         </span>
                                     </div>
-                                    <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                                        Nifty 1000 Universe {'\u00B7'} DMA200 {'\u00B7'} RSI {'\u00B7'} Volume {'\u00B7'} Gemini AI
+                                    <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: isPhone ? 'none' : 'block' }}>
+                                        {scanMode === 'intraday'
+                                            ? 'Liquid NSE leaders · 5m momentum · EMA pullbacks · Volume expansion'
+                                            : 'Nifty 1000 Universe · DMA200 · RSI · Volume · Gemini AI'}
                                     </p>
                                 </div>
                             </div>
 
                             {/* Center ΓÇö Scan stats (only when we have results) */}
-                            {setups.length > 0 && (
-                                <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+                            {setups.length > 0 && !isPhone && (
+                                <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', justifyContent: isMobile ? 'flex-start' : 'center' }}>
                                     {[
                                         { label: 'Setups', value: setups.length, color: '#22d3ee', icon: <Target size={10} /> },
                                         { label: 'BUY', value: setups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY').length, color: '#34d399', icon: <TrendingUp size={10} /> },
@@ -476,11 +526,33 @@ export default function DashboardPage() {
                                 </div>
                             )}
 
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-                                <button onClick={runScan} disabled={scanning} className="btn btn-primary" style={{ padding: '8px 18px', fontSize: '0.82rem', gap: 6, flexShrink: 0 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMobile ? 'stretch' : 'flex-end', gap: 6, width: isMobile ? '100%' : 'auto' }}>
+                                <div style={{ display: 'flex', gap: 6, padding: 4, borderRadius: 999, background: 'rgba(15,23,42,0.5)', border: '1px solid var(--border)' }}>
+                                    {[
+                                        { key: 'swing', label: 'Swing' },
+                                        { key: 'intraday', label: 'Intraday' },
+                                    ].map(option => (
+                                        <button
+                                            key={option.key}
+                                            onClick={() => setScanMode(option.key as 'swing' | 'intraday')}
+                                            className="btn"
+                                            style={{
+                                                padding: '5px 10px',
+                                                fontSize: '0.68rem',
+                                                minWidth: 0,
+                                                background: scanMode === option.key ? 'linear-gradient(135deg, #2563eb, #4f46e5)' : 'transparent',
+                                                color: scanMode === option.key ? '#fff' : 'var(--text-secondary)',
+                                                border: scanMode === option.key ? '1px solid rgba(96,165,250,0.35)' : '1px solid transparent',
+                                            }}
+                                        >
+                                            {option.label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <button onClick={runScan} disabled={scanning} className="btn btn-primary" style={{ padding: '8px 18px', fontSize: '0.82rem', gap: 6, flexShrink: 0, width: isMobile ? '100%' : 'auto', justifyContent: 'center' }}>
                                     {scanning
                                         ? <><span style={{ width: 13, height: 13, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid #fff', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> Scanning...</>
-                                        : <><Zap size={14} /> Run Scanner</>
+                                        : <><Zap size={14} /> {scanMode === 'intraday' ? 'Run Intraday' : 'Run Scanner'}</>
                                     }
                                 </button>
                                 {scanError && (
@@ -540,7 +612,7 @@ export default function DashboardPage() {
                             <EquityCurveChart history={perfData?.history || []} />
 
                             {/* History Grid */}
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
                                 {perfData?.history.map((h: any) => (
                                     <AITrackRecordCard key={h.id} trade={h} />
                                 ))}
@@ -555,7 +627,7 @@ export default function DashboardPage() {
                     {!showTracker && setups.length === 0 && !scanning && (
                         <div style={{
                             flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
-                            justifyContent: 'center', padding: '60px 24px', textAlign: 'center', gap: 24,
+                            justifyContent: 'center', padding: isMobile ? '32px 12px' : '60px 24px', textAlign: 'center', gap: isMobile ? 18 : 24,
                         }}>
                             {/* Animated hero orb */}
                             <div style={{ position: 'relative', width: 120, height: 120 }}>
@@ -585,7 +657,7 @@ export default function DashboardPage() {
 
                             <div>
                                 <div style={{
-                                    fontFamily: 'var(--font-display)', fontSize: '1.65rem', fontWeight: 900,
+                                    fontFamily: 'var(--font-display)', fontSize: isMobile ? '1.3rem' : '1.65rem', fontWeight: 900,
                                     marginBottom: 10, letterSpacing: '-0.03em',
                                     background: 'linear-gradient(90deg, #f0f0ff, #93c5fd, #c4b5fd)',
                                     WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
@@ -598,11 +670,11 @@ export default function DashboardPage() {
                                 </p>
                             </div>
 
-                            <button onClick={runScan} className="btn btn-primary" style={{ padding: '13px 36px', fontSize: '0.95rem', gap: 8 }}>
+                            <button onClick={runScan} className="btn btn-primary" style={{ padding: isMobile ? '11px 22px' : '13px 36px', fontSize: '0.95rem', gap: 8 }}>
                                 <Zap size={16} /> Launch Scanner
                             </button>
 
-                            <div style={{ display: 'flex', gap: 24, marginTop: 6 }}>
+                            <div style={{ display: 'flex', gap: 12, marginTop: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
                                 {['DMA200 Filter', 'RSI Zone', 'Volume Spike', 'AI Signal'].map(t => (
                                     <span key={t} style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
                                         <CheckCircle2 size={9} style={{ color: '#34d399', opacity: 0.6 }} /> {t}
@@ -640,7 +712,7 @@ export default function DashboardPage() {
 
                     {/* Cards grid */}
                     {!showTracker && filtered.length > 0 && (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
                             {filtered.map((s, i) => <AIActionCard key={s.ticker} s={s} delay={Math.min(i * 0.04, 0.5)} />)}
                         </div>
                     )}

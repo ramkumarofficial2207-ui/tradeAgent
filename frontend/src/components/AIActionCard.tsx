@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { toggleWatchlistItem, isWatched } from '../lib/watchlist'
 import StockChart from './StockChart'
+import { useViewport } from '../lib/useViewport'
 
 interface TradeSetup {
     ticker: string
@@ -69,6 +70,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
     const navigate = useNavigate()
     const rgb = glowRgb(s.aiSignal)
     const satisfaction = getSatisfaction(s.confidenceScore, s.aiSignal)
+    const { isMobile, isPhone } = useViewport()
 
     const handleCopySetup = () => {
         const text = `${s.ticker} | ${s.setupType} | ${s.aiSignal}\nBuy: ${fmt(s.buyZone)} | Target: ${fmt(s.target)} (+${s.targetPct.toFixed(1)}%)\nSL: ${fmt(s.stopLoss)} (-${s.slPct.toFixed(1)}%) | RR: ${s.riskReward}:1\nConfidence: ${s.confidenceScore}/10 | ${satisfaction.label}`
@@ -119,10 +121,10 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
             <div style={{ padding: '20px 22px 0' }}>
 
                 {/* Header */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, position: 'relative' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, position: 'relative', gap: 12, flexWrap: isPhone ? 'wrap' : 'nowrap' }}>
                     <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                            <span style={{ fontFamily: 'var(--font-display)', fontSize: '1.35rem', fontWeight: 900, letterSpacing: '-0.025em' }}>{s.ticker}</span>
+                            <span style={{ fontFamily: 'var(--font-display)', fontSize: isPhone ? '1.08rem' : '1.35rem', fontWeight: 900, letterSpacing: '-0.025em' }}>{s.ticker}</span>
                             <span style={{
                                 padding: '2px 8px', borderRadius: 99, fontSize: '0.62rem', fontWeight: 800,
                                 background: (s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') ? 'rgba(16,185,129,0.12)' : (s.aiSignal === 'REJECT') ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)',
@@ -139,9 +141,9 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                             {s.momentumRank > 0 && s.momentumRank <= 10 && <span className="badge badge-buy" style={{ fontSize: '0.54rem' }}>#{s.momentumRank} Momentum</span>}
                         </div>
                     </div>
-                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.12rem', fontWeight: 700, marginBottom: 4 }}>{fmt(s.ltp)}</div>
-                        <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    <div style={{ textAlign: isPhone ? 'left' : 'right', flexShrink: 0, width: isPhone ? '100%' : 'auto' }}>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: isPhone ? '1rem' : '1.12rem', fontWeight: 700, marginBottom: 4 }}>{fmt(s.ltp)}</div>
+                        <div style={{ display: 'flex', gap: 4, justifyContent: isPhone ? 'flex-start' : 'flex-end' }}>
                             <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', fontWeight: 700, color: '#34d399' }}>+{s.targetPct.toFixed(1)}%</span>
                             <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>RR {s.riskReward}:1</span>
                         </div>
@@ -149,7 +151,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                 </div>
 
                 {/* 3-col price levels */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1fr' : 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
                     {[
                         { label: 'Buy Zone', value: fmt(s.buyZone), color: 'var(--blue)', icon: <Target size={10} /> },
                         { label: 'Target', value: fmt(s.target), color: '#34d399', icon: <TrendingUp size={10} /> },
@@ -205,7 +207,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                 {/* Quick trade estimate for BUY signals */}
                 {(s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') && (
                     <div style={{
-                        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 12,
+                        display: 'grid', gridTemplateColumns: isPhone ? '1fr' : 'repeat(3, 1fr)', gap: 6, marginBottom: 12,
                         padding: '8px 10px', background: 'rgba(16,185,129,0.04)', borderRadius: 10,
                         border: '1px solid rgba(16,185,129,0.1)',
                     }}>
@@ -246,7 +248,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                         borderRadius: 10, padding: '8px 12px',
                         cursor: 'pointer', transition: 'all 0.15s',
                         color: showChart ? '#60a5fa' : 'var(--text-secondary)',
-                        fontSize: '0.74rem', fontWeight: 700, fontFamily: 'var(--font-body)',
+                        fontSize: isMobile ? '0.7rem' : '0.74rem', fontWeight: 700, fontFamily: 'var(--font-body)',
                     }}
                 >
                     <LineChart size={14} />
@@ -288,7 +290,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                             {s.confidenceBreakdown && (
                                 <div style={{ marginBottom: 14 }}>
                                     <div style={{ fontSize: '0.58rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>Score Breakdown</div>
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: isPhone ? 'repeat(2, 1fr)' : 'repeat(5, 1fr)', gap: 6 }}>
                                         {[
                                             { label: 'Trend', val: s.confidenceBreakdown.scoreTrend, max: 2, icon: <TrendingUp size={10} /> },
                                             { label: 'Volume', val: s.confidenceBreakdown.scoreVolume, max: 2, icon: <BarChart3 size={10} /> },
@@ -385,7 +387,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
 
             {/* ΓöÇΓöÇ Quick Actions Footer ΓöÇΓöÇ */}
             <div style={{ padding: '12px 22px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', gap: 4, flexShrink: 0, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 4, flexShrink: 0, alignItems: 'center', flexWrap: 'wrap', width: isPhone ? '100%' : 'auto' }}>
                     {/* Chart toggle (small) */}
                     <button onClick={() => setShowChart(v => !v)} className={`btn ${showChart ? 'btn-primary' : 'btn-ghost'}`} style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3, minWidth: 0 }} title="Toggle chart">
                         <LineChart size={11} /> Chart

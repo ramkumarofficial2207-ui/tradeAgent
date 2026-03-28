@@ -1526,13 +1526,15 @@ exports.SECTOR_MAP = {
     'EMUDHRA': 'Information Technology',
 };
 exports.MARKET_CAP_CR_MAP = {};
-function parseYahooCandles(rawData) {
+function parseYahooCandles(rawData, interval = '1d') {
     const timestamps = rawData?.chart?.result?.[0]?.timestamp ?? [];
     const q = rawData?.chart?.result?.[0]?.indicators?.quote?.[0];
     if (!q || timestamps.length === 0)
         return [];
     return timestamps.map((ts, i) => ({
-        date: new Date(ts * 1000).toISOString().split('T')[0],
+        date: interval === '1d'
+            ? new Date(ts * 1000).toISOString().split('T')[0]
+            : new Date(ts * 1000).toISOString(),
         open: q.open[i] ?? 0,
         high: q.high[i] ?? 0,
         low: q.low[i] ?? 0,
@@ -1540,12 +1542,22 @@ function parseYahooCandles(rawData) {
         volume: q.volume[i] ?? 0,
     })).filter(c => c.close > 0 && c.high > 0);
 }
-async function fetchHistoricalData(yahooTicker, days = 250) {
+function resolveYahooIntervalConfig(interval, requestedDays) {
+    if (interval === '5m') {
+        return { interval: '5m', days: Math.max(1, Math.min(requestedDays, 10)) };
+    }
+    if (interval === '15m') {
+        return { interval: '15m', days: Math.max(1, Math.min(requestedDays, 20)) };
+    }
+    return { interval: '1d', days: Math.max(5, Math.min(requestedDays, 365)) };
+}
+async function fetchHistoricalData(yahooTicker, days = 250, interval = '1d') {
     try {
+        const cfg = resolveYahooIntervalConfig(interval, days);
         const end = Math.floor(Date.now() / 1000);
-        const start = end - days * 86400;
+        const start = end - cfg.days * 86400;
         // Use v8 chart endpoint — most reliable for NSE
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?period1=${start}&period2=${end}&interval=1d&includePrePost=false`;
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?period1=${start}&period2=${end}&interval=${cfg.interval}&includePrePost=false`;
         const { data } = await axios_1.default.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -1553,7 +1565,7 @@ async function fetchHistoricalData(yahooTicker, days = 250) {
             },
             timeout: 15000,
         });
-        return parseYahooCandles(data);
+        return parseYahooCandles(data, interval);
     }
     catch (err) {
         // Silently skip failed tickers (bad ticker format, delisted, etc.)
@@ -1680,7 +1692,11 @@ class KiteLiveTradingApi {
         const token = await this.getInstrumentToken(ticker);
         const to = new Date();
         const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
-        const kiteInterval = interval === '1d' ? 'day' : interval;
+        const kiteInterval = interval === '1d'
+            ? 'day'
+            : interval === '5m'
+                ? '5minute'
+                : '15minute';
         const url = `${this.baseUrl}/instruments/historical/${token}/${kiteInterval}`;
         const { data } = await axios_1.default.get(url, {
             params: {
@@ -1752,9 +1768,9 @@ class GrowwPaperTradingApi {
         const yahooTicker = exports.NSE_UNIVERSE[ticker] ?? `${ticker}.NS`;
         return fetchLtp(yahooTicker);
     }
-    async getHistoricalData(ticker, _interval, days = 260) {
+    async getHistoricalData(ticker, interval, days = 260) {
         const yahooTicker = exports.NSE_UNIVERSE[ticker] ?? `${ticker}.NS`;
-        return fetchHistoricalData(yahooTicker, days);
+        return fetchHistoricalData(yahooTicker, days, interval);
     }
     async placeGttOrder(order) {
         const orderId = `paper-gtt-${order.ticker}-${Date.now()}`;

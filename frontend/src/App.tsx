@@ -10,6 +10,7 @@ import RegisterPage from './pages/RegisterPage'
 import ProfilePage from './pages/ProfilePage'
 import PortfolioPage from './pages/PortfolioPage'
 import OnboardingTour from './components/OnboardingTour'
+import UpgradePage from './pages/UpgradePage'
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/portfolio" element={<PortfolioPage />} />
+            <Route path="/upgrade" element={<UpgradePage />} />
             <Route path="/profile" element={<ProfilePage />} />
           </Route>
         </Routes>

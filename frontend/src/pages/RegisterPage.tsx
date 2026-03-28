@@ -4,8 +4,10 @@ import { useNavigate, Link } from 'react-router-dom'
 import axios from 'axios'
 import { useAuth } from '../context/AuthContext'
 import { Zap, Mail, Lock, User, Eye, EyeOff } from 'lucide-react'
+import AuthDisclaimerModal from '../components/AuthDisclaimerModal'
 
 export default function RegisterPage() {
+    const disclaimerKey = 'stocksage_disclaimer_ack'
     const [name, setName] = useState('')
     const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')
@@ -13,11 +15,25 @@ export default function RegisterPage() {
     const [showPw, setShowPw] = useState(false)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
+    const [disclaimerChecked, setDisclaimerChecked] = useState(() => {
+        if (typeof window === 'undefined') return false
+        return localStorage.getItem(disclaimerKey) === 'true'
+    })
+    const [disclaimerAccepted, setDisclaimerAccepted] = useState(() => {
+        if (typeof window === 'undefined') return false
+        return localStorage.getItem(disclaimerKey) === 'true'
+    })
     const { login } = useAuth()
     const navigate = useNavigate()
 
+    const acceptDisclaimer = () => {
+        localStorage.setItem(disclaimerKey, 'true')
+        setDisclaimerAccepted(true)
+    }
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
+        if (!disclaimerAccepted) { setError('Please acknowledge the risk disclosure before creating an account.'); return }
         setError('')
         if (password !== confirm) { setError('Passwords do not match.'); return }
         if (password.length < 6) { setError('Password must be at least 6 characters.'); return }
@@ -37,6 +53,14 @@ export default function RegisterPage() {
 
     return (
         <div style={{ minHeight: '100vh', background: 'var(--bg-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+            {!disclaimerAccepted && (
+                <AuthDisclaimerModal
+                    checked={disclaimerChecked}
+                    onCheckedChange={setDisclaimerChecked}
+                    onAccept={acceptDisclaimer}
+                    actionLabel="Continue to Register"
+                />
+            )}
             <div style={{ width: '100%', maxWidth: 440 }}>
                 {/* Logo */}
                 <div style={{ textAlign: 'center', marginBottom: 32 }}>
@@ -103,7 +127,7 @@ export default function RegisterPage() {
                             </div>
                         </div>
 
-                        <button type="submit" disabled={loading} className="btn btn-primary"
+                        <button type="submit" disabled={loading || !disclaimerAccepted} className="btn btn-primary"
                             style={{ padding: '12px', fontSize: '0.88rem', fontWeight: 700, marginTop: 4, borderRadius: 12, gap: 8, justifyContent: 'center' }}>
                             {loading ? <><span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid #fff', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> Creating account...</> : 'Create Account — Free'}
                         </button>

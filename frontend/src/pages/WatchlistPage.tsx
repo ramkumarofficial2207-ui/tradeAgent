@@ -7,6 +7,7 @@ import {
 import { useWatchlist } from '../lib/useWatchlist'
 import { type WatchlistItem } from '../lib/watchlist'
 import axios from 'axios'
+import { useViewport } from '../lib/useViewport'
 
 const fmt = (n: number) => '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2 })
 const pct = (n: number) => (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'
@@ -38,6 +39,7 @@ export default function WatchlistPage() {
     const [sortBy, setSortBy] = useState<'added' | 'conf' | 'change'>('added')
     const [refreshing, setRefreshing] = useState(false)
     const navigate = useNavigate()
+    const { isMobile, isPhone } = useViewport()
 
     useEffect(() => {
         setItems(watchlistItems.map(w => ({ ...w, livePrice: w.ltp, priceChange: 0 })))
@@ -84,8 +86,8 @@ export default function WatchlistPage() {
     })
 
     return (
-        <div style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto', width: '100%' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24, flexWrap: 'wrap', gap: 16 }}>
+        <div style={{ padding: isMobile ? '16px 12px 24px' : '24px 28px', maxWidth: 1200, margin: '0 auto', width: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'flex-end', marginBottom: 24, flexWrap: 'wrap', gap: 16 }}>
                 <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                         <Heart size={22} style={{ color: '#f87171' }} />
@@ -94,12 +96,12 @@ export default function WatchlistPage() {
                     </div>
                     <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>Track stocks you're interested in with live price updates</p>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={refreshPrices} disabled={refreshing} className="btn btn-ghost" style={{ gap: 6, fontSize: '0.78rem' }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', width: isMobile ? '100%' : 'auto' }}>
+                    <button onClick={refreshPrices} disabled={refreshing} className="btn btn-ghost" style={{ gap: 6, fontSize: '0.78rem', flex: isMobile ? 1 : undefined, justifyContent: 'center' }}>
                         <RefreshCw size={13} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
                         {refreshing ? 'Refreshing...' : 'Refresh Prices'}
                     </button>
-                    <button onClick={() => navigate('/')} className="btn btn-primary" style={{ gap: 6, fontSize: '0.78rem' }}>
+                    <button onClick={() => navigate('/')} className="btn btn-primary" style={{ gap: 6, fontSize: '0.78rem', flex: isMobile ? 1 : undefined, justifyContent: 'center' }}>
                         <Zap size={13} /> Scan for More
                     </button>
                 </div>
@@ -119,7 +121,7 @@ export default function WatchlistPage() {
                         </button>
                     )}
                 </div>
-                <div style={{ display: 'flex', gap: 4 }}>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', width: isPhone ? '100%' : 'auto' }}>
                     {([
                         { key: 'added', label: 'Recent' },
                         { key: 'conf', label: 'Confidence' },
@@ -127,7 +129,7 @@ export default function WatchlistPage() {
                     ] as const).map(s => (
                         <button key={s.key} onClick={() => setSortBy(s.key)}
                             className={`btn ${sortBy === s.key ? 'btn-primary' : 'btn-ghost'}`}
-                            style={{ fontSize: '0.72rem', padding: '6px 12px' }}>
+                            style={{ fontSize: '0.72rem', padding: '6px 12px', flex: isPhone ? 1 : undefined, justifyContent: 'center' }}>
                             <SlidersHorizontal size={11} /> {s.label}
                         </button>
                     ))}
@@ -144,7 +146,7 @@ export default function WatchlistPage() {
                 </div>
             )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
                 {sorted.map((item, i) => {
                     const isUp = (item.priceChange || 0) >= 0
                     const rgb = (item.signal === 'BUY' || item.signal === 'LIGHT BUY') ? '16,185,129' : item.signal === 'REJECT' ? '239,68,68' : '245,158,11'

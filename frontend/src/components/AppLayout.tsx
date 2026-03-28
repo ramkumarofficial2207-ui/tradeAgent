@@ -9,6 +9,7 @@ import axios from 'axios'
 import { useAgentSSE, AgentEvent } from '../lib/useAgentSSE'
 import { useAuth } from '../context/AuthContext'
 import { useWatchlist } from '../lib/useWatchlist'
+import { useViewport } from '../lib/useViewport'
 
 interface Tick { label: string; value: string; positive: boolean }
 
@@ -49,7 +50,7 @@ function NotificationPanel({ events, onClose, onMarkRead }: { events: AgentEvent
     return (
         <div style={{
             position: 'absolute', top: '100%', right: 0, marginTop: 8,
-            width: 380, maxHeight: 480,
+            width: 'min(380px, calc(100vw - 24px))', maxHeight: 480,
             background: 'var(--bg-card)', border: '1px solid var(--border-md)',
             borderRadius: 16, boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
             zIndex: 999, overflow: 'hidden',
@@ -140,6 +141,7 @@ export default function AppLayout() {
     const { status, events, connected, unreadCount, markAllRead } = useAgentSSE()
     const { user, logout } = useAuth()
     const { items: _ } = useWatchlist() // Just calling it here ensures the cache is synced globally
+    const { isMobile, isPhone } = useViewport()
 
     useEffect(() => {
         document.documentElement.setAttribute('data-theme', theme)
@@ -173,9 +175,10 @@ export default function AppLayout() {
                 {ticks.length > 0 && (
                     <div style={{
                         background: 'var(--bg-card)', borderBottom: '1px solid var(--border)',
-                        padding: '5px 24px', display: 'flex', gap: 24, alignItems: 'center', overflow: 'hidden',
+                        padding: isMobile ? '5px 12px' : '5px 24px',
+                        display: 'flex', gap: isMobile ? 12 : 24, alignItems: 'center', overflow: 'hidden',
                     }}>
-                        {ticks.map(t => (
+                        {ticks.slice(0, isMobile ? 2 : ticks.length).map(t => (
                             <span key={t.label} style={{ display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>
                                 <span style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>{t.label}</span>
                                 <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontFamily: 'var(--font-mono)', fontSize: '0.74rem', fontWeight: 700, color: t.positive ? '#34d399' : '#f87171' }}>
@@ -186,8 +189,10 @@ export default function AppLayout() {
                         ))}
                         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                             <AgentStatusPill state={status?.state || 'IDLE'} connected={connected} />
-                            <span className="status-dot status-dot-green" />
-                            <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>live</span>
+                            {!isMobile && <>
+                                <span className="status-dot status-dot-green" />
+                                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>live</span>
+                            </>}
                         </span>
                     </div>
                 )}
@@ -199,7 +204,7 @@ export default function AppLayout() {
                     borderBottom: '1px solid var(--border)',
                     boxShadow: '0 1px 0 rgba(255,255,255,0.03)',
                 }}>
-                    <div style={{ maxWidth: 1480, margin: '0 auto', padding: '0 20px', height: 64, display: 'flex', alignItems: 'center', gap: 0 }}>
+                    <div style={{ maxWidth: 1480, margin: '0 auto', padding: isMobile ? '0 12px' : '0 20px', height: 64, display: 'flex', alignItems: 'center', gap: 0 }}>
 
                         {/* Logo */}
                         <button
@@ -224,15 +229,15 @@ export default function AppLayout() {
                                 )}
                             </div>
                             <div>
-                                <div style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)', lineHeight: 1.1 }}>StockSage AI</div>
-                                <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)', letterSpacing: '0.02em', marginTop: 1, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <div style={{ fontFamily: 'var(--font-display)', fontSize: isPhone ? '0.88rem' : '1rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)', lineHeight: 1.1 }}>StockSage AI</div>
+                                <div style={{ fontSize: '0.56rem', color: 'var(--text-muted)', letterSpacing: '0.02em', marginTop: 1, display: isMobile ? 'none' : 'flex', alignItems: 'center', gap: 4 }}>
                                     <Cpu size={8} />
                                     Agentic Trading Assistant
                                 </div>
                             </div>
                         </button>
 
-                        <div style={{ width: 1, height: 28, background: 'var(--border)', margin: '0 8px', flexShrink: 0 }} />
+                        {!isMobile && <div style={{ width: 1, height: 28, background: 'var(--border)', margin: '0 8px', flexShrink: 0 }} />}
 
                         {/* Nav links */}
                         <nav style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1, justifyContent: 'center' }} className="hide-sm">
@@ -331,7 +336,7 @@ export default function AppLayout() {
                                             position: 'absolute', top: '100%', right: 0, marginTop: 8,
                                             background: 'var(--bg-card)', border: '1px solid var(--border-md)',
                                             borderRadius: 12, boxShadow: '0 16px 48px rgba(0,0,0,0.4)',
-                                            zIndex: 999, minWidth: 180, overflow: 'hidden',
+                                            zIndex: 999, minWidth: isPhone ? 160 : 180, overflow: 'hidden',
                                             animation: 'fadeUp 0.15s ease both',
                                         }}>
                                             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
@@ -391,7 +396,7 @@ export default function AppLayout() {
             </button>
 
             {/* ── Footer ───────────────────────────────────────────── */}
-            <footer style={{ background: 'var(--bg-card)', borderTop: '1px solid var(--border)', padding: '14px 24px', textAlign: 'center' }}>
+            <footer style={{ background: 'var(--bg-card)', borderTop: '1px solid var(--border)', padding: isMobile ? '12px 16px' : '14px 24px', textAlign: 'center' }}>
                 <p style={{ fontSize: '0.64rem', color: 'var(--text-muted)', maxWidth: 660, margin: '0 auto', lineHeight: 1.7 }}>
                     <strong style={{ color: 'var(--text-secondary)' }}>Disclaimer:</strong> StockSage AI is for educational and research purposes only. Not financial advice. Always consult a SEBI-registered advisor.
                 </p>

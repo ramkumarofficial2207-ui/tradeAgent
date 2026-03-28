@@ -40,6 +40,28 @@ export async function sendPreMarketAlert(setups: TradeSetup[]): Promise<void> {
         return;
     }
 
+    await sendSetupDigestEmail({
+        recipients: [to],
+        setups,
+        title: 'PRE-MARKET ALERT',
+        headerTitle: 'SwingEdge',
+        subject: `📈 SwingEdge Pre-Market: ${setups.length} Swing Setup${setups.length > 1 ? 's' : ''} Found — ${new Date().toLocaleDateString('en-IN')}`,
+        subtitle: `🕛 Today's Swing Watchlist — ${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`,
+        summary: `${setups.length} setup${setups.length > 1 ? 's' : ''} found with Confidence ≥ 7/10 and AI Signal: BUY or WATCH`,
+    });
+}
+
+interface SetupDigestOptions {
+    recipients: string[];
+    setups: TradeSetup[];
+    title: string;
+    headerTitle: string;
+    subject: string;
+    subtitle: string;
+    summary: string;
+}
+
+function buildDigestHtml({ setups, title, headerTitle, subtitle, summary }: Omit<SetupDigestOptions, 'recipients' | 'subject'>): string {
     const rows = setups.map((s, i) => `
         <tr style="border-top:1px solid #374151; background:${i % 2 === 0 ? '#111827' : '#0f172a'}">
             <td style="padding:12px 16px; font-weight:700; color:#f9fafb;">${s.ticker}</td>
@@ -60,28 +82,7 @@ export async function sendPreMarketAlert(setups: TradeSetup[]): Promise<void> {
         </tr>
     `).join('');
 
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="UTF-8"/></head>
-    <body style="margin:0;padding:0;background:#0d1117;font-family:'Segoe UI',Arial,sans-serif;">
-        <div style="max-width:900px;margin:0 auto;padding:24px;">
-            <!-- Header -->
-            <div style="background:linear-gradient(135deg,#1e1b4b,#312e81);border-radius:12px;padding:28px 32px;margin-bottom:24px;border:1px solid #4c1d95">
-                <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-                    <span style="font-size:28px;">⚡</span>
-                    <span style="font-size:22px;font-weight:800;color:#f9fafb;">SwingEdge</span>
-                    <span style="background:#7c3aed;color:#fff;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;">PRE-MARKET ALERT</span>
-                </div>
-                <p style="color:#c4b5fd;margin:0;font-size:15px;">
-                    🕛 Today's Swing Watchlist — ${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-                </p>
-                <p style="color:#a78bfa;margin:8px 0 0;font-size:13px;">
-                    ${setups.length} setup${setups.length > 1 ? 's' : ''} found with Confidence ≥ 7/10 and AI Signal: BUY or WATCH
-                </p>
-            </div>
-
-            <!-- Table -->
+    const tableSection = setups.length > 0 ? `
             <div style="background:#111827;border-radius:12px;border:1px solid #1f2937;overflow:hidden;margin-bottom:20px;">
                 <table style="width:100%;border-collapse:collapse;font-size:13px;">
                     <thead>
@@ -99,7 +100,36 @@ export async function sendPreMarketAlert(setups: TradeSetup[]): Promise<void> {
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
+            </div>` : `
+            <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:20px 24px;margin-bottom:20px;">
+                <div style="color:#e5e7eb;font-size:15px;font-weight:700;margin-bottom:8px;">No premium BUY setups today.</div>
+                <div style="color:#9ca3af;font-size:13px;line-height:1.7;">
+                    Stay patient. The system did not find high-confidence entries that meet the active regime, risk, and quality filters.
+                </div>
+            </div>`;
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"/></head>
+    <body style="margin:0;padding:0;background:#0d1117;font-family:'Segoe UI',Arial,sans-serif;">
+        <div style="max-width:900px;margin:0 auto;padding:24px;">
+            <!-- Header -->
+            <div style="background:linear-gradient(135deg,#1e1b4b,#312e81);border-radius:12px;padding:28px 32px;margin-bottom:24px;border:1px solid #4c1d95">
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                    <span style="font-size:28px;">⚡</span>
+                    <span style="font-size:22px;font-weight:800;color:#f9fafb;">${headerTitle}</span>
+                    <span style="background:#7c3aed;color:#fff;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;">${title}</span>
+                </div>
+                <p style="color:#c4b5fd;margin:0;font-size:15px;">
+                    ${subtitle}
+                </p>
+                <p style="color:#a78bfa;margin:8px 0 0;font-size:13px;">
+                    ${summary}
+                </p>
             </div>
+
+            ${tableSection}
 
             <!-- Tips -->
             <div style="background:#111827;border:1px solid #1f2937;border-radius:10px;padding:16px 20px;margin-bottom:16px;">
@@ -121,17 +151,53 @@ export async function sendPreMarketAlert(setups: TradeSetup[]): Promise<void> {
     </body>
     </html>
     `;
+}
+
+async function sendSetupDigestEmail(options: SetupDigestOptions): Promise<void> {
+    const from = process.env.ALERT_EMAIL_FROM;
+    const pass = process.env.GMAIL_APP_PASSWORD;
+    if (!from || !pass || options.recipients.length === 0) return;
 
     try {
         const transporter = getTransporter();
         await transporter.sendMail({
-            from: `"SwingEdge ⚡" <${from}>`,
-            to,
-            subject: `📈 SwingEdge Pre-Market: ${setups.length} Swing Setup${setups.length > 1 ? 's' : ''} Found — ${new Date().toLocaleDateString('en-IN')}`,
-            html,
+            from: `"${options.headerTitle} ⚡" <${from}>`,
+            to: options.recipients.join(','),
+            subject: options.subject,
+            html: buildDigestHtml(options),
         });
-        console.log(`[ALERTER] ✅ Pre-market alert sent to ${to} with ${setups.length} setups`);
+        console.log(`[ALERTER] ✅ Digest sent to ${options.recipients.join(', ')} with ${options.setups.length} setups`);
     } catch (err: any) {
         console.error('[ALERTER] ❌ Failed to send email:', err.message);
     }
+}
+
+export async function sendPreMarketDigestToEmail(email: string, setups: TradeSetup[], regime: string): Promise<void> {
+    const premiumSetups = setups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY').slice(0, 8);
+    await sendSetupDigestEmail({
+        recipients: [email],
+        setups: premiumSetups,
+        title: 'PRE-MARKET BRIEF',
+        headerTitle: 'StockSage AI',
+        subject: `📈 StockSage Pre-Market Brief — ${new Date().toLocaleDateString('en-IN')}`,
+        subtitle: `Market regime: ${regime}`,
+        summary: premiumSetups.length
+            ? `${premiumSetups.length} premium setup${premiumSetups.length > 1 ? 's' : ''} cleared the morning filter.`
+            : 'No premium BUY setups cleared the morning filter today.',
+    });
+}
+
+export async function sendPostMarketSummaryToEmail(email: string, setups: TradeSetup[], regime: string): Promise<void> {
+    const premiumSetups = setups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY').slice(0, 8);
+    await sendSetupDigestEmail({
+        recipients: [email],
+        setups: premiumSetups,
+        title: 'POST-MARKET SUMMARY',
+        headerTitle: 'StockSage AI',
+        subject: `📊 StockSage Post-Market Summary — ${new Date().toLocaleDateString('en-IN')}`,
+        subtitle: `Closing regime: ${regime}`,
+        summary: premiumSetups.length
+            ? `${premiumSetups.length} premium swing setup${premiumSetups.length > 1 ? 's remained' : ' remained'} on the close.`
+            : 'No premium BUY setups survived the closing scan today.',
+    });
 }

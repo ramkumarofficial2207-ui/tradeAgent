@@ -10,6 +10,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkMarketCondition = checkMarketCondition;
 exports.runScanner = runScanner;
 exports.buildTradeSetups = buildTradeSetups;
+exports.runIntradayScanner = runIntradayScanner;
 const dataService_1 = require("./dataService");
 const indicators_1 = require("./indicators");
 const prismaClient_1 = __importDefault(require("./prismaClient"));
@@ -17,6 +18,7 @@ const newsValidator_1 = require("./newsValidator");
 const earningsValidator_1 = require("./earningsValidator");
 const aiAdvisor_1 = require("./aiAdvisor");
 const optionsService_1 = require("./optionsService");
+const institutionalFlowService_1 = require("./institutionalFlowService");
 // ── Universe liquidity gates ─────────────────────────────────────
 const MIN_MARKET_CAP_CR = 250; // Lowered to ₹250 Cr to include all small/midcaps
 const MIN_AVG_VOLUME = 150_000; // Lowered to 1.5 Lakh shares to include midcaps
@@ -32,6 +34,15 @@ const MIN_RR = 1.5; // Blueprint: minimum 1.5:1 RR (relaxed from 2)
 const MIN_CONFIDENCE = 5.0; // Relaxed from 5.5 to show more setups
 const MAX_ATR_PCT = 12.0; // Relaxed from 10% to allow for more volatile midcaps
 const MAX_52W_DROP = 35; // Relaxed from 25% for deeper value plays
+const INTRADAY_UNIVERSE = [
+    'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'AXISBANK', 'KOTAKBANK',
+    'TCS', 'INFY', 'WIPRO', 'HCLTECH', 'LT', 'ULTRACEMCO', 'TITAN',
+    'BAJFINANCE', 'BAJAJFINSV', 'MARUTI', 'M&M', 'TATAMOTORS', 'ADANIENT',
+    'ADANIPORTS', 'BHARTIARTL', 'HINDUNILVR', 'ITC', 'ASIANPAINT', 'SUNPHARMA',
+    'DRREDDY', 'CIPLA', 'HINDALCO', 'TATASTEEL', 'JSWSTEEL', 'POWERGRID',
+    'NTPC', 'COALINDIA', 'ONGC', 'BPCL', 'INDUSINDBK', 'DLF', 'TRENT',
+    'ZOMATO', 'IRCTC',
+].filter(ticker => Boolean(dataService_1.NSE_UNIVERSE[ticker]));
 // ──────────────────────────────────────────────────────────────────
 // MARKET REGIME — BULLISH / NEUTRAL / RISK-OFF
 // Uses Nifty 50DMA vs 200DMA + India VIX (from market-pulse cache)
@@ -48,6 +59,13 @@ async function checkMarketCondition() {
     let nifty200dma;
     let dmaCrossPct;
     const vixLevel = marketData.vixLevel;
+    let institutionalBias;
+    let institutionalScore;
+    let institutionalNet1dCr;
+    let institutionalNet5dCr;
+    let institutionalNet20dCr;
+    let institutionalLastTradingDate;
+    let institutionalDetail;
     try {
         const niftyCandles = await (0, dataService_1.fetchHistoricalData)('^NSEI', 260);
         if (niftyCandles.length >= 200) {
@@ -63,6 +81,21 @@ async function checkMarketCondition() {
         }
     }
     catch { /* use defaults */ }
+    try {
+        const flowSignal = await (0, institutionalFlowService_1.getInstitutionalFlowSignal)();
+        institutionalBias = flowSignal.bias;
+        institutionalScore = flowSignal.score;
+        institutionalNet1dCr = flowSignal.totals.totalNet1dCr;
+        institutionalNet5dCr = flowSignal.totals.totalNet5dCr;
+        institutionalNet20dCr = flowSignal.totals.totalNet20dCr;
+        institutionalLastTradingDate = flowSignal.lastTradingDate ?? undefined;
+        institutionalDetail = flowSignal.isStale
+            ? `${flowSignal.detail} Data may be stale.`
+            : flowSignal.detail;
+    }
+    catch {
+        institutionalDetail = 'Institutional flow unavailable.';
+    }
     const safeToTrade = regime !== 'RISK_OFF';
     let warning = regimeDetail;
     if (regime === 'RISK_OFF') {
@@ -73,6 +106,16 @@ async function checkMarketCondition() {
     }
     else {
         warning = '✅ BULLISH: Full position size allowed. Favour momentum setups.';
+    }
+    if (institutionalBias === 'RISK_OFF' && regime !== 'RISK_OFF') {
+        regimeDetail = `${regimeDetail} Institutions remain net sellers across recent sessions.`;
+        warning = regime === 'BULLISH'
+            ? '⚠️ BULLISH tape, but institutions are still net sellers. Reduce aggression and favor only the strongest setups.'
+            : `${warning} Institutional flows remain risk-off.`;
+        positionSizeMult = Math.min(positionSizeMult, 0.75);
+    }
+    else if (institutionalBias === 'RISK_ON') {
+        regimeDetail = `${regimeDetail} Institutional flow is supportive.`;
     }
     return {
         ...marketData,
@@ -87,6 +130,13 @@ async function checkMarketCondition() {
         nifty200dma,
         dmaCrossPct,
         vixLevel,
+        institutionalBias,
+        institutionalScore,
+        institutionalNet1dCr,
+        institutionalNet5dCr,
+        institutionalNet20dCr,
+        institutionalLastTradingDate,
+        institutionalDetail,
     };
 }
 // ──────────────────────────────────────────────────────────────────
@@ -148,6 +198,52 @@ async function calculateExpectedValue(setup) {
     catch { /* fallback to technical-only EV */ }
     const ev = (winProb * (reward * historicalWeight)) - (lossProb * risk);
     return +ev.toFixed(2);
+}
+async function enrichTradeSetupsWithAI(setups, qualified) {
+    if (!setups.length)
+        return;
+    const aiInputData = setups.map(s => {
+        const ind = qualified.find(q => q.ticker === s.ticker);
+        return {
+            ticker: s.ticker,
+            close: s.ltp,
+            high: ind?.candles[ind.candles.length - 1]?.high,
+            volume: ind?.todayVolume,
+            avgVolume20d: ind?.avgVolume20d,
+            rsi14: ind?.rsi14,
+            adx14: ind?.adx14,
+            distFromDma200Pct: ind?.distFrom200 ?? null,
+            sector: s.sector,
+            mcap: s.marketCapCr,
+            setupType: s.setupType,
+            confidenceScore: s.confidenceScore,
+            headlines: s.headlines,
+            pcr: s.pcr,
+            derivativeStatus: s.derivativeStatus,
+            timeframe: s.timeframe,
+        };
+    });
+    const aiAssessments = await (0, aiAdvisor_1.analyzeStocksWithAI)(aiInputData);
+    for (const s of setups) {
+        const assessment = aiAssessments.get(s.ticker);
+        if (!assessment)
+            continue;
+        s.aiSignal = assessment.signal;
+        s.aiLogic = assessment.logic;
+        s.aiTargetRange = assessment.target_range;
+        s.aiStopLoss = assessment.stop_loss;
+        if (assessment.trigger_price) {
+            s.authorizedZone = {
+                triggerPrice: assessment.trigger_price,
+                triggerVolumeRatio: assessment.trigger_volume_ratio || 1.2,
+                authorizedAt: new Date(),
+                expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            };
+        }
+        if (assessment.momentum_score && assessment.momentum_score > s.confidenceScore) {
+            s.confidenceScore = Math.min(10, assessment.momentum_score);
+        }
+    }
 }
 // ──────────────────────────────────────────────────────────────────
 // MAIN SCANNER — all gates enforced
@@ -330,7 +426,7 @@ async function buildTradeSetups(qualified) {
                 return 'Medium Swing';
             if (ind.isBullFlag || setupType.includes('Breakout Base') || setupType.includes('Momentum Continuation'))
                 return 'Short Swing';
-            return 'Intraday'; // Pullbacks and Bounces are modeled as Intraday
+            return 'Short Swing';
         })();
         // ── Hit probability ───────────────────────────────────────
         const hitProb = (0, indicators_1.estimateHitProbability)(ind, targetPct);
@@ -399,8 +495,9 @@ async function buildTradeSetups(qualified) {
     }
     // Take top 8 (after all gates — should be small quality set)
     const finalSetups = setups.slice(0, 8);
+    await enrichTradeSetupsWithAI(finalSetups, qualified);
     // ── AI ENRICHMENT ────────────────────────────────────────────
-    if (finalSetups.length > 0) {
+    if (false && finalSetups.length > 0) {
         const aiInputData = finalSetups.map(s => {
             const ind = qualified.find(q => q.ticker === s.ticker);
             return {
@@ -424,24 +521,25 @@ async function buildTradeSetups(qualified) {
         const aiAssessments = await (0, aiAdvisor_1.analyzeStocksWithAI)(aiInputData);
         for (const s of finalSetups) {
             const assessment = aiAssessments.get(s.ticker);
-            if (assessment) {
-                s.aiSignal = assessment.signal;
-                s.aiLogic = assessment.logic;
-                s.aiTargetRange = assessment.target_range;
-                s.aiStopLoss = assessment.stop_loss;
-                // Phase 1: Authorized Trigger Zone
-                if (assessment.trigger_price) {
-                    s.authorizedZone = {
-                        triggerPrice: assessment.trigger_price,
-                        triggerVolumeRatio: assessment.trigger_volume_ratio || 1.2,
-                        authorizedAt: new Date(),
-                        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
-                    };
-                }
-                // Only override confidence if AI momentum_score is meaningful AND higher
-                if (assessment.momentum_score && assessment.momentum_score > s.confidenceScore) {
-                    s.confidenceScore = Math.min(10, assessment.momentum_score);
-                }
+            if (!assessment)
+                continue;
+            const safeAssessment = assessment;
+            s.aiSignal = safeAssessment.signal;
+            s.aiLogic = safeAssessment.logic;
+            s.aiTargetRange = safeAssessment.target_range;
+            s.aiStopLoss = safeAssessment.stop_loss;
+            // Phase 1: Authorized Trigger Zone
+            if (safeAssessment.trigger_price != null) {
+                s.authorizedZone = {
+                    triggerPrice: safeAssessment.trigger_price,
+                    triggerVolumeRatio: safeAssessment.trigger_volume_ratio ?? 1.2,
+                    authorizedAt: new Date(),
+                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
+                };
+            }
+            // Only override confidence if AI momentum_score is meaningful AND higher
+            if (safeAssessment.momentum_score && safeAssessment.momentum_score > s.confidenceScore) {
+                s.confidenceScore = Math.min(10, safeAssessment.momentum_score);
             }
         }
     }
@@ -470,5 +568,139 @@ async function buildTradeSetups(qualified) {
     // Sort by EV (Descending)
     setupsWithEV.sort((a, b) => b.expectedValue - a.expectedValue);
     return setupsWithEV;
+}
+async function runIntradayScanner(dataApi = null) {
+    const marketStatus = await checkMarketCondition();
+    if (marketStatus.regime === 'RISK_OFF') {
+        return { qualified: [], marketStatus, setups: [] };
+    }
+    const niftyCandles = await (0, dataService_1.fetchHistoricalData)('^NSEI', 10, '5m');
+    const qualified = [];
+    for (let i = 0; i < INTRADAY_UNIVERSE.length; i += 8) {
+        const batch = INTRADAY_UNIVERSE.slice(i, i + 8);
+        const settled = await Promise.allSettled(batch.map(async (ticker) => {
+            const yahoo = dataService_1.NSE_UNIVERSE[ticker] ?? `${ticker}.NS`;
+            const candles = dataApi
+                ? await dataApi.getHistoricalData(ticker, '5m', 10)
+                : await (0, dataService_1.fetchHistoricalData)(yahoo, 10, '5m');
+            return { ticker, candles };
+        }));
+        for (const row of settled) {
+            if (row.status !== 'fulfilled')
+                continue;
+            const { ticker, candles } = row.value;
+            if (candles.length < 120)
+                continue;
+            const ind = (0, indicators_1.computeIndicators)(ticker, candles, niftyCandles);
+            if (!ind)
+                continue;
+            const emaAligned = ind.ltp >= ind.ema20 && ind.ema20 >= ind.ema50 * 0.995;
+            const pullbackWindow = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) <= 0.015;
+            const momentumHealthy = ind.rsi14 >= 52 && ind.rsi14 <= 76 && ind.adx14 >= 18;
+            const volumeHealthy = ind.volumeRatio >= 1.15 && ind.avgVolume20d >= 20_000;
+            const relativeStrengthOkay = ind.returns3m >= ind.nifty3mReturn - 0.5;
+            if (!emaAligned && !pullbackWindow)
+                continue;
+            if (!momentumHealthy || !volumeHealthy || !relativeStrengthOkay)
+                continue;
+            if ((ind.accumulationScore ?? 0) < 48)
+                continue;
+            qualified.push(ind);
+        }
+    }
+    qualified.sort((a, b) => {
+        const score = (x) => (x.volumeRatio * 0.35) +
+            (x.adx14 / 100 * 0.25) +
+            (x.rsi14 / 100 * 0.2) +
+            ((x.returns3m - x.nifty3mReturn) * 0.2);
+        return score(b) - score(a);
+    });
+    const setups = [];
+    for (let index = 0; index < qualified.length; index++) {
+        const ind = qualified[index];
+        const lastCandle = ind.candles[ind.candles.length - 1];
+        const atr14 = calcATR(ind.candles.slice(-25));
+        if (!Number.isFinite(atr14) || atr14 <= 0)
+            continue;
+        const recentLows = ind.candles.slice(-8).map(c => c.low);
+        const entryPrice = +(Math.max(lastCandle.high, ind.ltp) * 1.0008).toFixed(2);
+        let stopLoss = Math.min(Math.min(...recentLows) * 0.999, ind.ema20 * 0.997);
+        if (stopLoss >= entryPrice)
+            stopLoss = entryPrice - atr14;
+        stopLoss = +stopLoss.toFixed(2);
+        if (stopLoss <= 0 || stopLoss >= entryPrice)
+            continue;
+        const riskPerShare = entryPrice - stopLoss;
+        const targetPrice = +(entryPrice + Math.max(riskPerShare * 1.8, atr14 * 1.4)).toFixed(2);
+        const target2 = +(targetPrice + atr14).toFixed(2);
+        const targetPct = +(((targetPrice - entryPrice) / entryPrice) * 100).toFixed(2);
+        const slPct = +(((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2);
+        const riskReward = +(((targetPrice - entryPrice) / riskPerShare)).toFixed(2);
+        if (riskReward < 1.5)
+            continue;
+        if (targetPct < 0.6 || targetPct > 3.5)
+            continue;
+        const nearEma20 = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) <= 0.01;
+        const setupType = nearEma20
+            ? 'EMA20 Bounce'
+            : ind.volumeRatio >= 1.6
+                ? 'Momentum Continuation'
+                : 'Breakout Base';
+        const confidenceScore = +Math.min(10, 4.5 +
+            Math.min(1.8, Math.max(0, ind.volumeRatio - 1) * 1.8) +
+            Math.min(1.4, Math.max(0, (ind.adx14 - 18) / 12)) +
+            (ind.rsi14 >= 56 && ind.rsi14 <= 68 ? 0.9 : 0.5) +
+            (nearEma20 ? 0.7 : 0.4)).toFixed(1);
+        setups.push({
+            ticker: ind.ticker,
+            sector: dataService_1.SECTOR_MAP[ind.ticker] ?? 'Diversified',
+            marketCapCr: dataService_1.MARKET_CAP_CR_MAP[ind.ticker],
+            ltp: +ind.ltp.toFixed(2),
+            trendStatus: `5m trend intact. Price vs EMA20 ${(((ind.ltp - ind.ema20) / ind.ema20) * 100).toFixed(2)}%. ADX ${ind.adx14.toFixed(1)}.`,
+            volumeSpike: `${ind.volumeRatio.toFixed(2)}x 5m volume vs trailing average`,
+            entryTrigger: nearEma20
+                ? `Buy above ${entryPrice} if the 5m pullback reclaims EMA20 with volume.`
+                : `Buy above ${entryPrice} on a fresh 5m range expansion.`,
+            buyZone: entryPrice,
+            target: targetPrice,
+            target2,
+            atr14: +atr14.toFixed(2),
+            stopLoss,
+            targetPct,
+            slPct,
+            riskReward,
+            catalyst: [
+                `RSI ${ind.rsi14.toFixed(1)}`,
+                `ADX ${ind.adx14.toFixed(1)}`,
+                `Vol ${ind.volumeRatio.toFixed(2)}x`,
+                `Accumulation ${Math.round(ind.accumulationScore ?? 0)}%`,
+            ].join(' · '),
+            confidenceScore,
+            confidenceBreakdown: {
+                scoreTrend: +Math.min(2, Math.max(0.5, ind.adx14 / 25)).toFixed(1),
+                scoreVolume: +Math.min(2, Math.max(0.5, ind.volumeRatio)).toFixed(1),
+                scoreRS: +Math.min(2, Math.max(0.5, ind.returns3m - ind.nifty3mReturn + 1)).toFixed(1),
+                scoreSetup: nearEma20 ? 1.8 : 1.4,
+                scoreRR: riskReward >= 2 ? 1.8 : 1.3,
+            },
+            setupType,
+            timeframe: 'Intraday',
+            earningsRisk: false,
+            newsRisk: false,
+            newsSummary: 'Intraday momentum scan',
+            momentumRank: index + 1,
+            volatilityHitProb: (0, indicators_1.estimateHitProbability)(ind, Math.max(targetPct, 1)),
+            institutionalDemand: Math.round(ind.accumulationScore ?? 0),
+            pcr: ind.pcr,
+            totalOI: ind.totalOI,
+            oiChangePct: ind.oiChangePct,
+            derivativeStatus: ind.derivativeStatus,
+        });
+    }
+    const finalSetups = setups
+        .sort((a, b) => b.confidenceScore - a.confidenceScore || b.riskReward - a.riskReward)
+        .slice(0, 8);
+    await enrichTradeSetupsWithAI(finalSetups, qualified);
+    return { qualified, marketStatus, setups: finalSetups };
 }
 //# sourceMappingURL=scanner.js.map

@@ -1,11 +1,11 @@
 /* ─── StockChart.tsx — Professional candlestick chart with indicators ─── */
 import { useEffect, useRef, useState } from 'react'
-import { createChart, ColorType, CrosshairMode, CandlestickSeries, HistogramSeries, LineSeries, type IChartApi, type ISeriesApi } from 'lightweight-charts'
+import { createChart, ColorType, CrosshairMode, CandlestickSeries, HistogramSeries, LineSeries, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts'
 import axios from 'axios'
 import { TrendingUp, TrendingDown, BarChart3, Activity, Loader2 } from 'lucide-react'
 
 interface ChartCandle {
-    time: string
+    time: Time
     open: number; high: number; low: number; close: number
     volume: number
     sma20: number | null; sma50: number | null; sma200: number | null
@@ -27,11 +27,20 @@ const INDICATOR_COLORS = {
     ema20: '#8b5cf6',
 }
 
+const CHART_RANGES = {
+    '1d': { days: 180, label: 'Swing' },
+    '15m': { days: 10, label: '15m' },
+    '5m': { days: 5, label: '5m' },
+} as const
+
+type ChartInterval = keyof typeof CHART_RANGES
+
 export default function StockChart({ ticker, buyZone, target, stopLoss, ltp }: StockChartProps) {
     const chartContainerRef = useRef<HTMLDivElement>(null)
     const chartRef = useRef<IChartApi | null>(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
+    const [chartInterval, setChartInterval] = useState<ChartInterval>('1d')
     const [activeIndicators, setActiveIndicators] = useState<Set<string>>(new Set(['sma20', 'sma200']))
     const [lastCandle, setLastCandle] = useState<ChartCandle | null>(null)
     const [crosshairData, setCrosshairData] = useState<any>(null)
@@ -53,10 +62,14 @@ export default function StockChart({ ticker, buyZone, target, stopLoss, ltp }: S
         const fetchAndRender = async () => {
             try {
                 setLoading(true); setError(null)
-                const { data: resp } = await axios.get(`/api/chart/${ticker}?days=180`)
+                const range = CHART_RANGES[chartInterval]
+                const { data: resp } = await axios.get(`/api/chart/${ticker}?interval=${chartInterval}&days=${range.days}`)
 
                 if (!resp.success || cancelled) return
-                const candles: ChartCandle[] = resp.data.candles
+                const candles: ChartCandle[] = resp.data.candles.map((c: any) => ({
+                    ...c,
+                    time: c.time as Time,
+                }))
 
                 if (candles.length < 5) { setError('Insufficient data'); return }
 
@@ -90,11 +103,12 @@ export default function StockChart({ ticker, buyZone, target, stopLoss, ltp }: S
                     },
                     timeScale: {
                         borderColor: 'rgba(148,163,184,0.1)',
-                        timeVisible: false,
+                        timeVisible: chartInterval !== '1d',
                     },
                     handleScroll: { vertTouchDrag: false },
                 })
                 chartRef.current = chart
+                const candleLookup = new Map(candles.map(c => [String(c.time), c]))
 
                 // Candlestick series
                 const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -170,7 +184,7 @@ export default function StockChart({ ticker, buyZone, target, stopLoss, ltp }: S
                     }
                     const candleData = param.seriesData.get(candleSeries) as any
                     if (candleData) {
-                        const matchingCandle = candles.find(c => c.time === param.time)
+                        const matchingCandle = candleLookup.get(String(param.time))
                         setCrosshairData({
                             ...candleData,
                             volume: matchingCandle?.volume,
@@ -206,7 +220,7 @@ export default function StockChart({ ticker, buyZone, target, stopLoss, ltp }: S
         fetchAndRender()
 
         return () => { cancelled = true; if (chartRef.current) { chartRef.current.remove(); chartRef.current = null } }
-    }, [ticker, activeIndicators, buyZone, target, stopLoss])
+    }, [ticker, activeIndicators, buyZone, target, stopLoss, chartInterval])
 
     // Display candle = crosshair or last candle
     const displayCandle = crosshairData || lastCandle
@@ -257,8 +271,26 @@ export default function StockChart({ ticker, buyZone, target, stopLoss, ltp }: S
                     )}
                 </div>
 
-                {/* Indicator toggles */}
-                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                {/* Timeframe + indicator toggles */}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <div style={{ display: 'flex', gap: 4, alignItems: 'center', paddingRight: 6, marginRight: 2, borderRight: '1px solid var(--border)' }}>
+                        {(Object.keys(CHART_RANGES) as ChartInterval[]).map(interval => (
+                            <button
+                                key={interval}
+                                onClick={() => setChartInterval(interval)}
+                                style={{
+                                    padding: '2px 7px', borderRadius: 5, fontSize: '0.54rem', fontWeight: 700,
+                                    fontFamily: 'var(--font-mono)',
+                                    background: chartInterval === interval ? 'rgba(59,130,246,0.18)' : 'transparent',
+                                    color: chartInterval === interval ? '#60a5fa' : 'var(--text-muted)',
+                                    border: `1px solid ${chartInterval === interval ? 'rgba(59,130,246,0.35)' : 'var(--border)'}`,
+                                    cursor: 'pointer', transition: 'all 0.15s',
+                                }}
+                            >
+                                {CHART_RANGES[interval].label}
+                            </button>
+                        ))}
+                    </div>
                     {[
                         { key: 'sma20', label: 'SMA20', color: INDICATOR_COLORS.sma20 },
                         { key: 'sma50', label: 'SMA50', color: INDICATOR_COLORS.sma50 },
