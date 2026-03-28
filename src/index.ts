@@ -72,7 +72,7 @@ app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
 });
 
 // Root & Health for Railway
-app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-6' }));
+app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK', v: 'fix-7' }));
 app.get('/', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
@@ -140,23 +140,23 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
 
 // POST /api/auth/register
 app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) => {
-    const { name, email, secret } = req.body || {};
-    if (!name || !email || !secret) {
+    const { name, email } = req.body || {};
+    const password = req.body?.password ?? req.body?.secret;
+    if (!name || !email || !password) {
         res.status(400).json({ success: false, message: 'Name, email and password are required.' });
         return;
     }
-    if (secret.length < 6) {
+    if (password.length < 6) {
         res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
         return;
     }
     try {
         const existing = await prisma.user.findUnique({ where: { email } });
-        return res.json({ success: true, debug: 'Reached after findUnique', existing: !!existing });
         if (existing) {
             res.status(409).json({ success: false, message: 'An account with this email already exists.' });
             return;
         }
-        const hashed = await bcrypt.hash(secret, 12);
+        const hashed = await bcrypt.hash(password, 12);
         // Grant a 7-day trial for all new registrations
         const trialExpiry = new Date();
         trialExpiry.setDate(trialExpiry.getDate() + 7);
@@ -178,8 +178,9 @@ app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) 
 
 // POST /api/auth/login
 app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
-    const { email, secret } = req.body || {};
-    if (!email || !secret) {
+    const { email } = req.body || {};
+    const password = req.body?.password ?? req.body?.secret;
+    if (!email || !password) {
         res.status(400).json({ success: false, message: 'Email and password are required.' });
         return;
     }
@@ -189,7 +190,7 @@ app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => 
             res.status(401).json({ success: false, message: 'Invalid email or password.' });
             return;
         }
-        const match = await bcrypt.compare(secret, (user as any).password);
+        const match = await bcrypt.compare(password, (user as any).password);
         if (!match) {
             res.status(401).json({ success: false, message: 'Invalid email or password.' });
             return;

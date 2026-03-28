@@ -23,7 +23,7 @@ export default function RegisterPage() {
         if (password.length < 6) { setError('Password must be at least 6 characters.'); return }
         setLoading(true)
         try {
-            const { data } = await axios.post('/api/auth/register', { name, email, secret: password })
+            const { data } = await axios.post('/api/auth/register', { name, email, password })
             if (data.success) {
                 login(data.token, data.user)
                 navigate('/', { replace: true })
