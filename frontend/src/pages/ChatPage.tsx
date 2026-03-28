@@ -5,7 +5,6 @@ import {
     TrendingUp, TrendingDown, CheckCircle, AlertTriangle, MinusCircle,
     ExternalLink, RotateCcw, Info, ChevronDown, ChevronUp
 } from 'lucide-react'
-import { getWatchlist, toggleWatchlistItem } from '../lib/watchlist'
 import { useWatchlist } from '../lib/useWatchlist'
 import { useViewport } from '../lib/useViewport'
 
@@ -55,10 +54,12 @@ const SUGGESTIONS = [
 const WELCOME_ID = 'welcome-0'
 
 /* ─── Helpers ─────────────────────────────────────────────── */
-function fmtPrice(n: number) {
+function fmtPrice(n: number | undefined | null) {
+    if (n == null || isNaN(n)) return '₹—'
     return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
-function pctStr(n: number) {
+function pctStr(n: number | undefined | null) {
+    if (n == null || isNaN(n)) return '—%'
     return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'
 }
 function signalBadgeClass(sig: string | null) {
@@ -386,7 +387,7 @@ export default function ChatPage() {
                 {
                     id: Date.now().toString(),
                     role: 'assistant',
-                    content: 'Unable to get a response right now. Please check that the backend server is running and your ANTHROPIC_API_KEY is set in the .env file.',
+                    content: 'The Intelligence Core is currently offline or misconfigured. Please verify your AI API keys (Gemini/Groq/Anthropic) in the environment settings and try again.',
                     timestamp: new Date(),
                     sources: [],
                 },

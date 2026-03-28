@@ -639,7 +639,12 @@ app.get('/api/market-pulse', async (_req: Request, res: Response) => {
                 state[s.key] = { price, change };
             } else state[s.key] = { price: 0, change: 0 };
         });
-        const data = { indices: state, isMarketOpen: true, fetchedAt: new Date().toISOString() };
+        const vixPrice = state.vix?.price || 0;
+        let vixLabel = { text: 'Low Risk', color: '#34d399', detail: 'Market volatility is low.' };
+        if (vixPrice > 20) vixLabel = { text: 'High Risk', color: '#f87171', detail: 'High volatility detected.' };
+        else if (vixPrice > 16) vixLabel = { text: 'Moderate Risk', color: '#fbbf24', detail: 'Watch for swings.' };
+        
+        const data = { indices: state, vixLabel, isMarketOpen: true, fetchedAt: new Date().toISOString() };
         pulseCache = { data, ts: Date.now() };
         res.json({ success: true, data });
     } catch (err: any) {

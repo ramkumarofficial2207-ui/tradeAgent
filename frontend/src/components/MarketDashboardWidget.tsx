@@ -130,7 +130,7 @@ export default function MarketDashboardWidget({ sectors, sectorTime }: { sectors
     const vLvl = pulse?.indices?.vix?.price ?? 0
     const vChg = pulse?.indices?.vix?.change ?? 0
     const vixColor = vLvl === 0 ? '#6b7280' : vLvl < 16 ? '#34d399' : vLvl < 20 ? '#fbbf24' : '#f87171'
-    const vixLabel = !pulse ? 'Loading...' : pulse.vixLabel.text
+    const vixLabel = !pulse ? 'Loading...' : (pulse.vixLabel?.text || 'Risk Stable')
 
     // All indices
     const indices = [
