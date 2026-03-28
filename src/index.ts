@@ -36,16 +36,75 @@ import { sendBuyAlert, sendPreMarketDigest } from './whatsappAlert';
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
+type DbStatus = 'unknown' | 'ready' | 'error';
+
+const dbHealth: {
+    status: DbStatus;
+    checkedAt: string | null;
+    message: string | null;
+} = {
+    status: 'unknown',
+    checkedAt: null,
+    message: null,
+};
+
+function isDatabaseError(err: any): boolean {
+    const raw = (err && typeof err === 'object' && err.message) ? String(err.message) : String(err || '');
+    const msg = raw.toLowerCase();
+    return msg.includes('prisma') ||
+        msg.includes('database') ||
+        msg.includes('connection') ||
+        msg.includes('postgresql') ||
+        msg.includes('psql') ||
+        msg.includes('sql') ||
+        msg.includes('env(') ||
+        msg.includes('database_url') ||
+        msg.includes('authentication failed against database server');
+}
+
+function summarizeDbError(err: any): string {
+    const raw = (err && typeof err === 'object' && err.message) ? String(err.message) : String(err || '');
+    if (!raw) return 'Unknown database error';
+    const normalized = raw.replace(/\s+/g, ' ').trim();
+    return normalized.slice(0, 240);
+}
+
+function markDatabaseHealthy(): void {
+    dbHealth.status = 'ready';
+    dbHealth.checkedAt = new Date().toISOString();
+    dbHealth.message = null;
+}
+
+function markDatabaseError(err: any): void {
+    dbHealth.status = 'error';
+    dbHealth.checkedAt = new Date().toISOString();
+    dbHealth.message = summarizeDbError(err);
+}
+
+async function verifyDatabaseConnection(): Promise<void> {
+    if (!process.env.DATABASE_URL) {
+        markDatabaseError('DATABASE_URL is not set');
+        console.error('[System] Database connection failed: DATABASE_URL is not set');
+        return;
+    }
+    try {
+        await prisma.$connect();
+        await prisma.$queryRawUnsafe('SELECT 1');
+        markDatabaseHealthy();
+        console.log('[System] Database connection ready.');
+    } catch (err: any) {
+        markDatabaseError(err);
+        console.error('[System] Database connection failed:', summarizeDbError(err));
+    }
+}
 
 // Helper to sanitize database/system errors for the UI
 function sanitizeError(err: any): string {
     const raw = (err && typeof err === 'object' && err.message) ? String(err.message) : String(err || '');
     const msg = raw.toLowerCase();
     
-    // Explicit Prisma/Database/Connection checks
-    if (msg.includes('prisma') || msg.includes('database') || msg.includes('connection') || 
-        msg.includes('postgresql') || msg.includes('psql') || msg.includes('sql') ||
-        msg.includes('invocation') || msg.includes('env(')) {
+    if (isDatabaseError(err)) {
+        markDatabaseError(err);
         return 'Database is temporarily unavailable. Please try again later.';
     }
     
@@ -69,9 +128,26 @@ const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
 app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
     console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
     console.log(`[System] Mode: ${process.env.NODE_ENV}`);
+    void verifyDatabaseConnection();
 });
 
-app.get('/api/health', (_req, res) => res.status(200).json({ status: 'OK', v: 'fix-8' }));
+app.get('/api/health', (_req, res) => res.status(200).json({
+    status: 'OK',
+    v: 'fix-9',
+    db: dbHealth.status,
+    dbCheckedAt: dbHealth.checkedAt,
+    dbMessage: dbHealth.message,
+}));
+app.get('/api/ready', (_req, res) => {
+    const ready = dbHealth.status === 'ready';
+    res.status(ready ? 200 : 503).json({
+        status: ready ? 'READY' : 'NOT_READY',
+        v: 'fix-9',
+        db: dbHealth.status,
+        dbCheckedAt: dbHealth.checkedAt,
+        dbMessage: dbHealth.message,
+    });
+});
 app.get('/', (_req, res) => {
     if (process.env.NODE_ENV === 'production') {
         const indexPath = path.join(FRONTEND_DIST, 'index.html');
@@ -1067,13 +1143,6 @@ cron.schedule('30 10 * * 1-5', () => {
 // ——————————————————————————————————————————
 setTimeout(() => {
     try {
-        console.log('[System] Background Init: Starting database cleanup...');
-        const { exec } = require('child_process');
-        exec('npx prisma migrate deploy', (err: any, stdout: any, stderr: any) => {
-            if (err) console.error('[System] Background Migration Error:', stderr);
-            else console.log('[System] Background Migration Complete:', stdout);
-        });
-
         console.log('[System] Background Init: Starting AI Agent System...');
         initAutoScanner();
         setNextScan(computeNextScan());
