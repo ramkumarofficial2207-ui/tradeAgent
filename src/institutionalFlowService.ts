@@ -347,6 +347,31 @@ async function persistSnapshot(snapshot: RawSnapshot): Promise<void> {
     });
 }
 
+async function cleanupShiftedLegacySnapshot(snapshot: RawSnapshot): Promise<void> {
+    const previousTradingDate = new Date(snapshot.tradingDate);
+    previousTradingDate.setUTCDate(previousTradingDate.getUTCDate() - 1);
+
+    const previous = await prisma.institutionalFlowSnapshot.findUnique({
+        where: { tradingDate: previousTradingDate },
+    });
+    if (!previous) return;
+
+    const sameMetrics =
+        previous.fiiBuy === snapshot.fiiBuy &&
+        previous.fiiSell === snapshot.fiiSell &&
+        previous.fiiNet === snapshot.fiiNet &&
+        previous.diiBuy === snapshot.diiBuy &&
+        previous.diiSell === snapshot.diiSell &&
+        previous.diiNet === snapshot.diiNet &&
+        previous.totalNet === snapshot.totalNet;
+
+    if (!sameMetrics || previous.source !== snapshot.source) return;
+
+    await prisma.institutionalFlowSnapshot.delete({
+        where: { tradingDate: previousTradingDate },
+    });
+}
+
 async function loadSeriesFromDatabase(limit = HISTORY_LIMIT): Promise<InstitutionalFlowDay[]> {
     const rows = await prisma.institutionalFlowSnapshot.findMany({
         take: limit,
@@ -371,6 +396,7 @@ async function loadSeriesFromDatabase(limit = HISTORY_LIMIT): Promise<Institutio
 export async function importInstitutionalFlowCsv(csvText: string, source = 'Manual Official CSV Import'): Promise<InstitutionalFlowSummary> {
     const snapshot = parseOfficialCsv(csvText, source);
     await persistSnapshot(snapshot);
+    await cleanupShiftedLegacySnapshot(snapshot);
     summaryCache = null;
     return getInstitutionalFlowSummary({ bypassCache: true });
 }
@@ -383,6 +409,7 @@ export async function syncInstitutionalFlowFromOfficialReport(): Promise<Institu
             const csv = await fetchOfficialNseCsv();
             const snapshot = parseOfficialCsv(csv);
             await persistSnapshot(snapshot);
+            await cleanupShiftedLegacySnapshot(snapshot);
             summaryCache = null;
             return getInstitutionalFlowSummary({ bypassCache: true, note: 'Synced from NSE official report.' });
         } finally {
