@@ -626,7 +626,15 @@ const PULSE_TTL = 5 * 60 * 1000;
 app.get('/api/market-pulse', async (_req: Request, res: Response) => {
     if (pulseCache && Date.now() - pulseCache.ts < PULSE_TTL) return res.json({ success: true, data: pulseCache.data });
     try {
-        const symbols = [{ key: 'nifty', symbol: '^NSEI' }, { key: 'sensex', symbol: '^BSESN' }, { key: 'vix', symbol: '^INDIAVIX' }];
+        const symbols = [
+            { key: 'nifty', symbol: '^NSEI' },
+            { key: 'banknifty', symbol: '^NSEBANK' },
+            { key: 'sensex', symbol: '^BSESN' },
+            { key: 'midcap', symbol: '^NSMIDCP' },
+            { key: 'gold', symbol: 'GOLDBEES.NS' },
+            { key: 'silver', symbol: 'SILVERBEES.NS' },
+            { key: 'vix', symbol: '^INDIAVIX' }
+        ];
         const results = await Promise.allSettled(symbols.map(s => fetchHistoricalData(s.symbol, 260)));
         const state: Record<string, any> = {};
         symbols.forEach((s, i) => {
@@ -789,10 +797,23 @@ ${technicalContext}
 4. Keep under 300 words. No "I am an AI" disclaimers.`;
 
     try {
-        const reply = await geminiAsk(systemPrompt, message, { maxTokens: 450, temperature: 0.5 });
+        let reply = '';
+        try {
+            console.log('[AI] Attempting Gemini Core...');
+            reply = await geminiAsk(systemPrompt, message, { maxTokens: 450, temperature: 0.5 });
+        } catch (geminiErr: any) {
+            console.warn('[AI] Gemini failed, falling back to Claude:', geminiErr.message);
+            try {
+                reply = await claudeAsk(systemPrompt, message, { maxTokens: 450, temperature: 0.5 });
+            } catch (claudeErr: any) {
+                console.warn('[AI] Claude failed, falling back to Groq:', claudeErr.message);
+                reply = await groqAsk(systemPrompt, message, { maxTokens: 450, temperature: 0.5 });
+            }
+        }
         res.json({ success: true, reply, stockCard: stockCardData });
-    } catch {
-        res.status(500).json({ success: false, message: 'Intelligence Core offline.' });
+    } catch (finalErr: any) {
+        console.error('[AI] All AI providers failed:', finalErr.message);
+        res.status(500).json({ success: false, message: 'Intelligence Core offline or misconfigured.' });
     }
 });
 
