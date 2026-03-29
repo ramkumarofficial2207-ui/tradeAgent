@@ -232,10 +232,19 @@ export interface MarketStatus {
     institutionalDetail?: string;
 }
 
+export interface ScanDiagnostics {
+    mode: 'swing' | 'intraday';
+    universeCount: number;
+    qualifiedCount: number;
+    setupCount: number;
+    rejectionCounts: Record<string, number>;
+    notes?: string[];
+}
 
 export interface ScanResult {
     timestamp: string;
     marketStatus: MarketStatus;
     setups: TradeSetup[];
     sectorBreadth?: Record<string, SectorBreadthSnapshot>;
+    diagnostics?: ScanDiagnostics;
 }

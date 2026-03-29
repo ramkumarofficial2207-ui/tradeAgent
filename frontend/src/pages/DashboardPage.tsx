@@ -94,6 +94,15 @@ interface TradeSetup {
     alertStage?: 'SETUP_DETECTED' | 'TRIGGER_ARMED' | 'TRADE_READY' | 'THESIS_INVALIDATED'
 }
 
+interface ScanDiagnostics {
+    mode: 'swing' | 'intraday'
+    universeCount: number
+    qualifiedCount: number
+    setupCount: number
+    rejectionCounts: Record<string, number>
+    notes?: string[]
+}
+
 
 /* ΓöÇΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 
@@ -366,6 +375,7 @@ export default function DashboardPage() {
     const [filter, setFilter] = useState('All')
     const [scanAge, setScanAge] = useState<string | null>(null)
     const [marketBrief, setMarketBrief] = useState<string | null>(null)
+    const [scanDiagnostics, setScanDiagnostics] = useState<ScanDiagnostics | null>(null)
     const [sectors, setSectors] = useState<{ n: string; v: number }[]>(FALLBACK_SECTORS)
     const [sectorTime, setSectorTime] = useState<string | null>(null)
     const [showTracker, setShowTracker] = useState(false)
@@ -390,11 +400,14 @@ export default function DashboardPage() {
 
     // Load last scan on mount
     useEffect(() => {
+        setScanDiagnostics(null)
         axios.get(`/api/last?mode=${scanMode}`).then(({ data }) => {
             if (!data.success) return
-            if (data.data?.setups?.length) { setSetups(data.data.setups); setScanAge(data.data.timestamp || data.data.scannedAt) }
+            setSetups(data.data?.setups || [])
+            if (data.data?.timestamp || data.data?.scannedAt) setScanAge(data.data.timestamp || data.data.scannedAt)
             if (data.data?.marketStatus) setMarket(data.data.marketStatus)
             if (data.data?.marketBrief?.brief) setMarketBrief(data.data.marketBrief.brief)
+            setScanDiagnostics(data.data?.diagnostics || null)
         }).catch(() => { })
     }, [scanMode])
 
@@ -438,6 +451,7 @@ export default function DashboardPage() {
                 setMarket(scanData.marketStatus || null)
                 setScanAge(scanData.timestamp || scanData.scannedAt)
                 if (scanData.marketBrief?.brief) setMarketBrief(scanData.marketBrief.brief)
+                setScanDiagnostics(scanData.diagnostics || null)
             } else {
                 setScanError(data.message || 'Scan failed')
             }
@@ -611,6 +625,48 @@ export default function DashboardPage() {
                     </div>
 
                     {/* ΓöÇΓöÇΓöÇ TRACK RECORD UI ΓöÇΓöÇΓöÇ */}
+                    {!showTracker && scanMode === 'intraday' && scanDiagnostics && (
+                        <div className="card" style={{
+                            marginTop: 14,
+                            marginBottom: 6,
+                            padding: '14px 16px',
+                            border: '1px solid rgba(96,165,250,0.18)',
+                            background: 'linear-gradient(135deg, rgba(59,130,246,0.06), rgba(30,41,59,0.12))',
+                        }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+                                <div>
+                                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.88rem', fontWeight: 900 }}>Intraday Diagnostics</div>
+                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                                        Universe {scanDiagnostics.universeCount} · Qualified {scanDiagnostics.qualifiedCount} · Final setups {scanDiagnostics.setupCount}
+                                    </div>
+                                </div>
+                                {scanDiagnostics.notes?.[0] && (
+                                    <div style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', maxWidth: 360 }}>
+                                        {scanDiagnostics.notes[0]}
+                                    </div>
+                                )}
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                                {Object.entries(scanDiagnostics.rejectionCounts)
+                                    .sort((a, b) => b[1] - a[1])
+                                    .slice(0, 6)
+                                    .map(([reason, count]) => (
+                                        <div key={reason} style={{
+                                            padding: '10px 10px',
+                                            borderRadius: 10,
+                                            border: '1px solid var(--border)',
+                                            background: 'var(--bg-elevated)',
+                                        }}>
+                                            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.95rem', fontWeight: 900, color: '#93c5fd' }}>{count}</div>
+                                            <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', lineHeight: 1.4, marginTop: 2 }}>
+                                                {reason.replace(/_/g, ' ')}
+                                            </div>
+                                        </div>
+                                    ))}
+                            </div>
+                        </div>
+                    )}
+
                     {isMobile && (
                         <RightPanel
                             mobile

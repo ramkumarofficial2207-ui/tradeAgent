@@ -455,11 +455,13 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
         let qualified: any[] = [];
         let marketStatus: any;
         let setups: any[] = [];
+        let diagnostics: ScanResult['diagnostics'];
         if (mode === 'intraday') {
             const intradayResult = await runIntradayScanner(tradingApi);
             qualified = intradayResult.qualified;
             marketStatus = intradayResult.marketStatus;
             setups = intradayResult.setups;
+            diagnostics = intradayResult.diagnostics;
         } else {
             const swingResult = await runScanner(tradingApi);
             qualified = swingResult.qualified;
@@ -482,6 +484,7 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
             marketStatus,
             setups,
             sectorBreadth,
+            diagnostics,
         };
         setCachedScan(mode, scanPayload);
 

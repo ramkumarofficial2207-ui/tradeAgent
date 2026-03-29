@@ -15,7 +15,7 @@ import { getTickerNewsDigest } from './newsIntel/service';
 import { NewsEvent } from './newsIntel/types';
 import { buildMarketGroundingFromIndicator, buildSectorBreadthMap } from './newsIntel/marketGrounding';
 import { applyRiskGovernor } from './riskGovernor';
-import { Candle, MarketDataApi, MarketStatus, ScanResult, StockIndicators, TradeSetup } from './types';
+import { Candle, MarketDataApi, MarketStatus, ScanDiagnostics, ScanResult, StockIndicators, TradeSetup } from './types';
 
 // ── Universe liquidity gates ─────────────────────────────────────
 const MIN_MARKET_CAP_CR = 250;       // Lowered to ₹250 Cr to include all small/midcaps
@@ -310,6 +310,22 @@ function scoreEventDurability(events: NewsEvent[]): number {
         score += direction * durabilityWeight * magnitudeWeight * clamp(event.confidence, 0.2, 1) * 2.2;
     }
     return +clamp(score, 0, 10).toFixed(1);
+}
+
+function toIstDateKey(value: string | Date): string {
+    const date = value instanceof Date ? value : new Date(value);
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(date);
+}
+
+function getLatestSessionCandles(candles: Candle[]): Candle[] {
+    if (!candles.length) return [];
+    const latestKey = toIstDateKey(candles[candles.length - 1].date);
+    return candles.filter(candle => toIstDateKey(candle.date) === latestKey);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -873,10 +889,22 @@ export async function buildTradeSetups(
 
 export async function runIntradayScanner(
     dataApi: MarketDataApi | null = null
-): Promise<{ qualified: StockIndicators[]; marketStatus: MarketStatus; setups: TradeSetup[] }> {
+): Promise<{ qualified: StockIndicators[]; marketStatus: MarketStatus; setups: TradeSetup[]; diagnostics: ScanDiagnostics }> {
     const marketStatus = await checkMarketCondition();
+    const diagnostics: ScanDiagnostics = {
+        mode: 'intraday',
+        universeCount: INTRADAY_UNIVERSE.length,
+        qualifiedCount: 0,
+        setupCount: 0,
+        rejectionCounts: {},
+        notes: [],
+    };
+    const reject = (reason: string) => {
+        diagnostics.rejectionCounts[reason] = (diagnostics.rejectionCounts[reason] || 0) + 1;
+    };
     if (marketStatus.regime === 'RISK_OFF') {
-        return { qualified: [], marketStatus, setups: [] };
+        diagnostics.notes?.push('Market regime is RISK_OFF, so intraday longs are disabled.');
+        return { qualified: [], marketStatus, setups: [], diagnostics };
     }
 
     const niftyCandles = await fetchHistoricalData('^NSEI', 10, '5m');
@@ -897,24 +925,49 @@ export async function runIntradayScanner(
         for (const row of settled) {
             if (row.status !== 'fulfilled') continue;
             const { ticker, candles } = row.value;
-            if (candles.length < 120) continue;
+            if (candles.length < 120) {
+                reject('insufficient_candles');
+                continue;
+            }
 
             const ind = computeIndicators(ticker, candles, niftyCandles);
-            if (!ind) continue;
+            if (!ind) {
+                reject('indicator_failure');
+                continue;
+            }
 
             const emaAligned = ind.ltp >= ind.ema20 && ind.ema20 >= ind.ema50 * 0.995;
-            const pullbackWindow = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) <= 0.015;
-            const momentumHealthy = ind.rsi14 >= 52 && ind.rsi14 <= 76 && ind.adx14 >= 18;
-            const volumeHealthy = ind.volumeRatio >= 1.15 && ind.avgVolume20d >= 20_000;
+            const pullbackWindow = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) <= 0.018;
+            const momentumHealthy = ind.rsi14 >= 50 && ind.rsi14 <= 78 && ind.adx14 >= 16;
+            const volumeHealthy = ind.volumeRatio >= 1.05 && ind.avgVolume20d >= 20_000;
             const relativeStrengthOkay = ind.returns3m >= ind.nifty3mReturn - 0.5;
 
-            if (!emaAligned && !pullbackWindow) continue;
-            if (!momentumHealthy || !volumeHealthy || !relativeStrengthOkay) continue;
-            if ((ind.accumulationScore ?? 0) < 48) continue;
+            if (!emaAligned && !pullbackWindow) {
+                reject('ema_or_pullback_gate');
+                continue;
+            }
+            if (!momentumHealthy) {
+                reject('momentum_gate');
+                continue;
+            }
+            if (!volumeHealthy) {
+                reject('volume_gate');
+                continue;
+            }
+            if (!relativeStrengthOkay) {
+                reject('relative_strength_gate');
+                continue;
+            }
+            if ((ind.accumulationScore ?? 0) < 45) {
+                reject('accumulation_gate');
+                continue;
+            }
 
             qualified.push(ind);
         }
     }
+
+    diagnostics.qualifiedCount = qualified.length;
 
     qualified.sort((a, b) => {
         const score = (x: StockIndicators) =>
@@ -931,21 +984,37 @@ export async function runIntradayScanner(
         const ind = qualified[index];
         const lastCandle = ind.candles[ind.candles.length - 1];
         const atr14 = calcATR(ind.candles.slice(-25));
-        if (!Number.isFinite(atr14) || atr14 <= 0) continue;
-        const sessionCandles = ind.candles.slice(-24);
-        const openingRange = sessionCandles.slice(0, 6);
+        if (!Number.isFinite(atr14) || atr14 <= 0) {
+            reject('atr_invalid');
+            continue;
+        }
+        const sessionCandles = getLatestSessionCandles(ind.candles);
+        if (sessionCandles.length < 12) {
+            reject('insufficient_session_candles');
+            continue;
+        }
+        const openingRangeBars = Math.min(6, sessionCandles.length);
+        const openingRange = sessionCandles.slice(0, openingRangeBars);
         const openingRangeHigh = Math.max(...openingRange.map(c => c.high));
         const openingRangeLow = Math.min(...openingRange.map(c => c.low));
         const intradayVwap = calcVWAP(sessionCandles);
         const fifteenMinuteCandles = aggregateCandles(ind.candles, 3);
-        if (fifteenMinuteCandles.length < 12) continue;
-        const last15Candle = fifteenMinuteCandles[fifteenMinuteCandles.length - 1];
-        const last15Volumes = fifteenMinuteCandles.slice(-6).map(candle => candle.volume);
+        const currentSession15m = getLatestSessionCandles(fifteenMinuteCandles);
+        if (currentSession15m.length < 4) {
+            reject('insufficient_15m_session_candles');
+            continue;
+        }
+        if (fifteenMinuteCandles.length < 12) {
+            reject('insufficient_15m_candles');
+            continue;
+        }
+        const last15Candle = currentSession15m[currentSession15m.length - 1];
+        const last15Volumes = currentSession15m.slice(-6).map(candle => candle.volume);
         const avg15Volume = last15Volumes.slice(0, -1).reduce((sum, volume) => sum + volume, 0) / Math.max(last15Volumes.length - 1, 1);
-        const ema8On15 = calcEMA(fifteenMinuteCandles.map(candle => candle.close), 8);
-        const ema21On15 = calcEMA(fifteenMinuteCandles.map(candle => candle.close), 21);
-        const higherLow15 = fifteenMinuteCandles.length >= 4
-            ? last15Candle.low >= Math.min(...fifteenMinuteCandles.slice(-4, -1).map(candle => candle.low)) * 0.997
+        const ema8On15 = calcEMA(currentSession15m.map(candle => candle.close), Math.min(8, currentSession15m.length));
+        const ema21On15 = calcEMA(currentSession15m.map(candle => candle.close), Math.min(21, currentSession15m.length));
+        const higherLow15 = currentSession15m.length >= 4
+            ? last15Candle.low >= Math.min(...currentSession15m.slice(-4, -1).map(candle => candle.low)) * 0.997
             : false;
         const breakoutActive = lastCandle.close >= openingRangeHigh * 0.998;
         const aboveVwap = lastCandle.close >= intradayVwap;
@@ -974,9 +1043,12 @@ export async function runIntradayScanner(
         if (!aboveVwap) rejectionReasons.push('Below intraday VWAP');
         if (!breakoutActive && !firstPullbackHeld) rejectionReasons.push('No clean opening-range breakout or first-pullback hold');
         if (lastCandle.close < openingRangeLow) rejectionReasons.push('Trading below opening-range low');
-        if (structure5m < 5.1) rejectionReasons.push('Weak 5m structure');
-        if (structure15m < 5.3) rejectionReasons.push('Weak 15m structure');
-        if (rejectionReasons.length) continue;
+        if (structure5m < 4.8) rejectionReasons.push('Weak 5m structure');
+        if (structure15m < 5.0) rejectionReasons.push('Weak 15m structure');
+        if (rejectionReasons.length) {
+            rejectionReasons.forEach(reason => reject(reason));
+            continue;
+        }
 
         const recentLows = ind.candles.slice(-8).map(c => c.low);
         const entryPrice = +(Math.max(lastCandle.high, ind.ltp) * 1.0008).toFixed(2);
@@ -985,7 +1057,10 @@ export async function runIntradayScanner(
         let stopLoss = Math.min(Math.min(...recentLows) * 0.999, ind.ema20 * 0.997);
         if (stopLoss >= entryPrice) stopLoss = entryPrice - atr14;
         stopLoss = +stopLoss.toFixed(2);
-        if (stopLoss <= 0 || stopLoss >= entryPrice) continue;
+        if (stopLoss <= 0 || stopLoss >= entryPrice) {
+            reject('stop_loss_invalid');
+            continue;
+        }
 
         const riskPerShare = entryPrice - stopLoss;
         const targetPrice = +(entryPrice + Math.max(riskPerShare * 1.8, atr14 * 1.4)).toFixed(2);
@@ -997,8 +1072,14 @@ export async function runIntradayScanner(
         const effectiveRiskReward = calcEffectiveRiskReward(entryPrice, stopLoss, targetPrice, slippagePct);
         const riskReward = effectiveRiskReward;
 
-        if (riskReward < 1.5) continue;
-        if (targetPct < 0.6 || targetPct > 3.5) continue;
+        if (riskReward < 1.4) {
+            reject('effective_rr_gate');
+            continue;
+        }
+        if (targetPct < 0.5 || targetPct > 3.5) {
+            reject('target_pct_gate');
+            continue;
+        }
 
         const nearEma20 = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) <= 0.01;
         const setupType = nearEma20
@@ -1022,7 +1103,14 @@ export async function runIntradayScanner(
         });
         const gapQuality = scoreGapQuality(gapPct, aboveVwap && structure15m >= 5.5);
         const primaryQuality = nearEma20 ? pullbackQuality : breakoutQuality;
-        if (primaryQuality < 5 || gapQuality < 3.8) continue;
+        if (primaryQuality < 4.6) {
+            reject('primary_execution_quality');
+            continue;
+        }
+        if (gapQuality < 3.4) {
+            reject('gap_quality_gate');
+            continue;
+        }
 
         const confidenceScore = +Math.min(
             10,
@@ -1111,9 +1199,14 @@ export async function runIntradayScanner(
         .sort((a, b) => b.confidenceScore - a.confidenceScore || b.riskReward - a.riskReward)
         .slice(0, 8);
 
+    diagnostics.setupCount = finalSetups.length;
+    if (!finalSetups.length) {
+        diagnostics.notes?.push('No intraday setups passed all filters. Check rejectionCounts to see the dominant gate.');
+    }
+
     await enrichTradeSetupsWithAI(finalSetups, qualified);
     await enrichSetupsWithGroundedNews(finalSetups, qualified, marketStatus, true);
     await applyRiskGovernor(finalSetups, marketStatus);
 
-    return { qualified, marketStatus, setups: finalSetups };
+    return { qualified, marketStatus, setups: finalSetups, diagnostics };
 }
