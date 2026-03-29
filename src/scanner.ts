@@ -851,27 +851,11 @@ export async function buildTradeSetups(
     }
 
     // STRICT CUSTOMER REQUEST: Filter out WATCH and REJECT signals.
-    const eligibleBuys = finalSetups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY');
 
     // ── Phase 5: Multi-Agent Risk Manager (Sector Concentration) ─────
-    const riskManaged: TradeSetup[] = [];
-    const sectorCounts: Record<string, number> = {};
-
-    for (const setup of eligibleBuys) {
-        const sector = setup.sector || 'Diversified';
-        const count = sectorCounts[sector] || 0;
-
-        // Max 2 stocks per sector to prevent correlation risk
-        if (count < 2) {
-            riskManaged.push(setup);
-            sectorCounts[sector] = count + 1;
-        } else {
-            console.log(`[Risk Manager] Rejected ${setup.ticker} to prevent over-concentration in ${sector}`);
-        }
-    }
 
     // ── Phase 3: EV-Based Prioritization ──────────────────────────
-    const setupsWithEV = await Promise.all(riskManaged.map(async s => {
+    const setupsWithEV = await Promise.all(finalSetups.map(async s => {
         (s as any).expectedValue = await calculateExpectedValue(s);
         return s;
     }));
