@@ -34,6 +34,49 @@ export const chatSchema = z.object({
     message: z.string().trim().min(3).max(2000),
 });
 
+export const newsImpactSchema = z.object({
+    headline: z.string().trim().max(500).optional(),
+    articleText: z.string().trim().max(8000).optional(),
+    targetTicker: z.string().trim().max(20).optional(),
+    targetSector: z.string().trim().max(120).optional(),
+    currentMarketContext: z.string().trim().max(500).optional(),
+    technicalContext: z.object({
+        price: z.coerce.number().positive().optional(),
+        gapPct: z.coerce.number().min(-50).max(50).optional(),
+        dayHigh: z.coerce.number().positive().optional(),
+        dayLow: z.coerce.number().positive().optional(),
+        ema20: z.coerce.number().positive().optional(),
+        ema50: z.coerce.number().positive().optional(),
+        dma200: z.coerce.number().positive().optional(),
+        volumeRatio: z.coerce.number().nonnegative().optional(),
+        rsi14: z.coerce.number().min(0).max(100).optional(),
+        scannerSetup: z.object({
+            setupType: z.string().trim().max(80).optional(),
+            confidenceScore: z.coerce.number().min(0).max(10).optional(),
+            aiSignal: z.enum(['BUY', 'LIGHT BUY', 'WATCH', 'REJECT']).optional(),
+            riskReward: z.coerce.number().positive().optional(),
+            targetPct: z.coerce.number().optional(),
+            slPct: z.coerce.number().optional(),
+        }).optional(),
+        regime: z.string().trim().max(40).optional(),
+        sectorBreadth: z.object({
+            sector: z.string().trim().max(120),
+            qualifiedCount: z.coerce.number().int().min(0),
+            setupCount: z.coerce.number().int().min(0),
+            advancingRatio: z.coerce.number().min(0).max(1),
+            breadthScore: z.coerce.number().min(0).max(1),
+        }).optional(),
+    }).optional(),
+}).superRefine((value, ctx) => {
+    if (!value.headline && !value.articleText) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['headline'],
+            message: 'Provide a headline or articleText.',
+        });
+    }
+});
+
 export const portfolioTradeSchema = z.object({
     ticker: z.string().trim().min(1).max(20),
     entryPrice: z.coerce.number().positive(),

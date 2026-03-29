@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import {
     Briefcase, Plus, X, TrendingUp, TrendingDown,
-    CheckCircle2, Clock, Target, BarChart3, ShieldCheck, Activity, Zap
+    CheckCircle2, Clock, Target, BarChart3, ShieldCheck, Activity, Zap, AlertTriangle, Newspaper
 } from 'lucide-react'
 import { useViewport } from '../lib/useViewport'
 
@@ -48,6 +48,64 @@ interface Summary {
     largestPositionPct: number
     topSector: string
     topSectorCount: number
+}
+
+interface PortfolioNewsRiskItem {
+    ticker: string
+    sector: string | null
+    status: 'HIGH_SEVERITY' | 'REGULATORY_RISK' | 'WATCH' | 'CLEAR'
+    avgSentiment: number
+    highImpactCount: number
+    regulatoryRisk: boolean
+    newsRiskFlag: boolean
+    signalAlignment: 'ALIGNED' | 'MIXED' | 'CONFLICT' | 'UNAVAILABLE'
+    alertEligible: boolean
+    latestHeadline: string | null
+    lastUpdated: string | null
+    eventTypes: string[]
+}
+
+interface PortfolioNewsRiskSummary {
+    openHoldings: number
+    highSeverityCount: number
+    regulatoryRiskCount: number
+    alignedPositiveCount: number
+    holdings: PortfolioNewsRiskItem[]
+}
+
+interface PortfolioCluster {
+    key: string
+    type: 'SECTOR' | 'REGIME' | 'NEWS_RISK'
+    label: string
+    severity: 'LOW' | 'MEDIUM' | 'HIGH'
+    holdings: number
+    capitalPct: number
+    riskRs: number
+    tickers: string[]
+}
+
+interface PortfolioHeatmapCell {
+    label: string
+    holdings: number
+    exposurePct: number
+    riskPct: number
+    sentiment: number
+    severity: 'LOW' | 'MEDIUM' | 'HIGH'
+}
+
+interface PortfolioIntelligence {
+    openHoldings: number
+    totalCapitalDeployed: number
+    maxDamageTodayRs: number
+    maxDamageTodayPct: number
+    correlatedExposureCount: number
+    regulatoryExposureCount: number
+    highNewsRiskCount: number
+    clusters: PortfolioCluster[]
+    suggestions: string[]
+    sectorHeatmap: PortfolioHeatmapCell[]
+    regimeHeatmap: PortfolioHeatmapCell[]
+    newsHeatmap: PortfolioHeatmapCell[]
 }
 
 interface AddTradeForm {
@@ -212,6 +270,8 @@ function CloseTradeModal({ trade, onClose, onClosed }: { trade: Trade; onClose: 
 export default function PortfolioPage() {
     const [trades, setTrades] = useState<Trade[]>([])
     const [summary, setSummary] = useState<Summary | null>(null)
+    const [newsRisk, setNewsRisk] = useState<PortfolioNewsRiskSummary | null>(null)
+    const [intelligence, setIntelligence] = useState<PortfolioIntelligence | null>(null)
     const [loading, setLoading] = useState(true)
     const [showAdd, setShowAdd] = useState(false)
     const [closingTrade, setClosingTrade] = useState<Trade | null>(null)
@@ -220,14 +280,20 @@ export default function PortfolioPage() {
 
     const load = useCallback(async () => {
         setLoading(true)
-        const [tradesRes, summaryRes] = await Promise.allSettled([
+        const [tradesRes, summaryRes, newsRes, intelRes] = await Promise.allSettled([
             axios.get('/api/portfolio'),
             axios.get('/api/portfolio/summary'),
+            axios.get('/api/portfolio/news-risk'),
+            axios.get('/api/portfolio/intelligence'),
         ])
         if (tradesRes.status === 'fulfilled' && tradesRes.value.data.success)
             setTrades(tradesRes.value.data.data || [])
         if (summaryRes.status === 'fulfilled' && summaryRes.value.data.success)
             setSummary(summaryRes.value.data.data)
+        if (newsRes.status === 'fulfilled' && newsRes.value.data.success)
+            setNewsRisk(newsRes.value.data.data)
+        if (intelRes.status === 'fulfilled' && intelRes.value.data.success)
+            setIntelligence(intelRes.value.data.data)
         setLoading(false)
     }, [])
 
@@ -241,6 +307,26 @@ export default function PortfolioPage() {
 
     const open = trades.filter(t => t.status === 'OPEN')
     const closed = trades.filter(t => t.status === 'CLOSED')
+
+    const badgeForNewsStatus = (status: PortfolioNewsRiskItem['status']) => {
+        if (status === 'REGULATORY_RISK') return 'badge badge-avoid'
+        if (status === 'HIGH_SEVERITY') return 'badge badge-watch'
+        if (status === 'CLEAR') return 'badge badge-buy'
+        return 'badge badge-neutral'
+    }
+
+    const labelForNewsStatus = (status: PortfolioNewsRiskItem['status']) => {
+        if (status === 'REGULATORY_RISK') return 'Regulatory Risk'
+        if (status === 'HIGH_SEVERITY') return 'High Severity'
+        if (status === 'CLEAR') return 'Clear'
+        return 'Watch'
+    }
+
+    const severityTone = (severity: 'LOW' | 'MEDIUM' | 'HIGH') => {
+        if (severity === 'HIGH') return { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.22)', color: '#fca5a5' }
+        if (severity === 'MEDIUM') return { bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.22)', color: '#fcd34d' }
+        return { bg: 'rgba(52,211,153,0.12)', border: 'rgba(52,211,153,0.22)', color: '#86efac' }
+    }
 
     const StatCard = ({ icon, label, value, color }: any) => (
         <div className="card" style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -293,6 +379,202 @@ export default function PortfolioPage() {
                 </div>
             )}
 
+            {newsRisk && (
+                <div className="card" style={{
+                    padding: isMobile ? '16px 14px' : '18px 18px',
+                    marginBottom: 20,
+                    background: 'radial-gradient(circle at top right, rgba(59,130,246,0.08), transparent 45%), var(--bg-card)',
+                    border: '1px solid rgba(96,165,250,0.18)',
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                        <div>
+                            <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.98rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <Newspaper size={16} style={{ color: '#93c5fd' }} /> Holdings News Radar
+                            </div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                                Recent holdings news, regulatory flags, and alignment status from the same grounded news engine.
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <span className="badge badge-buy">{newsRisk.alignedPositiveCount} aligned</span>
+                            <span className="badge badge-watch">{newsRisk.highSeverityCount} high severity</span>
+                            <span className="badge badge-avoid">{newsRisk.regulatoryRiskCount} regulatory</span>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 14 }}>
+                        <StatCard icon={<Briefcase size={16} />} label="Open Holdings" value={newsRisk.openHoldings} color="#93c5fd" />
+                        <StatCard icon={<AlertTriangle size={16} />} label="High Severity" value={newsRisk.highSeverityCount} color="#fbbf24" />
+                        <StatCard icon={<ShieldCheck size={16} />} label="Regulatory" value={newsRisk.regulatoryRiskCount} color="#f87171" />
+                        <StatCard icon={<CheckCircle2 size={16} />} label="Aligned" value={newsRisk.alignedPositiveCount} color="#34d399" />
+                    </div>
+
+                    {newsRisk.holdings.length > 0 && (
+                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+                            {newsRisk.holdings.slice(0, 6).map(item => (
+                                <div key={item.ticker} style={{
+                                    padding: '12px 12px',
+                                    borderRadius: 12,
+                                    border: `1px solid ${item.status === 'REGULATORY_RISK' ? 'rgba(239,68,68,0.18)' : item.status === 'HIGH_SEVERITY' ? 'rgba(245,158,11,0.18)' : 'rgba(148,163,184,0.16)'}`,
+                                    background: 'var(--bg-elevated)',
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                                        <div>
+                                            <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', fontWeight: 900 }}>{item.ticker}</div>
+                                            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{item.sector || 'NSE equity'}</div>
+                                        </div>
+                                        <span className={badgeForNewsStatus(item.status)} style={{ fontSize: '0.58rem', alignSelf: 'flex-start' }}>
+                                            {labelForNewsStatus(item.status)}
+                                        </span>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                                        <span className={`badge ${item.signalAlignment === 'ALIGNED' ? 'badge-buy' : item.signalAlignment === 'CONFLICT' ? 'badge-avoid' : 'badge-neutral'}`} style={{ fontSize: '0.56rem' }}>
+                                            {item.signalAlignment}
+                                        </span>
+                                        <span className="badge badge-neutral" style={{ fontSize: '0.56rem' }}>
+                                            Sentiment {item.avgSentiment >= 0 ? '+' : ''}{item.avgSentiment}
+                                        </span>
+                                        {item.alertEligible && <span className="badge badge-buy" style={{ fontSize: '0.56rem' }}>Alert Ready</span>}
+                                    </div>
+                                    {item.latestHeadline && (
+                                        <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.55, marginBottom: 8 }}>
+                                            {item.latestHeadline}
+                                        </div>
+                                    )}
+                                    {item.eventTypes.length > 0 && (
+                                        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                                            {item.eventTypes.slice(0, 3).map(eventType => (
+                                                <span key={eventType} className="badge badge-neutral" style={{ fontSize: '0.52rem' }}>
+                                                    {eventType.replace(/_/g, ' ')}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {intelligence && (
+                <div className="card" style={{
+                    padding: isMobile ? '16px 14px' : '18px 18px',
+                    marginBottom: 20,
+                    background: 'radial-gradient(circle at top left, rgba(248,113,113,0.08), transparent 35%), var(--bg-card)',
+                    border: '1px solid rgba(248,113,113,0.15)',
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                        <div>
+                            <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.98rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <AlertTriangle size={16} style={{ color: '#fca5a5' }} /> Portfolio Risk Intelligence
+                            </div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                                Correlated exposure, max-damage, rebalance suggestions, and heatmaps by sector, regime, and news risk.
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <span className="badge badge-watch">{intelligence.correlatedExposureCount} clusters</span>
+                            <span className="badge badge-avoid">{intelligence.regulatoryExposureCount} regulatory</span>
+                            <span className="badge badge-neutral">{intelligence.highNewsRiskCount} news risk</span>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 14 }}>
+                        <StatCard icon={<ShieldCheck size={16} />} label="Max Damage" value={`₹${intelligence.maxDamageTodayRs.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} color="#f87171" />
+                        <StatCard icon={<Activity size={16} />} label="Damage %" value={`${intelligence.maxDamageTodayPct}%`} color="#fbbf24" />
+                        <StatCard icon={<Briefcase size={16} />} label="Open Holdings" value={intelligence.openHoldings} color="#93c5fd" />
+                        <StatCard icon={<BarChart3 size={16} />} label="Clusters" value={intelligence.correlatedExposureCount} color="#a78bfa" />
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1.15fr 1fr', gap: 14, marginBottom: 14 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', fontWeight: 800, color: 'var(--text-muted)' }}>Correlated Clusters</div>
+                            {intelligence.clusters.length === 0 && (
+                                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>No material clusters detected.</div>
+                            )}
+                            {intelligence.clusters.map(cluster => {
+                                const tone = severityTone(cluster.severity)
+                                return (
+                                    <div key={cluster.key} style={{
+                                        padding: '12px 12px',
+                                        borderRadius: 12,
+                                        background: tone.bg,
+                                        border: `1px solid ${tone.border}`,
+                                    }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
+                                            <div>
+                                                <div style={{ fontWeight: 800, fontSize: '0.82rem', color: tone.color }}>{cluster.label}</div>
+                                                <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)' }}>{cluster.type.replace('_', ' ')} cluster</div>
+                                            </div>
+                                            <span className={`badge ${cluster.severity === 'HIGH' ? 'badge-avoid' : cluster.severity === 'MEDIUM' ? 'badge-watch' : 'badge-buy'}`} style={{ fontSize: '0.56rem' }}>
+                                                {cluster.severity}
+                                            </span>
+                                        </div>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                            {cluster.holdings} holdings · {cluster.capitalPct}% capital · ₹{cluster.riskRs.toLocaleString('en-IN', { maximumFractionDigits: 0 })} risk
+                                        </div>
+                                        <div style={{ marginTop: 6, fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                                            {cluster.tickers.join(', ')}
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', fontWeight: 800, color: 'var(--text-muted)' }}>Risk Compression Suggestions</div>
+                            {intelligence.suggestions.map(suggestion => (
+                                <div key={suggestion} style={{
+                                    padding: '10px 12px',
+                                    borderRadius: 12,
+                                    background: 'var(--bg-elevated)',
+                                    border: '1px solid var(--border)',
+                                    fontSize: '0.72rem',
+                                    color: 'var(--text-secondary)',
+                                    lineHeight: 1.55,
+                                }}>
+                                    {suggestion}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: 12 }}>
+                        {([
+                            ['Sector Heatmap', intelligence.sectorHeatmap],
+                            ['Regime Sensitivity', intelligence.regimeHeatmap],
+                            ['News Risk Heatmap', intelligence.newsHeatmap],
+                        ] as Array<[string, PortfolioHeatmapCell[]]>).map(([title, cells]) => (
+                            <div key={title} style={{ padding: '12px', borderRadius: 12, background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                                <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', fontWeight: 800, color: 'var(--text-muted)', marginBottom: 10 }}>{title}</div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    {cells.slice(0, 6).map(cell => {
+                                        const tone = severityTone(cell.severity)
+                                        return (
+                                            <div key={`${title}-${cell.label}`} style={{
+                                                padding: '10px 10px',
+                                                borderRadius: 10,
+                                                background: tone.bg,
+                                                border: `1px solid ${tone.border}`,
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                                                    <div style={{ fontWeight: 800, fontSize: '0.75rem', color: tone.color }}>{cell.label}</div>
+                                                    <div style={{ fontSize: '0.68rem', fontWeight: 700 }}>{cell.exposurePct}%</div>
+                                                </div>
+                                                <div style={{ marginTop: 4, fontSize: '0.65rem', color: 'var(--text-secondary)' }}>
+                                                    {cell.holdings} holdings · risk {cell.riskPct}% · sentiment {cell.sentiment >= 0 ? '+' : ''}{cell.sentiment}
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {/* Tabs */}
             <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
                 {([['open', `Open (${open.length})`], ['closed', `Closed (${closed.length})`]] as const).map(([key, label]) => (
@@ -323,6 +605,7 @@ export default function PortfolioPage() {
                         const displayPct = trade.status === 'CLOSED' ? trade.pnlPct : unrealizedPct
                         const isWin = (displayPct ?? 0) >= 0
                         const color = displayPct == null ? 'var(--text-muted)' : isWin ? '#34d399' : '#f87171'
+                        const newsItem = newsRisk?.holdings.find(h => h.ticker === trade.ticker)
 
                         return (
                             <div key={trade.id} className="card" style={{ padding: '16px 18px', border: `1px solid ${color}22` }}>
@@ -342,6 +625,29 @@ export default function PortfolioPage() {
                                         )}
                                     </div>
                                 </div>
+
+                                {newsItem && (
+                                    <div style={{
+                                        marginBottom: 12,
+                                        padding: '10px 12px',
+                                        borderRadius: 10,
+                                        background: newsItem.status === 'REGULATORY_RISK' ? 'rgba(239,68,68,0.08)' : newsItem.status === 'HIGH_SEVERITY' ? 'rgba(245,158,11,0.08)' : 'rgba(59,130,246,0.05)',
+                                        border: `1px solid ${newsItem.status === 'REGULATORY_RISK' ? 'rgba(239,68,68,0.16)' : newsItem.status === 'HIGH_SEVERITY' ? 'rgba(245,158,11,0.16)' : 'rgba(59,130,246,0.14)'}`,
+                                    }}>
+                                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: newsItem.latestHeadline ? 7 : 0 }}>
+                                            <span className={badgeForNewsStatus(newsItem.status)} style={{ fontSize: '0.56rem' }}>{labelForNewsStatus(newsItem.status)}</span>
+                                            <span className={`badge ${newsItem.signalAlignment === 'ALIGNED' ? 'badge-buy' : newsItem.signalAlignment === 'CONFLICT' ? 'badge-avoid' : 'badge-neutral'}`} style={{ fontSize: '0.56rem' }}>
+                                                {newsItem.signalAlignment}
+                                            </span>
+                                            {newsItem.newsRiskFlag && <span className="badge badge-watch" style={{ fontSize: '0.56rem' }}>News Risk</span>}
+                                        </div>
+                                        {newsItem.latestHeadline && (
+                                            <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                                {newsItem.latestHeadline}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 <div style={{ display: 'grid', gridTemplateColumns: isPhone ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
                                     {[

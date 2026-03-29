@@ -29,6 +29,16 @@ interface Section {
     data: Record<string, unknown>
 }
 
+interface ResponseMeta {
+    supportLevel: 'supported' | 'partial' | 'unsupported'
+    grounded: boolean
+    liveDataUsed: boolean
+    scannerContextUsed: boolean
+    dataUsed: string[]
+    lastUpdated: string | null
+    notes: string[]
+}
+
 interface Message {
     id: string
     role: 'user' | 'assistant'
@@ -36,6 +46,7 @@ interface Message {
     stockCard?: StockCard
     sections?: Section[]
     sources?: string[]
+    meta?: ResponseMeta | null
     timestamp: Date
     isTyping?: boolean
     feedback?: 'up' | 'down' | null
@@ -250,6 +261,37 @@ function Sources({ sources }: { sources: string[] }) {
     )
 }
 
+function ResponseMetaView({ meta }: { meta: ResponseMeta }) {
+    const supportColor = meta.supportLevel === 'supported'
+        ? '#34d399'
+        : meta.supportLevel === 'partial'
+            ? '#fbbf24'
+            : '#f87171'
+
+    return (
+        <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 10, background: 'var(--bg-elevated)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span className="badge badge-neutral" style={{ fontSize: '0.62rem', color: supportColor, borderColor: supportColor }}>
+                    {meta.supportLevel === 'supported' ? 'Supported' : meta.supportLevel === 'partial' ? 'Partial' : 'Unsupported'}
+                </span>
+                {meta.grounded && <span className="badge badge-neutral" style={{ fontSize: '0.62rem' }}>Grounded</span>}
+                {meta.liveDataUsed && <span className="badge badge-neutral" style={{ fontSize: '0.62rem' }}>Verified Data</span>}
+                {meta.scannerContextUsed && <span className="badge badge-neutral" style={{ fontSize: '0.62rem' }}>Scanner Context</span>}
+            </div>
+            {meta.lastUpdated && (
+                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>
+                    Last updated: {new Date(meta.lastUpdated).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
+                </div>
+            )}
+            {meta.notes.length > 0 && (
+                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                    {meta.notes.join(' ')}
+                </div>
+            )}
+        </div>
+    )
+}
+
 /* ─── Message bubble ──────────────────────────────────────── */
 function MessageBubble({
     msg, onFeedback, onCopy, watchlist, toggle
@@ -280,11 +322,11 @@ function MessageBubble({
                                 <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 12 }}>I can help you with:</div>
                                 <ul style={{ paddingLeft: 0, margin: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 7 }}>
                                     {[
-                                        'Analyse any NSE stock with live data — technicals & fundamentals',
-                                        'Find high-confidence trade setups across 1000+ stocks',
+                                        'Analyse supported NSE stocks with grounded technical and fundamental context',
+                                        'Review latest scanner-backed setups when scan data is available',
                                         'Explain market moves and concepts in plain English',
-                                        'Review your portfolio for sector concentration & risk',
-                                        'Answer anything about the Indian stock market',
+                                        'Review your portfolio for concentration and risk',
+                                        'Flag unsupported requests clearly instead of guessing',
                                     ].map(item => (
                                         <li key={item} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.85rem' }}>
                                             <span style={{ color: 'var(--purple)', fontWeight: 700, flexShrink: 0, marginTop: 1 }}>→</span>
@@ -328,6 +370,8 @@ function MessageBubble({
                         </div>
                     )}
                 </div>
+
+                {!isUser && msg.meta && <ResponseMetaView meta={msg.meta} />}
             </div>
         </div>
     )
@@ -344,6 +388,7 @@ export default function ChatPage() {
     const inputRef = useRef<HTMLTextAreaElement>(null)
     const { items: watchlist, toggle } = useWatchlist()
     const { isMobile, isPhone } = useViewport()
+    const latestAssistantMeta = [...messages].reverse().find(m => m.role === 'assistant' && m.meta)?.meta || null
 
     useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -376,7 +421,8 @@ export default function ChatPage() {
                     role: 'assistant',
                     content: data.reply || 'No response received.',
                     stockCard: data.stockCard || null,
-                    sources: data.sources || ['NSE India', 'Gemini AI'],
+                    sources: data.sources || [],
+                    meta: data.meta || null,
                     timestamp: new Date(),
                     feedback: null,
                 },
@@ -390,6 +436,7 @@ export default function ChatPage() {
                     content: 'The Intelligence Core is currently offline or misconfigured. Please verify your AI API keys (Gemini/Groq/Anthropic) in the environment settings and try again.',
                     timestamp: new Date(),
                     sources: [],
+                    meta: null,
                 },
             ])
         } finally {
@@ -433,12 +480,13 @@ export default function ChatPage() {
                     <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.95rem', letterSpacing: '-0.01em' }}>StockSage AI</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
                         <span className="status-dot status-dot-green" />
-                        <span style={{ fontSize: '0.65rem', color: '#34d399', fontWeight: 600 }}>Online &mdash; NSE Research Assistant</span>
+                        <span style={{ fontSize: '0.65rem', color: '#34d399', fontWeight: 600 }}>Online &mdash; Grounded NSE Research Assistant</span>
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                    {!isPhone && <span className="badge badge-vcp" style={{ fontSize: '0.62rem' }}>Gemini AI</span>}
-                    {!isPhone && <span className="badge badge-buy" style={{ fontSize: '0.62rem' }}>Live NSE Data</span>}
+                    {!isPhone && <span className="badge badge-vcp" style={{ fontSize: '0.62rem' }}>Grounded Chat</span>}
+                    {!isPhone && latestAssistantMeta?.liveDataUsed && <span className="badge badge-buy" style={{ fontSize: '0.62rem' }}>Verified Data</span>}
+                    {!isPhone && latestAssistantMeta?.scannerContextUsed && <span className="badge badge-neutral" style={{ fontSize: '0.62rem' }}>Scanner Context</span>}
                     <button onClick={handleReset} className="btn btn-icon btn-ghost" title="New conversation" style={{ width: 30, height: 30 }}>
                         <RotateCcw size={12} />
                     </button>
@@ -511,7 +559,7 @@ export default function ChatPage() {
                         value={input}
                         onChange={handleInput}
                         onKeyDown={handleKeyDown}
-                        placeholder="Ask about any stock, sector, or market concept..."
+                        placeholder="Ask about an NSE stock, scanner setup, portfolio, or market concept..."
                         rows={1}
                         disabled={loading}
                         maxLength={1200}

@@ -90,6 +90,63 @@ export interface TriggerZone {
     expiresAt: Date;
 }
 
+export interface SectorBreadthSnapshot {
+    sector: string;
+    qualifiedCount: number;
+    setupCount: number;
+    advancingRatio: number;
+    breadthScore: number;
+}
+
+export interface ScannerSetupContext {
+    setupType?: string | null;
+    confidenceScore?: number | null;
+    aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT' | null;
+    riskReward?: number | null;
+    targetPct?: number | null;
+    slPct?: number | null;
+}
+
+export interface MarketGroundingContext {
+    price?: number | null;
+    gapPct?: number | null;
+    dayHigh?: number | null;
+    dayLow?: number | null;
+    volumeRatio?: number | null;
+    rsi14?: number | null;
+    ema20?: number | null;
+    ema50?: number | null;
+    dma200?: number | null;
+    scannerSetup?: ScannerSetupContext | null;
+    regime?: string | null;
+    sectorBreadth?: SectorBreadthSnapshot | null;
+    confirmationScore?: number | null;
+    confirmationStatus?: 'CONFIRMED' | 'PARTIAL' | 'UNCONFIRMED' | 'UNAVAILABLE';
+    confirmationNotes?: string[];
+}
+
+export interface NewsDistributionContext {
+    newsTailwindScore: number;
+    newsRiskFlag: boolean;
+    regulatoryRiskFlag: boolean;
+    signalAlignment: 'ALIGNED' | 'MIXED' | 'CONFLICT' | 'UNAVAILABLE';
+    alertEligible: boolean;
+    eventTypes: string[];
+    latestHeadline?: string | null;
+    lastUpdated?: string | null;
+}
+
+export interface ExecutionQualityContext {
+    breakoutQuality?: number | null;
+    pullbackQuality?: number | null;
+    gapQuality?: number | null;
+    effectiveRiskReward?: number | null;
+    slippagePct?: number | null;
+    structure5m?: number | null;
+    structure15m?: number | null;
+    eventDurability?: number | null;
+}
+
 export interface TradeSetup {
     ticker: string;
     sector: string;
@@ -135,6 +192,15 @@ export interface TradeSetup {
     derivativeStatus?: string;
     // Phase 1 Latency Fix
     authorizedZone?: TriggerZone;
+    marketGrounding?: MarketGroundingContext;
+    newsDistribution?: NewsDistributionContext;
+    executionQuality?: ExecutionQualityContext;
+    calibratedEdgeScore?: number;
+    positionSizePct?: number;
+    riskFlags?: string[];
+    rejectionReasons?: string[];
+    confidenceDrivers?: string[];
+    alertStage?: 'SETUP_DETECTED' | 'TRIGGER_ARMED' | 'TRADE_READY' | 'THESIS_INVALIDATED';
 }
 
 export interface MarketStatus {
@@ -171,4 +237,5 @@ export interface ScanResult {
     timestamp: string;
     marketStatus: MarketStatus;
     setups: TradeSetup[];
+    sectorBreadth?: Record<string, SectorBreadthSnapshot>;
 }

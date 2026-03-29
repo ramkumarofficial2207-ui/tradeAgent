@@ -1,5 +1,6 @@
 import prisma from './prismaClient';
 import { fetchHistoricalData } from './dataService';
+import { syncTrackedSignalResolution } from './edgeAnalyticsService';
 
 export async function updatePerformanceRecords() {
     console.log('[Performance] Running nightly verifier job...');
@@ -36,6 +37,7 @@ export async function updatePerformanceRecords() {
                             resolvedAt: new Date()
                         }
                     });
+                    await syncTrackedSignalResolution(setup.id, 'WON', +resultPct.toFixed(2), new Date());
                     updatedCount++;
                 }
                 // Did it hit stop loss?
@@ -49,6 +51,7 @@ export async function updatePerformanceRecords() {
                             resolvedAt: new Date()
                         }
                     });
+                    await syncTrackedSignalResolution(setup.id, 'LOST', +resultPct.toFixed(2), new Date());
                     updatedCount++;
                 }
 

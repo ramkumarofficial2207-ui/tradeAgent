@@ -1,4 +1,5 @@
-import axios from 'axios';
+import { analyzeNewsImpact } from './newsImpactService';
+import { getTickerNewsDigest } from './newsIntel/service';
 
 export interface NewsValidation {
     blocked: boolean;
@@ -13,30 +14,41 @@ const NEGATIVE_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
     { pattern: /\bresults today|earnings today|q[1-4] results\b/i, reason: 'Near-term earnings event risk' },
 ];
 
-function buildRssUrl(ticker: string): string {
-    const q = encodeURIComponent(`${ticker} NSE stock`);
-    return `https://news.google.com/rss/search?q=${q}&hl=en-IN&gl=IN&ceid=IN:en`;
-}
-
-function parseTitles(xml: string, max = 8): string[] {
-    const titles = [...xml.matchAll(/<title>(.*?)<\/title>/g)].map((m) => m[1].trim());
-    // First title is feed title; skip it.
-    return titles.slice(1, 1 + max);
-}
-
 export async function validateNewsRisk(ticker: string): Promise<NewsValidation> {
     try {
-        const { data } = await axios.get<string>(buildRssUrl(ticker), { timeout: 10000 });
-        const headlines = parseTitles(data, 8);
+        const digest = await getTickerNewsDigest(ticker, null, true);
+        const headlines = digest.items.map(item => item.title).slice(0, 8);
         const joined = headlines.join(' | ');
+        const analysis = analyzeNewsImpact({
+            headline: headlines[0] || `${ticker} latest news`,
+            articleText: joined,
+            targetTicker: ticker,
+        });
         const hit = NEGATIVE_PATTERNS.find((rule) => rule.pattern.test(joined));
-        if (hit) {
-            return { blocked: true, reason: hit.reason, headlines };
+        const blocked =
+            !!hit ||
+            (
+                digest.regulatoryRisk ||
+                (
+                    analysis.news_sentiment_score <= -0.45 &&
+                    (analysis.impact_magnitude === 'HIGH' || analysis.category === 'REGULATORY')
+                )
+            );
+
+        if (blocked) {
+            return {
+                blocked: true,
+                reason: hit?.reason || `${analysis.category}: ${analysis.rationale}`,
+                headlines,
+            };
         }
-        return { blocked: false, reason: 'No high-risk headline flags', headlines };
+        return {
+            blocked: false,
+            reason: `${analysis.category}: ${analysis.rationale}`,
+            headlines,
+        };
     } catch {
         // Fail-open for signal generation, but include explicit message.
         return { blocked: false, reason: 'News source unavailable; manual check required', headlines: [] };
     }
 }
-

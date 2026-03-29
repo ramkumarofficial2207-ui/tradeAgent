@@ -3,7 +3,7 @@ import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import {
     BarChart2, Heart, Sun, Moon, Menu, X, Zap,
     TrendingUp, TrendingDown, Bell, BellRing,
-    Activity, Cpu, Wifi, WifiOff, CheckCircle2, AlertCircle, Clock, Bot, User, LogOut, Briefcase
+    Activity, Cpu, Wifi, WifiOff, CheckCircle2, AlertCircle, Clock, Bot, User, LogOut, Briefcase, Shield
 } from 'lucide-react'
 import axios from 'axios'
 import { useAgentSSE, AgentEvent } from '../lib/useAgentSSE'
@@ -17,6 +17,7 @@ const NAV_ITEMS = [
     { path: '/', label: 'Dashboard', Icon: BarChart2 },
     { path: '/watchlist', label: 'Watchlist', Icon: Heart },
     { path: '/portfolio', label: 'Portfolio', Icon: Briefcase },
+    { path: '/founder', label: 'Edge Lab', Icon: Shield },
 ]
 
 const SEVERITY_COLORS: Record<string, string> = {

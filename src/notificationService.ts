@@ -17,7 +17,11 @@ function parseAlertTarget(target?: string | null): { channel: 'whatsapp' | 'tele
 
 function getPremiumSetups(setups: TradeSetup[]): TradeSetup[] {
     return setups
-        .filter(s => (s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') && s.confidenceScore >= 7)
+        .filter(s =>
+            (s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY') &&
+            s.confidenceScore >= 7 &&
+            s.newsDistribution?.alertEligible === true
+        )
         .slice(0, 8);
 }
 

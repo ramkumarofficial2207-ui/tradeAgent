@@ -30,7 +30,7 @@ import { initAutoScanner } from './autoScannerJob';
 import { requireAuth, generateToken, AuthRequest } from './authMiddleware';
 import { scanLimiter, chatLimiter, authLimiter } from './rateLimiter';
 import { requireSubscription } from './subscriptionMiddleware';
-import { createTrade, closeTrade, getPortfolioSummary, updateTradeCurrentPrice } from './portfolioService';
+import { createTrade, closeTrade, getPortfolioIntelligence, getPortfolioNewsRisk, getPortfolioSummary, updateTradeCurrentPrice } from './portfolioService';
 import { sendBuyAlert, sendPreMarketDigest } from './whatsappAlert';
 import { notifyUsersWithMorningDigest, notifyUsersWithPostMarketSummary } from './notificationService';
 import {
@@ -44,6 +44,7 @@ import {
     adminActivateSchema,
     chatSchema,
     loginSchema,
+    newsImpactSchema,
     portfolioTradeSchema,
     portfolioTradeUpdateSchema,
     registerSchema,
@@ -51,6 +52,11 @@ import {
     validateBody,
     watchlistCreateSchema,
 } from './validation';
+import { buildGroundedChatResponse } from './chat/service';
+import { analyzeNewsImpact, buildTechnicalContextFromStock } from './newsImpactService';
+import { getNewsFeed, getStoredNewsStatus, getTickerNewsDigest, syncNewsIntelligence } from './newsIntel/service';
+import { buildMarketGroundingFromReport, buildSectorBreadthMap } from './newsIntel/marketGrounding';
+import { backfillTrackedSignalsFromDb, buildEdgeDashboard, trackHistoricalSetup } from './edgeAnalyticsService';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -253,6 +259,12 @@ setTimeout(() => {
         console.error('[System] Deferred initialization failed:', e.message);
     }
 }, 1500);
+
+setTimeout(() => {
+    syncNewsIntelligence(lastSwingScan).catch((err: any) => {
+        console.warn('[NewsIntel] Initial sync skipped:', err?.message || err);
+    });
+}, 2500);
 
 // ——————————————————————————————————————————
 // ROUTES
@@ -457,17 +469,19 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
 
         const s2 = addThinkingStep('Computing technical indicators & AI signals', 'running');
         if (mode !== 'intraday') {
-            setups = await buildTradeSetups(qualified);
+            setups = await buildTradeSetups(qualified, marketStatus);
         }
         updateThinkingStep(s2, 'done', `${setups.length} setups identified`);
 
         const s3 = addThinkingStep('Finalizing scan results', 'running');
         updateThinkingStep(s3, 'done', 'Ready');
 
+        const sectorBreadth = buildSectorBreadthMap(qualified, setups);
         const scanPayload: ScanResult = {
             timestamp: new Date().toISOString(),
             marketStatus,
             setups,
+            sectorBreadth,
         };
         setCachedScan(mode, scanPayload);
 
@@ -483,6 +497,19 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
         );
 
         // ── AUTO-LOGGING TO PERFORMANCE DATABASE ──
+        setups
+            .filter(s => s.alertStage && (s.alertStage === 'TRADE_READY' || s.alertStage === 'TRIGGER_ARMED'))
+            .slice(0, 3)
+            .forEach(s => {
+                pushEvent(
+                    'TRADE_ALERT',
+                    s.alertStage === 'TRADE_READY' ? 'success' : 'info',
+                    `${s.alertStage === 'TRADE_READY' ? 'Trade Ready' : 'Trigger Armed'}: ${s.ticker}`,
+                    `${s.setupType} | Edge ${s.calibratedEdgeScore ?? s.confidenceScore}/10 | ${s.newsDistribution?.signalAlignment ?? 'UNAVAILABLE'} | ${s.marketGrounding?.confirmationStatus ?? 'UNAVAILABLE'}`,
+                    { ticker: s.ticker }
+                );
+            });
+
         try {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
@@ -496,7 +523,7 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
                     where: { ticker: s.ticker, status: 'IN_PROGRESS', createdAt: { gte: today } }
                 });
                 if (!exists) {
-                    await prisma.historicalSetup.create({
+                    const created = await prisma.historicalSetup.create({
                         data: {
                             ticker: s.ticker, setupType: s.setupType, timeframe: s.timeframe,
                             aiSignal: s.aiSignal || 'WATCH', confidenceScore: s.confidenceScore,
@@ -504,6 +531,7 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
                             aiLogic: s.aiLogic, status: 'IN_PROGRESS'
                         }
                     });
+                    await trackHistoricalSetup(created.id, s, marketStatus.regime || 'UNKNOWN');
                 }
             }
         } catch (dbErr: any) {
@@ -531,12 +559,17 @@ app.get('/api/performance', async (req: Request, res: Response) => {
             orderBy: { createdAt: 'desc' },
             take: 100
         });
+        const edge = await buildEdgeDashboard();
         const stats = {
             total: history.length,
             won: history.filter((h: any) => h.status === 'WON').length,
             lost: history.filter((h: any) => h.status === 'LOST').length,
             inProgress: history.filter((h: any) => h.status === 'IN_PROGRESS').length,
-            avgWin: 0, avgLoss: 0, winRate: 0
+            avgWin: 0, avgLoss: 0, winRate: 0,
+            expectancy: edge.totals.expectancy,
+            profitFactor: edge.totals.profitFactor,
+            maxDrawdown: edge.totals.maxDrawdown,
+            falseAlertRate: edge.totals.falseAlertRate,
         };
         const resolvedCount = stats.won + stats.lost;
         if (resolvedCount > 0) stats.winRate = (stats.won / resolvedCount) * 100;
@@ -544,9 +577,19 @@ app.get('/api/performance', async (req: Request, res: Response) => {
         if (wonTrades.length) stats.avgWin = wonTrades.reduce((sum: number, t: any) => sum + (t.resultPct || 0), 0) / wonTrades.length;
         const lostTrades = history.filter((h: any) => h.status === 'LOST' && h.resultPct);
         if (lostTrades.length) stats.avgLoss = lostTrades.reduce((sum: number, t: any) => sum + (t.resultPct || 0), 0) / lostTrades.length;
-        res.json({ success: true, data: { stats, history } });
+        res.json({ success: true, data: { stats, history, analytics: edge } });
     } catch (err: any) {
         console.error('[Performance] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.get('/api/founder/edge-dashboard', requireAuth, async (_req: AuthRequest, res: Response) => {
+    try {
+        const edge = await buildEdgeDashboard();
+        res.json({ success: true, data: edge });
+    } catch (err: any) {
+        console.error('[FounderDashboard] Error:', err.message);
         res.status(500).json({ success: false, message: sanitizeError(err) });
     }
 });
@@ -700,8 +743,107 @@ app.get('/api/market-outlook', async (req: Request, res: Response) => {
     }
 });
 
-// POST /api/chat — Intelligence 5.0 Core
+app.post('/api/news/impact', chatLimiter, requireAuth, requireSubscription, validateBody(newsImpactSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const {
+            headline,
+            articleText,
+            targetTicker,
+            targetSector,
+            currentMarketContext,
+            technicalContext,
+        } = req.body || {};
+
+        let resolvedTechnicalContext = technicalContext ?? null;
+        let resolvedSector = targetSector;
+
+        if (!resolvedTechnicalContext && targetTicker) {
+            const report = await fetchStockReport(targetTicker.toUpperCase());
+            const setup = lastSwingScan?.setups?.find(item => item.ticker === targetTicker.toUpperCase()) ?? null;
+            if (report) {
+                resolvedTechnicalContext =
+                    await buildMarketGroundingFromReport(
+                        report,
+                        setup,
+                        lastSwingScan?.marketStatus,
+                        lastSwingScan?.sectorBreadth?.[report.sector],
+                    ) ?? buildTechnicalContextFromStock(report, setup);
+                resolvedSector = resolvedSector || report.sector;
+            }
+        }
+
+        const analysis = analyzeNewsImpact({
+            headline,
+            articleText,
+            targetTicker: targetTicker?.toUpperCase(),
+            targetSector: resolvedSector,
+            currentMarketContext,
+            technicalContext: resolvedTechnicalContext,
+        });
+
+        res.json({ success: true, data: analysis });
+    } catch (err: any) {
+        console.error('[NewsImpact] Error:', err.message);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.get('/api/news/feed', requireAuth, requireSubscription, async (req: AuthRequest, res: Response) => {
+    try {
+        const ticker = typeof req.query.ticker === 'string' ? req.query.ticker.toUpperCase() : undefined;
+        const sector = typeof req.query.sector === 'string' ? req.query.sector : undefined;
+        const regulator = typeof req.query.regulator === 'string' ? req.query.regulator : undefined;
+        const refresh = req.query.refresh === 'true';
+        const limit = Number(req.query.limit) || 25;
+        const items = await getNewsFeed({ ticker, sector, regulator, refresh, limit }, lastSwingScan);
+        const status = await getStoredNewsStatus();
+        res.json({ success: true, data: { items, status } });
+    } catch (err: any) {
+        console.error('[NewsFeed] Error:', err.message);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.get('/api/news/digest/:ticker', requireAuth, requireSubscription, async (req: AuthRequest, res: Response) => {
+    try {
+        const ticker = req.params.ticker.toUpperCase();
+        const refresh = req.query.refresh !== 'false';
+        const digest = await getTickerNewsDigest(ticker, lastSwingScan, refresh);
+        res.json({ success: true, data: digest });
+    } catch (err: any) {
+        console.error('[NewsDigest] Error:', err.message);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.post('/api/news/sync', chatLimiter, requireAuth, requireSubscription, async (_req: AuthRequest, res: Response) => {
+    try {
+        const result = await syncNewsIntelligence(lastSwingScan);
+        res.json({ success: true, data: result });
+    } catch (err: any) {
+        console.error('[NewsSync] Error:', err.message);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
 app.post('/api/chat', chatLimiter, requireAuth, requireSubscription, validateBody(chatSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const { message } = req.body || {};
+        const response = await buildGroundedChatResponse({
+            message,
+            userId: req.userId!,
+            lastSwingScan,
+        });
+        res.json({ success: true, ...response });
+    } catch (err: any) {
+        console.error('[Chat] Grounded chat error:', err.message);
+        if (res.headersSent) return;
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// POST /api/chat — Intelligence 5.0 Core
+app.post('/api/chat-legacy', chatLimiter, requireAuth, requireSubscription, validateBody(chatSchema), async (req: AuthRequest, res: Response) => {
     const { message } = req.body || {};
     const upperMsg = message.toUpperCase();
     let detectedTicker = '';
@@ -831,8 +973,13 @@ app.get('/api/last', (req: Request, res: Response) => {
 cron.schedule('45 8 * * 1-5', async () => {
     try {
         const { qualified, marketStatus } = await runScanner(tradingApi);
-        const setups = await buildTradeSetups(qualified);
-        lastSwingScan = { timestamp: new Date().toISOString(), marketStatus, setups };
+        const setups = await buildTradeSetups(qualified, marketStatus);
+        lastSwingScan = {
+            timestamp: new Date().toISOString(),
+            marketStatus,
+            setups,
+            sectorBreadth: buildSectorBreadthMap(qualified, setups),
+        };
         await notifyUsersWithMorningDigest(setups.filter(s => s.confidenceScore >= 7), marketStatus.regime || 'NEUTRAL');
     } catch { }
 }, { timezone: 'Asia/Kolkata' });
@@ -840,9 +987,20 @@ cron.schedule('45 8 * * 1-5', async () => {
 cron.schedule('45 15 * * 1-5', async () => {
     try {
         const { qualified, marketStatus } = await runScanner(tradingApi);
-        const setups = await buildTradeSetups(qualified);
-        lastSwingScan = { timestamp: new Date().toISOString(), marketStatus, setups };
+        const setups = await buildTradeSetups(qualified, marketStatus);
+        lastSwingScan = {
+            timestamp: new Date().toISOString(),
+            marketStatus,
+            setups,
+            sectorBreadth: buildSectorBreadthMap(qualified, setups),
+        };
         await notifyUsersWithPostMarketSummary(setups, marketStatus.regime || 'NEUTRAL');
+    } catch { }
+}, { timezone: 'Asia/Kolkata' });
+
+cron.schedule('*/30 8-18 * * 1-5', async () => {
+    try {
+        await syncNewsIntelligence(lastSwingScan);
     } catch { }
 }, { timezone: 'Asia/Kolkata' });
 
@@ -874,6 +1032,16 @@ app.get('/api/portfolio/summary', requireAuth, async (req: AuthRequest, res: Res
     res.json({ success: true, data: summary });
 });
 
+app.get('/api/portfolio/news-risk', requireAuth, async (req: AuthRequest, res: Response) => {
+    const summary = await getPortfolioNewsRisk(req.userId!, lastSwingScan);
+    res.json({ success: true, data: summary });
+});
+
+app.get('/api/portfolio/intelligence', requireAuth, async (req: AuthRequest, res: Response) => {
+    const summary = await getPortfolioIntelligence(req.userId!, lastSwingScan);
+    res.json({ success: true, data: summary });
+});
+
 app.post('/api/portfolio/trade', requireAuth, async (req: AuthRequest, res: Response) => {
     const trade = await createTrade(req.userId!, req.body);
     res.json({ success: true, data: trade });
@@ -898,4 +1066,5 @@ app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
     console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
     console.log(`[System] Mode: ${process.env.NODE_ENV || 'development'}`);
     void verifyDatabaseConnection();
+    void backfillTrackedSignalsFromDb().catch(() => { });
 });

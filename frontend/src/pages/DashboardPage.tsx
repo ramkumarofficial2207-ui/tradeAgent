@@ -86,6 +86,12 @@ interface TradeSetup {
     catalyst: string
     aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT'
     aiLogic?: string
+    calibratedEdgeScore?: number
+    positionSizePct?: number
+    riskFlags?: string[]
+    rejectionReasons?: string[]
+    confidenceDrivers?: string[]
+    alertStage?: 'SETUP_DETECTED' | 'TRIGGER_ARMED' | 'TRADE_READY' | 'THESIS_INVALIDATED'
 }
 
 
@@ -363,7 +369,7 @@ export default function DashboardPage() {
     const [sectors, setSectors] = useState<{ n: string; v: number }[]>(FALLBACK_SECTORS)
     const [sectorTime, setSectorTime] = useState<string | null>(null)
     const [showTracker, setShowTracker] = useState(false)
-    const [perfData, setPerfData] = useState<{ stats: any, history: any[] } | null>(null)
+    const [perfData, setPerfData] = useState<{ stats: any, history: any[], analytics?: any } | null>(null)
     const navigate = useNavigate()
     const pulseRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const { status } = useAgentSSE()
@@ -626,7 +632,11 @@ export default function DashboardPage() {
                                     { label: 'Avg Profit', val: `+${perfData?.stats?.avgWin?.toFixed(2) || '0'}%`, color: '#60a5fa', icon: <TrendingUp size={16} /> },
                                     { label: 'Avg Loss', val: `${perfData?.stats?.avgLoss?.toFixed(2) || '0'}%`, color: '#f87171', icon: <BarChart3 size={16} /> },
                                     { label: 'Win/Loss', val: `${perfData?.stats?.won || 0} / ${perfData?.stats?.lost || 0}`, color: 'var(--text-primary)', icon: <Target size={16} /> },
-                                    { label: 'In Progress', val: `${perfData?.stats?.inProgress || 0}`, color: '#fbbf24', icon: <Activity size={16} /> }
+                                    { label: 'In Progress', val: `${perfData?.stats?.inProgress || 0}`, color: '#fbbf24', icon: <Activity size={16} /> },
+                                    { label: 'Expectancy', val: `${perfData?.stats?.expectancy?.toFixed(2) || '0'}%`, color: '#93c5fd', icon: <Zap size={16} /> },
+                                    { label: 'Profit Factor', val: `${perfData?.stats?.profitFactor?.toFixed(2) || '0'}`, color: '#c4b5fd', icon: <ShieldCheck size={16} /> },
+                                    { label: 'Max Drawdown', val: `${perfData?.stats?.maxDrawdown?.toFixed(2) || '0'}%`, color: '#f87171', icon: <BarChart3 size={16} /> },
+                                    { label: 'False Alerts', val: `${perfData?.stats?.falseAlertRate?.toFixed(1) || '0'}%`, color: '#fbbf24', icon: <Clock size={16} /> }
                                 ].map((s, i) => (
                                     <div key={i} className="card" style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: 12 }}>
                                         <div style={{ color: s.color }}>{s.icon}</div>
@@ -640,6 +650,43 @@ export default function DashboardPage() {
 
                             {/* Equity Compounding Chart */}
                             <EquityCurveChart history={perfData?.history || []} />
+
+                            {perfData?.analytics && (
+                                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16, marginBottom: 20 }}>
+                                    <div className="card" style={{ padding: '18px' }}>
+                                        <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.92rem', fontWeight: 900, marginBottom: 12 }}>Strongest Buckets</div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                            {(perfData.analytics.strongestBuckets || []).slice(0, 5).map((bucket: any) => (
+                                                <div key={bucket.bucket} style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.12)' }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                                                        <div style={{ fontWeight: 800, fontSize: '0.8rem' }}>{bucket.bucket}</div>
+                                                        <span className="badge badge-buy" style={{ fontSize: '0.54rem' }}>{bucket.expectancy.toFixed(2)}%</span>
+                                                    </div>
+                                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                                                        {bucket.samples} samples · WR {bucket.winRate}% · Avg win {bucket.avgWin}% · Avg loss {bucket.avgLoss}%
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="card" style={{ padding: '18px' }}>
+                                        <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.92rem', fontWeight: 900, marginBottom: 12 }}>Weakest Buckets</div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                            {(perfData.analytics.weakestBuckets || []).slice(0, 5).map((bucket: any) => (
+                                                <div key={bucket.bucket} style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.12)' }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                                                        <div style={{ fontWeight: 800, fontSize: '0.8rem' }}>{bucket.bucket}</div>
+                                                        <span className="badge badge-avoid" style={{ fontSize: '0.54rem' }}>{bucket.expectancy.toFixed(2)}%</span>
+                                                    </div>
+                                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                                                        {bucket.samples} samples · WR {bucket.winRate}% · Avg win {bucket.avgWin}% · Avg loss {bucket.avgLoss}%
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* History Grid */}
                             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>

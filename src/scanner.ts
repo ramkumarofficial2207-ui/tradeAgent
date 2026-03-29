@@ -11,7 +11,11 @@ import { validateEarningsRisk } from './earningsValidator';
 import { analyzeStocksWithAI } from './aiAdvisor';
 import { getOptionsFlow } from './optionsService';
 import { getInstitutionalFlowSignal } from './institutionalFlowService';
-import { MarketDataApi, MarketStatus, StockIndicators, TradeSetup } from './types';
+import { getTickerNewsDigest } from './newsIntel/service';
+import { NewsEvent } from './newsIntel/types';
+import { buildMarketGroundingFromIndicator, buildSectorBreadthMap } from './newsIntel/marketGrounding';
+import { applyRiskGovernor } from './riskGovernor';
+import { Candle, MarketDataApi, MarketStatus, ScanResult, StockIndicators, TradeSetup } from './types';
 
 // ── Universe liquidity gates ─────────────────────────────────────
 const MIN_MARKET_CAP_CR = 250;       // Lowered to ₹250 Cr to include all small/midcaps
@@ -154,6 +158,160 @@ function calcATR(candles: { high: number; low: number; close: number }[], period
     return last14.reduce((s, v) => s + v, 0) / last14.length;
 }
 
+function calcVWAP(candles: { high: number; low: number; close: number; volume: number }[]): number {
+    let pv = 0;
+    let vol = 0;
+    for (const candle of candles) {
+        const typical = (candle.high + candle.low + candle.close) / 3;
+        pv += typical * candle.volume;
+        vol += candle.volume;
+    }
+    return vol > 0 ? pv / vol : 0;
+}
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+}
+
+function aggregateCandles(candles: Candle[], groupSize: number): Candle[] {
+    const aggregated: Candle[] = [];
+    for (let index = 0; index < candles.length; index += groupSize) {
+        const chunk = candles.slice(index, index + groupSize);
+        if (chunk.length < groupSize) continue;
+        aggregated.push({
+            date: chunk[chunk.length - 1].date,
+            open: chunk[0].open,
+            high: Math.max(...chunk.map(candle => candle.high)),
+            low: Math.min(...chunk.map(candle => candle.low)),
+            close: chunk[chunk.length - 1].close,
+            volume: chunk.reduce((sum, candle) => sum + candle.volume, 0),
+        });
+    }
+    return aggregated;
+}
+
+function calcEMA(values: number[], period: number): number {
+    if (!values.length) return 0;
+    const smoothing = 2 / (period + 1);
+    let ema = values[0];
+    for (let index = 1; index < values.length; index++) {
+        ema = (values[index] * smoothing) + (ema * (1 - smoothing));
+    }
+    return ema;
+}
+
+function calcGapPct(open: number, previousClose: number): number {
+    if (!previousClose || !Number.isFinite(previousClose)) return 0;
+    return +(((open - previousClose) / previousClose) * 100).toFixed(2);
+}
+
+function estimateSlippagePct(
+    marketCapCr: number | undefined,
+    volumeRatio: number,
+    timeframe: 'Intraday' | 'Swing'
+): number {
+    let slippage = timeframe === 'Intraday' ? 0.12 : 0.18;
+    if ((marketCapCr ?? 0) < 5_000) slippage += 0.08;
+    if ((marketCapCr ?? 0) < 1_500) slippage += 0.09;
+    if (volumeRatio < 1.15) slippage += 0.07;
+    if (volumeRatio > 1.9) slippage -= 0.03;
+    return +clamp(slippage, 0.05, 0.5).toFixed(2);
+}
+
+function calcEffectiveRiskReward(entryPrice: number, stopLoss: number, targetPrice: number, slippagePct: number): number {
+    const slipFactor = slippagePct / 100;
+    const effectiveEntry = entryPrice * (1 + slipFactor);
+    const effectiveTarget = targetPrice * (1 - slipFactor);
+    const effectiveRisk = effectiveEntry - stopLoss;
+    const effectiveReward = effectiveTarget - effectiveEntry;
+    if (effectiveRisk <= 0 || effectiveReward <= 0) return 0;
+    return +clamp(effectiveReward / effectiveRisk, 0, 10).toFixed(2);
+}
+
+function scoreBreakoutQuality(params: {
+    breakoutPct: number;
+    volumeRatio: number;
+    alignedTrend: boolean;
+    aboveReference: boolean;
+    trendStrength: number;
+}): number {
+    const { breakoutPct, volumeRatio, alignedTrend, aboveReference, trendStrength } = params;
+    let score = 4.2;
+    if (breakoutPct >= 0.15 && breakoutPct <= 1.2) score += 2.1;
+    else if (breakoutPct > 1.2 && breakoutPct <= 2.2) score += 1.1;
+    else if (breakoutPct < -0.15) score -= 1.4;
+    if (volumeRatio >= 1.8) score += 1.8;
+    else if (volumeRatio >= 1.25) score += 1.1;
+    if (alignedTrend) score += 1.2;
+    if (aboveReference) score += 0.9;
+    if (trendStrength >= 28) score += 0.9;
+    else if (trendStrength < 16) score -= 0.6;
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
+function scorePullbackQuality(params: {
+    distanceToReferencePct: number;
+    holdsReference: boolean;
+    bounceStrengthPct: number;
+    volumeRatio: number;
+    shallowRetracePct: number;
+}): number {
+    const { distanceToReferencePct, holdsReference, bounceStrengthPct, volumeRatio, shallowRetracePct } = params;
+    let score = 4.4;
+    if (distanceToReferencePct <= 1.2) score += 2;
+    else if (distanceToReferencePct <= 2.5) score += 1.1;
+    else score -= 0.8;
+    if (holdsReference) score += 1.2;
+    if (bounceStrengthPct >= 0.45) score += 0.9;
+    if (volumeRatio >= 1.1 && volumeRatio <= 2.2) score += 0.6;
+    if (shallowRetracePct <= 3.2) score += 0.8;
+    else if (shallowRetracePct > 6.5) score -= 1.1;
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
+function scoreGapQuality(gapPct: number, trendRecovered: boolean): number {
+    let score = 5;
+    const absGap = Math.abs(gapPct);
+    if (absGap <= 0.8) score += 1.8;
+    else if (absGap <= 1.8) score += 0.7;
+    else if (absGap > 3.2) score -= 1.6;
+    if (gapPct < -0.6 && !trendRecovered) score -= 1.4;
+    if (gapPct > 2.2) score -= 0.9;
+    if (trendRecovered) score += 0.8;
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
+function scoreIntradayStructure(params: {
+    close: number;
+    fastEma: number;
+    slowEma: number;
+    higherLow: boolean;
+    volumeRatio: number;
+    aboveReference: boolean;
+}): number {
+    const { close, fastEma, slowEma, higherLow, volumeRatio, aboveReference } = params;
+    let score = 4.2;
+    if (close >= fastEma && fastEma >= slowEma * 0.998) score += 2.2;
+    else if (close >= slowEma) score += 1;
+    else score -= 1.2;
+    if (higherLow) score += 1.3;
+    if (aboveReference) score += 1.1;
+    if (volumeRatio >= 1.15) score += 0.7;
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
+function scoreEventDurability(events: NewsEvent[]): number {
+    if (!events.length) return 5;
+    let score = 5;
+    for (const event of events.slice(0, 4)) {
+        const direction = event.polarity === 'POSITIVE' ? 1 : event.polarity === 'NEGATIVE' ? -1 : 0;
+        const durabilityWeight = event.durability === 'LONG_TERM' ? 1.25 : event.durability === 'SHORT_TERM' ? 0.8 : 0.35;
+        const magnitudeWeight = event.magnitude === 'HIGH' ? 1.15 : event.magnitude === 'MEDIUM' ? 0.7 : 0.35;
+        score += direction * durabilityWeight * magnitudeWeight * clamp(event.confidence, 0.2, 1) * 2.2;
+    }
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
 // ──────────────────────────────────────────────────────────────────
 // FETCH UNIVERSE
 // ──────────────────────────────────────────────────────────────────
@@ -258,6 +416,69 @@ async function enrichTradeSetupsWithAI(setups: TradeSetup[], qualified: StockInd
     }
 }
 
+async function enrichSetupsWithGroundedNews(
+    setups: TradeSetup[],
+    qualified: StockIndicators[],
+    marketStatus: MarketStatus,
+    refreshNews: boolean
+): Promise<Record<string, ReturnType<typeof buildSectorBreadthMap>[string]>> {
+    if (!setups.length) return {};
+
+    const sectorBreadth = buildSectorBreadthMap(qualified, setups);
+    const scanContext: ScanResult = {
+        timestamp: new Date().toISOString(),
+        marketStatus,
+        setups,
+        sectorBreadth,
+    };
+
+    await Promise.allSettled(setups.map(async (setup) => {
+        const indicator = qualified.find(item => item.ticker === setup.ticker);
+        const grounding = indicator
+            ? buildMarketGroundingFromIndicator(indicator, setup, marketStatus, sectorBreadth[setup.sector || 'Diversified'] ?? null)
+            : setup.marketGrounding ?? undefined;
+        const digest = await getTickerNewsDigest(setup.ticker, scanContext, refreshNews);
+
+        setup.marketGrounding = (digest.marketGrounding ?? grounding) || undefined;
+        setup.newsDistribution = digest.distribution || undefined;
+        setup.newsRisk = setup.newsRisk || !!digest.distribution?.newsRiskFlag;
+        const eventDurability = scoreEventDurability(digest.events);
+        setup.executionQuality = {
+            ...(setup.executionQuality ?? {}),
+            eventDurability,
+        };
+        const durabilityDelta = eventDurability >= 6.5
+            ? Math.min(0.7, (eventDurability - 6.5) * 0.3)
+            : eventDurability <= 4
+                ? -Math.min(0.8, (4 - eventDurability) * 0.35)
+                : 0;
+        setup.confidenceScore = +clamp(setup.confidenceScore + durabilityDelta, 0, 10).toFixed(1);
+        setup.confidenceDrivers = [
+            ...(setup.confidenceDrivers ?? []),
+            `Event durability ${eventDurability}/10`,
+        ];
+        if (eventDurability <= 3.8) {
+            setup.rejectionReasons = [
+                ...(setup.rejectionReasons ?? []),
+                'Durable negative event pressure',
+            ];
+        }
+
+        const eventLabel = digest.distribution?.eventTypes?.length
+            ? `Events: ${digest.distribution.eventTypes.slice(0, 3).join(', ')}`
+            : '';
+        const alignment = digest.distribution?.signalAlignment
+            ? `Alignment: ${digest.distribution.signalAlignment}`
+            : '';
+        const headline = digest.distribution?.latestHeadline ? `Headline: ${digest.distribution.latestHeadline}` : '';
+        const summaryParts = [setup.newsSummary, headline, eventLabel, alignment].filter(Boolean);
+        setup.newsSummary = summaryParts.join(' | ');
+        setup.headlines = digest.items.slice(0, 5).map(item => item.title);
+    }));
+
+    return sectorBreadth;
+}
+
 // ──────────────────────────────────────────────────────────────────
 // MAIN SCANNER — all gates enforced
 // ──────────────────────────────────────────────────────────────────
@@ -357,7 +578,10 @@ export async function runScanner(
 // ──────────────────────────────────────────────────────────────────
 // BUILD TRADE SETUPS — from qualified stocks
 // ──────────────────────────────────────────────────────────────────
-export async function buildTradeSetups(qualified: StockIndicators[]): Promise<TradeSetup[]> {
+export async function buildTradeSetups(
+    qualified: StockIndicators[],
+    marketStatus?: MarketStatus | null
+): Promise<TradeSetup[]> {
     const setups: TradeSetup[] = [];
 
     for (let index = 0; index < qualified.length; index++) {
@@ -374,6 +598,8 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
         // ── Phase 1: Structural Stop Loss ─────────────────────────
         const atr14 = calcATR(ind.candles.slice(-30));
         const entryPrice = +(lastCandle.high * 1.001).toFixed(2);
+        const previousClose = ind.candles[ind.candles.length - 2]?.close ?? lastCandle.close;
+        const gapPct = calcGapPct(lastCandle.open, previousClose);
 
         let stopLoss = 0;
         if (ind.isDeepValue) {
@@ -409,7 +635,10 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
 
         const target2 = +(targetPrice + 1.5 * atr14).toFixed(2); // T2
         const targetPct = +(((targetPrice - entryPrice) / entryPrice) * 100).toFixed(2);
-        const riskReward = +(((targetPrice - entryPrice) / (entryPrice - stopLoss))).toFixed(2);
+        const rawRiskReward = +(((targetPrice - entryPrice) / (entryPrice - stopLoss))).toFixed(2);
+        const slippagePct = estimateSlippagePct(marketCapCr, ind.volumeRatio, 'Swing');
+        const effectiveRiskReward = calcEffectiveRiskReward(entryPrice, stopLoss, targetPrice, slippagePct);
+        const riskReward = effectiveRiskReward;
 
         // ── GATE: Minimum RR ≥ 2:1 ───────────────────────────────
         if (riskReward < MIN_RR) continue;
@@ -426,9 +655,35 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
 
         // ── 5-Component Confidence Score ──────────────────────────
         const breakdown = computeConfidence(ind, riskReward);
+        const recentSwingHigh = Math.max(...ind.candles.slice(-21, -1).map(candle => candle.high));
+        const recentSwingLow = Math.min(...ind.candles.slice(-10).map(candle => candle.low));
+        const breakoutQuality = scoreBreakoutQuality({
+            breakoutPct: ((lastCandle.close - recentSwingHigh) / Math.max(recentSwingHigh, 1)) * 100,
+            volumeRatio: ind.volumeRatio,
+            alignedTrend: ind.ema20 >= ind.ema50 * 0.99,
+            aboveReference: lastCandle.close >= recentSwingHigh * 0.997,
+            trendStrength: ind.adx14,
+        });
+        const pullbackQuality = scorePullbackQuality({
+            distanceToReferencePct: Math.min(
+                Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) * 100,
+                Math.abs(ind.ltp - ind.ema50) / Math.max(ind.ema50, 1) * 100,
+            ),
+            holdsReference: lastCandle.close >= ind.ema20 * 0.995,
+            bounceStrengthPct: ((lastCandle.close - lastCandle.low) / Math.max(lastCandle.low, 1)) * 100,
+            volumeRatio: ind.volumeRatio,
+            shallowRetracePct: ((Math.max(...ind.candles.slice(-10).map(candle => candle.high)) - recentSwingLow) / Math.max(ind.ltp, 1)) * 100,
+        });
+        const gapQuality = scoreGapQuality(gapPct, lastCandle.close >= ind.ema20 && ind.ema20 >= ind.ema50 * 0.99);
+        const primaryExecutionQuality = setupType.includes('Pullback') || ind.isDeepValue
+            ? pullbackQuality
+            : breakoutQuality;
+        if (primaryExecutionQuality < 4.8 || gapQuality < 3.8) continue;
+        const executionAdjustment = ((primaryExecutionQuality - 5) * 0.2) + ((gapQuality - 5) * 0.08) + ((effectiveRiskReward - 1.5) * 0.35);
+        const executionAdjustedConfidence = +clamp(breakdown.total + executionAdjustment, 0, 10).toFixed(1);
 
         // ── GATE: Score ≥ MIN_CONFIDENCE — THE KEY FILTER ───────────────────
-        if (breakdown.total < MIN_CONFIDENCE) continue;
+        if (executionAdjustedConfidence < MIN_CONFIDENCE) continue;
 
         // ── In NEUTRAL regime: raise bar to 8.0 ──────────────────
         // (half size AND higher quality threshold)
@@ -503,7 +758,7 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
             slPct,
             riskReward,
             catalyst,
-            confidenceScore: breakdown.total,
+            confidenceScore: executionAdjustedConfidence,
             confidenceBreakdown: {
                 scoreTrend: breakdown.scoreTrend,
                 scoreVolume: breakdown.scoreVolume,
@@ -524,6 +779,22 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
             totalOI: ind.totalOI,
             oiChangePct: ind.oiChangePct,
             derivativeStatus: ind.derivativeStatus,
+            executionQuality: {
+                breakoutQuality,
+                pullbackQuality,
+                gapQuality,
+                effectiveRiskReward,
+                slippagePct,
+            },
+            rejectionReasons: [],
+            confidenceDrivers: [
+                `Relative strength ${(ind.returns3m - ind.nifty3mReturn).toFixed(1)}% vs Nifty`,
+                `Trend score ${breakdown.scoreTrend}/2`,
+                `Volume score ${breakdown.scoreVolume}/2`,
+                `Exec quality B${breakoutQuality}/P${pullbackQuality}/G${gapQuality}`,
+                `Slippage-adjusted RR ${effectiveRiskReward}:1 (raw ${rawRiskReward}:1)`,
+            ],
+            alertStage: 'SETUP_DETECTED',
         });
     }
 
@@ -608,6 +879,11 @@ export async function buildTradeSetups(qualified: StockIndicators[]): Promise<Tr
     // Sort by EV (Descending)
     setupsWithEV.sort((a, b) => (b as any).expectedValue - (a as any).expectedValue);
 
+    if (marketStatus) {
+        await enrichSetupsWithGroundedNews(setupsWithEV, qualified, marketStatus, false);
+        await applyRiskGovernor(setupsWithEV, marketStatus);
+    }
+
     return setupsWithEV;
 }
 
@@ -672,9 +948,56 @@ export async function runIntradayScanner(
         const lastCandle = ind.candles[ind.candles.length - 1];
         const atr14 = calcATR(ind.candles.slice(-25));
         if (!Number.isFinite(atr14) || atr14 <= 0) continue;
+        const sessionCandles = ind.candles.slice(-24);
+        const openingRange = sessionCandles.slice(0, 6);
+        const openingRangeHigh = Math.max(...openingRange.map(c => c.high));
+        const openingRangeLow = Math.min(...openingRange.map(c => c.low));
+        const intradayVwap = calcVWAP(sessionCandles);
+        const fifteenMinuteCandles = aggregateCandles(ind.candles, 3);
+        if (fifteenMinuteCandles.length < 12) continue;
+        const last15Candle = fifteenMinuteCandles[fifteenMinuteCandles.length - 1];
+        const last15Volumes = fifteenMinuteCandles.slice(-6).map(candle => candle.volume);
+        const avg15Volume = last15Volumes.slice(0, -1).reduce((sum, volume) => sum + volume, 0) / Math.max(last15Volumes.length - 1, 1);
+        const ema8On15 = calcEMA(fifteenMinuteCandles.map(candle => candle.close), 8);
+        const ema21On15 = calcEMA(fifteenMinuteCandles.map(candle => candle.close), 21);
+        const higherLow15 = fifteenMinuteCandles.length >= 4
+            ? last15Candle.low >= Math.min(...fifteenMinuteCandles.slice(-4, -1).map(candle => candle.low)) * 0.997
+            : false;
+        const breakoutActive = lastCandle.close >= openingRangeHigh * 0.998;
+        const aboveVwap = lastCandle.close >= intradayVwap;
+        const firstPullbackHeld = sessionCandles.length >= 10
+            ? Math.min(...sessionCandles.slice(-5).map(c => c.low)) > intradayVwap * 0.995
+            : false;
+        const structure5m = scoreIntradayStructure({
+            close: lastCandle.close,
+            fastEma: ind.ema20,
+            slowEma: ind.ema50,
+            higherLow: sessionCandles.length >= 4
+                ? lastCandle.low >= Math.min(...sessionCandles.slice(-4, -1).map(candle => candle.low)) * 0.998
+                : false,
+            volumeRatio: ind.volumeRatio,
+            aboveReference: aboveVwap,
+        });
+        const structure15m = scoreIntradayStructure({
+            close: last15Candle.close,
+            fastEma: ema8On15,
+            slowEma: ema21On15,
+            higherLow: higherLow15,
+            volumeRatio: avg15Volume > 0 ? last15Candle.volume / avg15Volume : 1,
+            aboveReference: last15Candle.close >= ema8On15,
+        });
+        const rejectionReasons: string[] = [];
+        if (!aboveVwap) rejectionReasons.push('Below intraday VWAP');
+        if (!breakoutActive && !firstPullbackHeld) rejectionReasons.push('No clean opening-range breakout or first-pullback hold');
+        if (lastCandle.close < openingRangeLow) rejectionReasons.push('Trading below opening-range low');
+        if (structure5m < 5.1) rejectionReasons.push('Weak 5m structure');
+        if (structure15m < 5.3) rejectionReasons.push('Weak 15m structure');
+        if (rejectionReasons.length) continue;
 
         const recentLows = ind.candles.slice(-8).map(c => c.low);
         const entryPrice = +(Math.max(lastCandle.high, ind.ltp) * 1.0008).toFixed(2);
+        const previousSessionClose = ind.candles[ind.candles.length - 25]?.close ?? ind.candles[ind.candles.length - 2]?.close ?? lastCandle.close;
+        const gapPct = calcGapPct(openingRange[0]?.open ?? lastCandle.open, previousSessionClose);
         let stopLoss = Math.min(Math.min(...recentLows) * 0.999, ind.ema20 * 0.997);
         if (stopLoss >= entryPrice) stopLoss = entryPrice - atr14;
         stopLoss = +stopLoss.toFixed(2);
@@ -685,7 +1008,10 @@ export async function runIntradayScanner(
         const target2 = +(targetPrice + atr14).toFixed(2);
         const targetPct = +(((targetPrice - entryPrice) / entryPrice) * 100).toFixed(2);
         const slPct = +(((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2);
-        const riskReward = +(((targetPrice - entryPrice) / riskPerShare)).toFixed(2);
+        const slippagePct = estimateSlippagePct(MARKET_CAP_CR_MAP[ind.ticker], ind.volumeRatio, 'Intraday');
+        const rawRiskReward = +(((targetPrice - entryPrice) / riskPerShare)).toFixed(2);
+        const effectiveRiskReward = calcEffectiveRiskReward(entryPrice, stopLoss, targetPrice, slippagePct);
+        const riskReward = effectiveRiskReward;
 
         if (riskReward < 1.5) continue;
         if (targetPct < 0.6 || targetPct > 3.5) continue;
@@ -696,6 +1022,23 @@ export async function runIntradayScanner(
             : ind.volumeRatio >= 1.6
                 ? 'Momentum Continuation'
                 : 'Breakout Base';
+        const breakoutQuality = scoreBreakoutQuality({
+            breakoutPct: ((lastCandle.close - openingRangeHigh) / Math.max(openingRangeHigh, 1)) * 100,
+            volumeRatio: ind.volumeRatio,
+            alignedTrend: ind.ema20 >= ind.ema50 * 0.998,
+            aboveReference: aboveVwap,
+            trendStrength: ind.adx14,
+        });
+        const pullbackQuality = scorePullbackQuality({
+            distanceToReferencePct: Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) * 100,
+            holdsReference: firstPullbackHeld || lastCandle.close >= ind.ema20 * 0.998,
+            bounceStrengthPct: ((lastCandle.close - lastCandle.low) / Math.max(lastCandle.low, 1)) * 100,
+            volumeRatio: ind.volumeRatio,
+            shallowRetracePct: ((openingRangeHigh - Math.min(...sessionCandles.slice(-6).map(candle => candle.low))) / Math.max(ind.ltp, 1)) * 100,
+        });
+        const gapQuality = scoreGapQuality(gapPct, aboveVwap && structure15m >= 5.5);
+        const primaryQuality = nearEma20 ? pullbackQuality : breakoutQuality;
+        if (primaryQuality < 5 || gapQuality < 3.8) continue;
 
         const confidenceScore = +Math.min(
             10,
@@ -703,7 +1046,14 @@ export async function runIntradayScanner(
             Math.min(1.8, Math.max(0, ind.volumeRatio - 1) * 1.8) +
             Math.min(1.4, Math.max(0, (ind.adx14 - 18) / 12)) +
             (ind.rsi14 >= 56 && ind.rsi14 <= 68 ? 0.9 : 0.5) +
-            (nearEma20 ? 0.7 : 0.4)
+            (nearEma20 ? 0.7 : 0.4) +
+            (aboveVwap ? 0.35 : 0) +
+            (breakoutActive ? 0.45 : firstPullbackHeld ? 0.25 : 0) +
+            ((structure5m - 5) * 0.18) +
+            ((structure15m - 5) * 0.2) +
+            ((primaryQuality - 5) * 0.16) +
+            ((gapQuality - 5) * 0.08) +
+            ((effectiveRiskReward - 1.5) * 0.35)
         ).toFixed(1);
 
         setups.push({
@@ -729,6 +1079,9 @@ export async function runIntradayScanner(
                 `ADX ${ind.adx14.toFixed(1)}`,
                 `Vol ${ind.volumeRatio.toFixed(2)}x`,
                 `Accumulation ${Math.round(ind.accumulationScore ?? 0)}%`,
+                `VWAP ${intradayVwap.toFixed(2)} ${aboveVwap ? '(above)' : '(below)'}`,
+                `OR ${openingRangeHigh.toFixed(2)}/${openingRangeLow.toFixed(2)}`,
+                `15m EMA ${ema8On15.toFixed(2)}/${ema21On15.toFixed(2)}`,
             ].join(' · '),
             confidenceScore,
             confidenceBreakdown: {
@@ -750,6 +1103,23 @@ export async function runIntradayScanner(
             totalOI: ind.totalOI,
             oiChangePct: ind.oiChangePct,
             derivativeStatus: ind.derivativeStatus,
+            executionQuality: {
+                breakoutQuality,
+                pullbackQuality,
+                gapQuality,
+                effectiveRiskReward,
+                slippagePct,
+                structure5m,
+                structure15m,
+            },
+            rejectionReasons: [],
+            confidenceDrivers: [
+                `5m structure ${structure5m}/10`,
+                `15m structure ${structure15m}/10`,
+                `Exec quality B${breakoutQuality}/P${pullbackQuality}/G${gapQuality}`,
+                `Slippage-adjusted RR ${effectiveRiskReward}:1 (raw ${rawRiskReward}:1)`,
+            ],
+            alertStage: 'SETUP_DETECTED',
         });
     }
 
@@ -758,6 +1128,8 @@ export async function runIntradayScanner(
         .slice(0, 8);
 
     await enrichTradeSetupsWithAI(finalSetups, qualified);
+    await enrichSetupsWithGroundedNews(finalSetups, qualified, marketStatus, true);
+    await applyRiskGovernor(finalSetups, marketStatus);
 
     return { qualified, marketStatus, setups: finalSetups };
 }

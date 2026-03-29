@@ -45,12 +45,65 @@ interface TradeSetup {
     aiTargetRange?: string
     aiStopLoss?: string
     headlines?: string[]
+    marketGrounding?: {
+        price?: number | null
+        gapPct?: number | null
+        volumeRatio?: number | null
+        rsi14?: number | null
+        regime?: string | null
+        confirmationScore?: number | null
+        confirmationStatus?: 'CONFIRMED' | 'PARTIAL' | 'UNCONFIRMED' | 'UNAVAILABLE'
+        sectorBreadth?: {
+            sector: string
+            breadthScore: number
+            setupCount: number
+        } | null
+    }
+    newsDistribution?: {
+        newsTailwindScore: number
+        newsRiskFlag: boolean
+        regulatoryRiskFlag: boolean
+        signalAlignment: 'ALIGNED' | 'MIXED' | 'CONFLICT' | 'UNAVAILABLE'
+        alertEligible: boolean
+        eventTypes: string[]
+        latestHeadline?: string | null
+        lastUpdated?: string | null
+    }
+    executionQuality?: {
+        breakoutQuality?: number | null
+        pullbackQuality?: number | null
+        gapQuality?: number | null
+        effectiveRiskReward?: number | null
+        slippagePct?: number | null
+        structure5m?: number | null
+        structure15m?: number | null
+        eventDurability?: number | null
+    }
+    calibratedEdgeScore?: number
+    positionSizePct?: number
+    riskFlags?: string[]
+    rejectionReasons?: string[]
+    confidenceDrivers?: string[]
+    alertStage?: 'SETUP_DETECTED' | 'TRIGGER_ARMED' | 'TRADE_READY' | 'THESIS_INVALIDATED'
 }
 
 const fmt = (n: number) => '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2 })
 
 function confColor(s: number) { return s >= 7 ? '#34d399' : s >= 5 ? '#fbbf24' : '#f87171' }
 function glowRgb(sig?: string) { return sig === 'BUY' || sig === 'LIGHT BUY' ? '16,185,129' : sig === 'REJECT' ? '239,68,68' : '245,158,11' }
+function fmtPct(n?: number | null, digits = 1) { return n == null || Number.isNaN(n) ? 'N/A' : `${n >= 0 ? '+' : ''}${n.toFixed(digits)}%` }
+function confirmationTone(status?: string | null) {
+    if (status === 'CONFIRMED') return { cls: 'badge badge-buy', label: 'Confirmed' }
+    if (status === 'PARTIAL') return { cls: 'badge badge-watch', label: 'Partial Confirm' }
+    if (status === 'UNCONFIRMED') return { cls: 'badge badge-avoid', label: 'No Confirm' }
+    return { cls: 'badge badge-neutral', label: 'No Grounding' }
+}
+function alignmentTone(status?: string | null) {
+    if (status === 'ALIGNED') return { cls: 'badge badge-buy', label: 'News Aligned' }
+    if (status === 'CONFLICT') return { cls: 'badge badge-avoid', label: 'News Conflict' }
+    if (status === 'MIXED') return { cls: 'badge badge-watch', label: 'Mixed News' }
+    return { cls: 'badge badge-neutral', label: 'No News Align' }
+}
 
 // AI Satisfaction level based on confidence + signal
 function getSatisfaction(score: number, signal?: string): { label: string; emoji: string; color: string; stars: number } {
@@ -71,6 +124,9 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
     const rgb = glowRgb(s.aiSignal)
     const satisfaction = getSatisfaction(s.confidenceScore, s.aiSignal)
     const { isMobile, isPhone } = useViewport()
+    const confirmationBadge = confirmationTone(s.marketGrounding?.confirmationStatus)
+    const alignmentBadge = alignmentTone(s.newsDistribution?.signalAlignment)
+    const eventPreview = s.newsDistribution?.eventTypes?.slice(0, 2) || []
 
     const handleCopySetup = () => {
         const text = `${s.ticker} | ${s.setupType} | ${s.aiSignal}\nBuy: ${fmt(s.buyZone)} | Target: ${fmt(s.target)} (+${s.targetPct.toFixed(1)}%)\nSL: ${fmt(s.stopLoss)} (-${s.slPct.toFixed(1)}%) | RR: ${s.riskReward}:1\nConfidence: ${s.confidenceScore}/10 | ${satisfaction.label}`
@@ -139,6 +195,10 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                             <span className="badge badge-neutral" style={{ fontSize: '0.56rem' }}>{s.setupType}</span>
                             <span className="badge badge-neutral" style={{ fontSize: '0.56rem' }}>{s.sector}</span>
                             {s.momentumRank > 0 && s.momentumRank <= 10 && <span className="badge badge-buy" style={{ fontSize: '0.54rem' }}>#{s.momentumRank} Momentum</span>}
+                            {s.marketGrounding?.confirmationStatus && <span className={confirmationBadge.cls} style={{ fontSize: '0.54rem' }}>{confirmationBadge.label}</span>}
+                            {s.newsDistribution?.signalAlignment && <span className={alignmentBadge.cls} style={{ fontSize: '0.54rem' }}>{alignmentBadge.label}</span>}
+                            {s.newsDistribution?.regulatoryRiskFlag && <span className="badge badge-avoid" style={{ fontSize: '0.54rem' }}>Regulatory Risk</span>}
+                            {s.alertStage && <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{s.alertStage.replace(/_/g, ' ')}</span>}
                         </div>
                     </div>
                     <div style={{ textAlign: isPhone ? 'left' : 'right', flexShrink: 0, width: isPhone ? '100%' : 'auto' }}>
@@ -146,6 +206,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                         <div style={{ display: 'flex', gap: 4, justifyContent: isPhone ? 'flex-start' : 'flex-end' }}>
                             <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', fontWeight: 700, color: '#34d399' }}>+{s.targetPct.toFixed(1)}%</span>
                             <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>RR {s.riskReward}:1</span>
+                            {s.calibratedEdgeScore != null && <span style={{ fontSize: '0.6rem', color: '#93c5fd' }}>Edge {s.calibratedEdgeScore.toFixed(1)}</span>}
                         </div>
                     </div>
                 </div>
@@ -226,6 +287,105 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                     </div>
                 )}
 
+                {(s.marketGrounding || s.newsDistribution) && (
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: isPhone ? '1fr' : '1.2fr 1fr',
+                        gap: 8,
+                        marginBottom: 12,
+                    }}>
+                        <div style={{
+                            padding: '10px 12px',
+                            background: 'linear-gradient(135deg, rgba(59,130,246,0.07), rgba(37,99,235,0.03))',
+                            border: '1px solid rgba(59,130,246,0.16)',
+                            borderRadius: 12,
+                        }}>
+                            <div style={{ fontSize: '0.56rem', textTransform: 'uppercase', fontWeight: 800, color: '#93c5fd', marginBottom: 6 }}>Market Grounding</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 }}>
+                                <div>
+                                    <div style={{ fontSize: '0.52rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Gap</div>
+                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700 }}>{fmtPct(s.marketGrounding?.gapPct)}</div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '0.52rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Volume</div>
+                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700 }}>{s.marketGrounding?.volumeRatio?.toFixed(2) || 'N/A'}x</div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '0.52rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>RSI</div>
+                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700 }}>{s.marketGrounding?.rsi14?.toFixed(1) || 'N/A'}</div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '0.52rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Breadth</div>
+                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', fontWeight: 700 }}>
+                                        {s.marketGrounding?.sectorBreadth ? s.marketGrounding.sectorBreadth.breadthScore.toFixed(2) : 'N/A'}
+                                    </div>
+                                </div>
+                            </div>
+                            <div style={{ marginTop: 8, fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                                Regime {s.marketGrounding?.regime || 'N/A'} · Confirmation {s.marketGrounding?.confirmationScore?.toFixed(2) || 'N/A'} · Size {s.positionSizePct != null ? `${(s.positionSizePct * 100).toFixed(0)}%` : 'N/A'}
+                            </div>
+                        </div>
+                        <div style={{
+                            padding: '10px 12px',
+                            background: 'linear-gradient(135deg, rgba(16,185,129,0.07), rgba(16,185,129,0.02))',
+                            border: `1px solid ${s.newsDistribution?.newsRiskFlag ? 'rgba(239,68,68,0.18)' : 'rgba(16,185,129,0.16)'}`,
+                            borderRadius: 12,
+                        }}>
+                            <div style={{ fontSize: '0.56rem', textTransform: 'uppercase', fontWeight: 800, color: s.newsDistribution?.newsRiskFlag ? '#fca5a5' : '#86efac', marginBottom: 6 }}>News Context</div>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                                <span className={alignmentBadge.cls} style={{ fontSize: '0.52rem' }}>{alignmentBadge.label}</span>
+                                {s.newsDistribution && <span className="badge badge-neutral" style={{ fontSize: '0.52rem' }}>Tailwind {fmtPct(s.newsDistribution.newsTailwindScore * 100, 0)}</span>}
+                                {s.newsDistribution?.alertEligible && <span className="badge badge-buy" style={{ fontSize: '0.52rem' }}>Alert Ready</span>}
+                            </div>
+                            {eventPreview.length > 0 && (
+                                <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                    {eventPreview.join(' · ')}
+                                </div>
+                            )}
+                            {s.newsDistribution?.latestHeadline && (
+                                <div style={{ marginTop: 6, fontSize: '0.65rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                                    {s.newsDistribution.latestHeadline}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {s.executionQuality && (
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: isPhone ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
+                        gap: 8,
+                        marginBottom: 12,
+                    }}>
+                        {[
+                            { label: 'Breakout', value: s.executionQuality.breakoutQuality, suffix: '/10', tone: '#60a5fa' },
+                            { label: 'Pullback', value: s.executionQuality.pullbackQuality, suffix: '/10', tone: '#34d399' },
+                            { label: 'Gap', value: s.executionQuality.gapQuality, suffix: '/10', tone: '#fbbf24' },
+                            { label: 'Eff RR', value: s.executionQuality.effectiveRiskReward, suffix: ':1', tone: '#c084fc' },
+                            { label: '5m', value: s.executionQuality.structure5m, suffix: '/10', tone: '#93c5fd' },
+                            { label: '15m', value: s.executionQuality.structure15m, suffix: '/10', tone: '#86efac' },
+                            { label: 'Slip', value: s.executionQuality.slippagePct, suffix: '%', tone: '#fca5a5' },
+                            { label: 'Event', value: s.executionQuality.eventDurability, suffix: '/10', tone: '#fde68a' },
+                        ]
+                            .filter(metric => metric.value != null)
+                            .slice(0, isPhone ? 4 : 8)
+                            .map(metric => (
+                                <div key={metric.label} style={{
+                                    padding: '8px 10px',
+                                    borderRadius: 10,
+                                    border: '1px solid var(--border)',
+                                    background: 'var(--bg-elevated)',
+                                }}>
+                                    <div style={{ fontSize: '0.5rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>{metric.label}</div>
+                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', fontWeight: 800, color: metric.tone }}>
+                                        {metric.value?.toFixed(metric.label === 'Eff RR' || metric.label === 'Slip' ? 2 : 1)}{metric.suffix}
+                                    </div>
+                                </div>
+                            ))}
+                    </div>
+                )}
+
                 {/* Tags */}
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
                     <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>Vol {s.volumeSpike}</span>
@@ -234,6 +394,13 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                     {s.volatilityHitProb > 0 && (
                         <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>Hit Prob {(s.volatilityHitProb * 100).toFixed(0)}%</span>
                     )}
+                    {s.newsDistribution?.newsRiskFlag && <span className="badge badge-avoid" style={{ fontSize: '0.54rem' }}>News Risk</span>}
+                    {s.newsDistribution?.eventTypes?.slice(0, 2).map(eventType => (
+                        <span key={eventType} className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{eventType.replace(/_/g, ' ')}</span>
+                    ))}
+                    {s.riskFlags?.slice(0, 2).map(flag => (
+                        <span key={flag} className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{flag.replace(/_/g, ' ')}</span>
+                    ))}
                 </div>
             </div>
 
@@ -340,6 +507,32 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                                 }}>
                                     <span style={{ fontSize: '0.52rem', fontWeight: 700, color: '#60a5fa', textTransform: 'uppercase' }}>Catalyst: </span>
                                     {s.catalyst}
+                                </div>
+                            )}
+
+                            {s.confidenceDrivers && s.confidenceDrivers.length > 0 && (
+                                <div style={{
+                                    marginTop: 10, padding: '8px 12px', background: 'rgba(16,185,129,0.05)',
+                                    borderRadius: 8, border: '1px solid rgba(16,185,129,0.12)',
+                                    display: 'flex', flexDirection: 'column', gap: 5,
+                                }}>
+                                    <div style={{ fontSize: '0.52rem', fontWeight: 700, color: '#86efac', textTransform: 'uppercase' }}>Confidence Drivers</div>
+                                    <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                                        {s.confidenceDrivers.slice(0, 4).map(driver => <li key={driver}>{driver}</li>)}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {s.rejectionReasons && s.rejectionReasons.length > 0 && (
+                                <div style={{
+                                    marginTop: 10, padding: '8px 12px', background: 'rgba(239,68,68,0.05)',
+                                    borderRadius: 8, border: '1px solid rgba(239,68,68,0.12)',
+                                    display: 'flex', flexDirection: 'column', gap: 5,
+                                }}>
+                                    <div style={{ fontSize: '0.52rem', fontWeight: 700, color: '#fca5a5', textTransform: 'uppercase' }}>Rejection Risks</div>
+                                    <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                                        {s.rejectionReasons.slice(0, 4).map(reason => <li key={reason}>{reason}</li>)}
+                                    </ul>
                                 </div>
                             )}
 
