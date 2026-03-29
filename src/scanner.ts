@@ -898,12 +898,20 @@ export async function runIntradayScanner(
         setupCount: 0,
         rejectionCounts: {},
         notes: [],
+        nearMisses: [],
+        recommendedAction: 'WAIT',
     };
     const reject = (reason: string) => {
         diagnostics.rejectionCounts[reason] = (diagnostics.rejectionCounts[reason] || 0) + 1;
     };
+    const addNearMiss = (candidate: { ticker: string; setupType: string; confidenceScore: number; primaryReason: string }) => {
+        diagnostics.nearMisses = [...(diagnostics.nearMisses || []), candidate]
+            .sort((a, b) => b.confidenceScore - a.confidenceScore)
+            .slice(0, 3);
+    };
     if (marketStatus.regime === 'RISK_OFF') {
         diagnostics.notes?.push('Market regime is RISK_OFF, so intraday longs are disabled.');
+        diagnostics.summary = 'Intraday longs are disabled because the market regime is risk-off.';
         return { qualified: [], marketStatus, setups: [], diagnostics };
     }
 
@@ -1045,8 +1053,29 @@ export async function runIntradayScanner(
         if (lastCandle.close < openingRangeLow) rejectionReasons.push('Trading below opening-range low');
         if (structure5m < 4.8) rejectionReasons.push('Weak 5m structure');
         if (structure15m < 5.0) rejectionReasons.push('Weak 15m structure');
+        const nearEma20 = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) <= 0.01;
+        const setupType = nearEma20
+            ? 'EMA20 Bounce'
+            : ind.volumeRatio >= 1.6
+                ? 'Momentum Continuation'
+                : 'Breakout Base';
+        const earlyConfidence = +Math.min(
+            10,
+            4.2 +
+            Math.min(1.6, Math.max(0, ind.volumeRatio - 1) * 1.7) +
+            Math.min(1.2, Math.max(0, (ind.adx14 - 16) / 12)) +
+            (aboveVwap ? 0.35 : 0) +
+            ((structure5m - 5) * 0.18) +
+            ((structure15m - 5) * 0.2)
+        ).toFixed(1);
         if (rejectionReasons.length) {
             rejectionReasons.forEach(reason => reject(reason));
+            addNearMiss({
+                ticker: ind.ticker,
+                setupType,
+                confidenceScore: earlyConfidence,
+                primaryReason: rejectionReasons[0],
+            });
             continue;
         }
 
@@ -1074,19 +1103,25 @@ export async function runIntradayScanner(
 
         if (riskReward < 1.4) {
             reject('effective_rr_gate');
+            addNearMiss({
+                ticker: ind.ticker,
+                setupType,
+                confidenceScore: earlyConfidence,
+                primaryReason: 'Reward-to-risk is too weak after slippage',
+            });
             continue;
         }
         if (targetPct < 0.5 || targetPct > 3.5) {
             reject('target_pct_gate');
+            addNearMiss({
+                ticker: ind.ticker,
+                setupType,
+                confidenceScore: earlyConfidence,
+                primaryReason: 'Target range is not practical for this intraday setup',
+            });
             continue;
         }
 
-        const nearEma20 = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) <= 0.01;
-        const setupType = nearEma20
-            ? 'EMA20 Bounce'
-            : ind.volumeRatio >= 1.6
-                ? 'Momentum Continuation'
-                : 'Breakout Base';
         const breakoutQuality = scoreBreakoutQuality({
             breakoutPct: ((lastCandle.close - openingRangeHigh) / Math.max(openingRangeHigh, 1)) * 100,
             volumeRatio: ind.volumeRatio,
@@ -1105,10 +1140,22 @@ export async function runIntradayScanner(
         const primaryQuality = nearEma20 ? pullbackQuality : breakoutQuality;
         if (primaryQuality < 4.6) {
             reject('primary_execution_quality');
+            addNearMiss({
+                ticker: ind.ticker,
+                setupType,
+                confidenceScore: earlyConfidence,
+                primaryReason: nearEma20 ? 'Pullback quality is still weak' : 'Breakout quality is still weak',
+            });
             continue;
         }
         if (gapQuality < 3.4) {
             reject('gap_quality_gate');
+            addNearMiss({
+                ticker: ind.ticker,
+                setupType,
+                confidenceScore: earlyConfidence,
+                primaryReason: 'Opening gap quality is not strong enough',
+            });
             continue;
         }
 
@@ -1200,7 +1247,22 @@ export async function runIntradayScanner(
         .slice(0, 8);
 
     diagnostics.setupCount = finalSetups.length;
-    if (!finalSetups.length) {
+    if (finalSetups.length) {
+        diagnostics.summary = `${finalSetups.length} intraday setup${finalSetups.length === 1 ? '' : 's'} are trade-ready after momentum, structure, and risk checks.`;
+        diagnostics.recommendedAction = 'TRADE_READY';
+    } else {
+        const topReason = Object.entries(diagnostics.rejectionCounts)
+            .sort((a, b) => b[1] - a[1])[0];
+        if (!qualified.length) {
+            diagnostics.summary = `No names cleared the first-stage intraday filter. ${topReason ? `${topReason[1]} symbols failed ${topReason[0].replace(/_/g, ' ')}.` : 'Market breadth is weak right now.'}`;
+            diagnostics.recommendedAction = 'WAIT';
+        } else if ((diagnostics.nearMisses?.length || 0) > 0) {
+            diagnostics.summary = `${qualified.length} names reached deeper checks, but none became trade-ready. Best action is to watch the near-miss names and wait for confirmation.`;
+            diagnostics.recommendedAction = 'WATCHLIST';
+        } else {
+            diagnostics.summary = 'No intraday setups passed all filters. Market conditions are not supporting clean entries right now.';
+            diagnostics.recommendedAction = 'WAIT';
+        }
         diagnostics.notes?.push('No intraday setups passed all filters. Check rejectionCounts to see the dominant gate.');
     }
 

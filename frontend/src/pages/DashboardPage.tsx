@@ -101,6 +101,14 @@ interface ScanDiagnostics {
     setupCount: number
     rejectionCounts: Record<string, number>
     notes?: string[]
+    summary?: string
+    recommendedAction?: 'WAIT' | 'WATCHLIST' | 'TRADE_READY'
+    nearMisses?: Array<{
+        ticker: string
+        setupType: string
+        confidenceScore: number
+        primaryReason: string
+    }>
 }
 
 
@@ -640,12 +648,48 @@ export default function DashboardPage() {
                                         Universe {scanDiagnostics.universeCount} · Qualified {scanDiagnostics.qualifiedCount} · Final setups {scanDiagnostics.setupCount}
                                     </div>
                                 </div>
-                                {scanDiagnostics.notes?.[0] && (
-                                    <div style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', maxWidth: 360 }}>
-                                        {scanDiagnostics.notes[0]}
+                                {scanDiagnostics.recommendedAction && (
+                                    <div style={{
+                                        padding: '6px 10px',
+                                        borderRadius: 999,
+                                        fontSize: '0.66rem',
+                                        fontWeight: 800,
+                                        letterSpacing: '0.03em',
+                                        textTransform: 'uppercase',
+                                        background: scanDiagnostics.recommendedAction === 'TRADE_READY'
+                                            ? 'rgba(16,185,129,0.12)'
+                                            : scanDiagnostics.recommendedAction === 'WATCHLIST'
+                                                ? 'rgba(96,165,250,0.12)'
+                                                : 'rgba(148,163,184,0.12)',
+                                        color: scanDiagnostics.recommendedAction === 'TRADE_READY'
+                                            ? '#34d399'
+                                            : scanDiagnostics.recommendedAction === 'WATCHLIST'
+                                                ? '#93c5fd'
+                                                : '#cbd5e1',
+                                        border: scanDiagnostics.recommendedAction === 'TRADE_READY'
+                                            ? '1px solid rgba(16,185,129,0.24)'
+                                            : scanDiagnostics.recommendedAction === 'WATCHLIST'
+                                                ? '1px solid rgba(96,165,250,0.24)'
+                                                : '1px solid rgba(148,163,184,0.24)',
+                                    }}>
+                                        {scanDiagnostics.recommendedAction === 'TRADE_READY' ? 'Trade Ready' : scanDiagnostics.recommendedAction === 'WATCHLIST' ? 'Watchlist' : 'Wait'}
                                     </div>
                                 )}
                             </div>
+                            {(scanDiagnostics.summary || scanDiagnostics.notes?.[0]) && (
+                                <div style={{
+                                    marginBottom: 12,
+                                    padding: '10px 12px',
+                                    borderRadius: 12,
+                                    border: '1px solid rgba(148,163,184,0.16)',
+                                    background: 'rgba(15,23,42,0.22)',
+                                    fontSize: '0.72rem',
+                                    lineHeight: 1.6,
+                                    color: 'var(--text-secondary)',
+                                }}>
+                                    {scanDiagnostics.summary || scanDiagnostics.notes?.[0]}
+                                </div>
+                            )}
                             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
                                 {Object.entries(scanDiagnostics.rejectionCounts)
                                     .sort((a, b) => b[1] - a[1])
@@ -664,6 +708,34 @@ export default function DashboardPage() {
                                         </div>
                                     ))}
                             </div>
+                            {!!scanDiagnostics.nearMisses?.length && (
+                                <div style={{ marginTop: 12 }}>
+                                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.76rem', fontWeight: 800, marginBottom: 8 }}>
+                                        Near-Miss Watchlist
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
+                                        {scanDiagnostics.nearMisses.map((item) => (
+                                            <div key={item.ticker} style={{
+                                                padding: '10px 12px',
+                                                borderRadius: 12,
+                                                border: '1px solid rgba(96,165,250,0.18)',
+                                                background: 'rgba(59,130,246,0.05)',
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                                                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', fontWeight: 900 }}>{item.ticker}</div>
+                                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', color: '#93c5fd', fontWeight: 800 }}>
+                                                        {item.confidenceScore.toFixed(1)}/10
+                                                    </div>
+                                                </div>
+                                                <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)', marginTop: 3 }}>{item.setupType}</div>
+                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.45, marginTop: 8 }}>
+                                                    {item.primaryReason}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -796,19 +868,23 @@ export default function DashboardPage() {
                                     WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
                                     backgroundClip: 'text',
                                 }}>
-                                    AI Agent Ready
+                                    {scanMode === 'intraday' && scanDiagnostics ? 'No Trade-Ready Intraday Setups' : 'AI Agent Ready'}
                                 </div>
                                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', maxWidth: 420, lineHeight: 1.7, margin: '0 auto' }}>
-                                    Run a full market scan to analyse <strong style={{ color: 'var(--text-primary)' }}>1000+ NSE stocks</strong> — Large, Mid and Small Cap — with live technical data, volume analysis, and Gemini AI signal generation.
+                                    {scanMode === 'intraday' && scanDiagnostics
+                                        ? (scanDiagnostics.summary || 'The market is not offering a clean intraday long right now. Use the diagnostics and near-miss watchlist above instead of forcing entries.')
+                                        : <>Run a full market scan to analyse <strong style={{ color: 'var(--text-primary)' }}>1000+ NSE stocks</strong> — Large, Mid and Small Cap — with live technical data, volume analysis, and Gemini AI signal generation.</>}
                                 </p>
                             </div>
 
                             <button onClick={runScan} className="btn btn-primary" style={{ padding: isMobile ? '11px 22px' : '13px 36px', fontSize: '0.95rem', gap: 8 }}>
-                                <Zap size={16} /> Launch Scanner
+                                <Zap size={16} /> {scanMode === 'intraday' ? 'Run Intraday Again' : 'Launch Scanner'}
                             </button>
 
                             <div style={{ display: 'flex', gap: 12, marginTop: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
-                                {['DMA200 Filter', 'RSI Zone', 'Volume Spike', 'AI Signal'].map(t => (
+                                {(scanMode === 'intraday' && scanDiagnostics
+                                    ? ['Momentum Breadth', 'VWAP Check', 'Risk-Reward', 'Watchlist Names']
+                                    : ['DMA200 Filter', 'RSI Zone', 'Volume Spike', 'AI Signal']).map(t => (
                                     <span key={t} style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
                                         <CheckCircle2 size={9} style={{ color: '#34d399', opacity: 0.6 }} /> {t}
                                     </span>

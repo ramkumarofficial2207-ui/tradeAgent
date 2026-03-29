@@ -239,6 +239,14 @@ export interface ScanDiagnostics {
     setupCount: number;
     rejectionCounts: Record<string, number>;
     notes?: string[];
+    summary?: string;
+    recommendedAction?: 'WAIT' | 'WATCHLIST' | 'TRADE_READY';
+    nearMisses?: Array<{
+        ticker: string;
+        setupType: string;
+        confidenceScore: number;
+        primaryReason: string;
+    }>;
 }
 
 export interface ScanResult {
