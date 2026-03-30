@@ -8,6 +8,7 @@ import { useWatchlist } from '../lib/useWatchlist'
 import { type WatchlistItem } from '../lib/watchlist'
 import axios from 'axios'
 import { useViewport } from '../lib/useViewport'
+import AIActionCard from '../components/AIActionCard'
 
 const fmt = (n: number) => '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2 })
 const pct = (n: number) => (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'
@@ -85,6 +86,11 @@ export default function WatchlistPage() {
         return new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime()
     })
 
+    const hasFullScannerSnapshot = (item: WatchlistItem): boolean => {
+        const snapshot = item.snapshot as Record<string, unknown> | undefined
+        return !!snapshot && typeof snapshot.ticker === 'string' && typeof snapshot.buyZone === 'number' && typeof snapshot.entryTrigger === 'string'
+    }
+
     return (
         <div style={{ padding: isMobile ? '16px 12px 24px' : '24px 28px', maxWidth: 1200, margin: '0 auto', width: '100%' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'stretch' : 'flex-end', marginBottom: 24, flexWrap: 'wrap', gap: 16 }}>
@@ -148,6 +154,21 @@ export default function WatchlistPage() {
 
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
                 {sorted.map((item, i) => {
+                    if (hasFullScannerSnapshot(item)) {
+                        const snapshot = item.snapshot as Record<string, any>
+                        const fullCard = {
+                            ...snapshot,
+                            ltp: item.livePrice ?? snapshot.ltp ?? item.ltp,
+                        }
+                        return (
+                            <AIActionCard
+                                key={item.ticker}
+                                s={fullCard as any}
+                                delay={Math.min(i * 0.04, 0.5)}
+                            />
+                        )
+                    }
+
                     const isUp = (item.priceChange || 0) >= 0
                     const rgb = (item.signal === 'BUY' || item.signal === 'LIGHT BUY') ? '16,185,129' : item.signal === 'REJECT' ? '239,68,68' : '245,158,11'
                     return (

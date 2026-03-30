@@ -137,6 +137,7 @@ function StockCardView({ card, watchlist, toggle }: { card: StockCard; watchlist
             confidenceScore: card.confidenceScore,
             setupType: card.setupType,
             buyZone: card.buyZone,
+            snapshot: card as unknown as Record<string, unknown>,
         })
     }
 

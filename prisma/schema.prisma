@@ -49,6 +49,7 @@ model WatchlistItem {
   confidenceScore Float?
   setupType       String?
   buyZone         Float?
+  snapshot        Json?
   addedAt         DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

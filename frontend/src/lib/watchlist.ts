@@ -16,6 +16,7 @@ export interface WatchlistItem {
     confidenceScore?: number
     setupType?: string
     buyZone?: number
+    snapshot?: Record<string, unknown>
     addedAt: string
     note?: string
 }

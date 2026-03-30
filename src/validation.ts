@@ -149,6 +149,7 @@ export const watchlistCreateSchema = z.object({
     confidenceScore: z.coerce.number().min(0).max(10).optional(),
     setupType: z.string().trim().max(80).optional(),
     buyZone: z.coerce.number().positive().optional(),
+    snapshot: z.record(z.string(), z.unknown()).optional(),
 });
 
 export function validateBody<T extends ZodTypeAny>(schema: T) {

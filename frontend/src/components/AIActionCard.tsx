@@ -603,7 +603,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                     </button>
                     {/* Save */}
                     <button
-                        onClick={() => { toggleWatchlistItem({ ticker: s.ticker, sector: s.sector, signal: s.aiSignal, ltp: s.ltp, target: s.target, stopLoss: s.stopLoss, targetPct: s.targetPct, slPct: s.slPct, riskReward: s.riskReward, confidenceScore: s.confidenceScore, setupType: s.setupType, buyZone: s.buyZone }); setSaved(v => !v) }}
+                        onClick={() => { toggleWatchlistItem({ ticker: s.ticker, sector: s.sector, signal: s.aiSignal, ltp: s.ltp, target: s.target, stopLoss: s.stopLoss, targetPct: s.targetPct, slPct: s.slPct, riskReward: s.riskReward, confidenceScore: s.confidenceScore, setupType: s.setupType, buyZone: s.buyZone, snapshot: s as unknown as Record<string, unknown> }); setSaved(v => !v) }}
                         className={`btn ${saved ? 'btn-purple' : 'btn-ghost'}`} style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3 }}
                     >
                         {saved ? <BookmarkCheck size={11} /> : <Bookmark size={11} />}

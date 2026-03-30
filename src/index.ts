@@ -397,13 +397,13 @@ app.get('/api/watchlist', requireAuth, async (req: AuthRequest, res: Response) =
 
 // POST /api/watchlist
 app.post('/api/watchlist', requireAuth, validateBody(watchlistCreateSchema), async (req: AuthRequest, res: Response) => {
-    const { ticker, sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone } = req.body || {};
+    const { ticker, sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone, snapshot } = req.body || {};
     if (!ticker) { res.status(400).json({ success: false, message: 'ticker is required.' }); return; }
     try {
         const item = await prisma.watchlistItem.upsert({
             where: { userId_ticker: { userId: req.userId!, ticker } },
-            update: { sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone, addedAt: new Date() },
-            create: { userId: req.userId!, ticker, sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone },
+            update: { sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone, snapshot, addedAt: new Date() },
+            create: { userId: req.userId!, ticker, sector, signal, ltp, target, stopLoss, targetPct, slPct, riskReward, confidenceScore, setupType, buyZone, snapshot },
         });
         res.json({ success: true, data: item });
     } catch (err: any) {
