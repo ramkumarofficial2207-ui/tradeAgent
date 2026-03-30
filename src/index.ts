@@ -8,7 +8,7 @@ import path from 'path';
 import cron from 'node-cron';
 import bcrypt from 'bcryptjs';
 import { exec } from 'child_process';
-import { runScanner, buildTradeSetups, runIntradayScanner } from './scanner';
+import { runScanner, buildTradeSetups, finalizeSwingDiagnostics, runIntradayScanner } from './scanner';
 import { MarketDataInterval, ScanResult } from './types';
 import { fetchHistoricalData, fetchNiftyData, NSE_UNIVERSE, SECTOR_MAP, getTradingApiFromEnv } from './dataService';
 import { fetchStockReport, batchPrefetch } from './fundamentalService';
@@ -466,12 +466,23 @@ app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: 
             const swingResult = await runScanner(tradingApi);
             qualified = swingResult.qualified;
             marketStatus = swingResult.marketStatus;
+            diagnostics = swingResult.diagnostics;
         }
         updateThinkingStep(s1, 'done', `Market regime: ${marketStatus.regime || 'NEUTRAL'}`);
 
         const s2 = addThinkingStep('Computing technical indicators & AI signals', 'running');
         if (mode !== 'intraday') {
             setups = await buildTradeSetups(qualified, marketStatus);
+            diagnostics = await finalizeSwingDiagnostics(diagnostics ?? {
+                mode: 'swing',
+                universeCount: qualified.length,
+                qualifiedCount: qualified.length,
+                setupCount: 0,
+                rejectionCounts: {},
+                notes: [],
+                nearMisses: [],
+                recommendedAction: 'WAIT',
+            }, qualified, setups);
         }
         updateThinkingStep(s2, 'done', `${setups.length} setups identified`);
 
@@ -975,13 +986,14 @@ app.get('/api/last', (req: Request, res: Response) => {
 // CRON JOBS
 cron.schedule('45 8 * * 1-5', async () => {
     try {
-        const { qualified, marketStatus } = await runScanner(tradingApi);
+        const { qualified, marketStatus, diagnostics } = await runScanner(tradingApi);
         const setups = await buildTradeSetups(qualified, marketStatus);
         lastSwingScan = {
             timestamp: new Date().toISOString(),
             marketStatus,
             setups,
             sectorBreadth: buildSectorBreadthMap(qualified, setups),
+            diagnostics: await finalizeSwingDiagnostics(diagnostics, qualified, setups),
         };
         await notifyUsersWithMorningDigest(setups.filter(s => s.confidenceScore >= 7), marketStatus.regime || 'NEUTRAL');
     } catch { }
@@ -989,13 +1001,14 @@ cron.schedule('45 8 * * 1-5', async () => {
 
 cron.schedule('45 15 * * 1-5', async () => {
     try {
-        const { qualified, marketStatus } = await runScanner(tradingApi);
+        const { qualified, marketStatus, diagnostics } = await runScanner(tradingApi);
         const setups = await buildTradeSetups(qualified, marketStatus);
         lastSwingScan = {
             timestamp: new Date().toISOString(),
             marketStatus,
             setups,
             sectorBreadth: buildSectorBreadthMap(qualified, setups),
+            diagnostics: await finalizeSwingDiagnostics(diagnostics, qualified, setups),
         };
         await notifyUsersWithPostMarketSummary(setups, marketStatus.regime || 'NEUTRAL');
     } catch { }

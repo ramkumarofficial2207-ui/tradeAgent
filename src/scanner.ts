@@ -4,6 +4,8 @@
 // =====================================================
 
 import { fetchHistoricalData, fetchNiftyData, MARKET_CAP_CR_MAP, NSE_UNIVERSE, SECTOR_MAP } from './dataService';
+import { getMomentumCandidates, getTopGainersToday, getBhavcopyCacheStatus } from './nseDiscovery';
+import { getNewsCatalystTickers } from './newsIntel/service';
 import { computeIndicators, computeConfidence, computeRegime, estimateHitProbability, identifySetupType, detectVCP } from './indicators';
 import prisma from './prismaClient';
 import { validateNewsRisk } from './newsValidator';
@@ -329,15 +331,61 @@ function getLatestSessionCandles(candles: Candle[]): Candle[] {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// FETCH UNIVERSE
+// FETCH UNIVERSE — Two-source dynamic discovery
+//
+// Source 1: NSE Bhavcopy — top 300 momentum stocks from entire NSE
+// Source 2: News catalyst tickers — stocks AI identified from news
+//
+// Both sources are merged and deduped. This ensures the agent covers:
+//   • Stocks showing technical breakout (bhavcopy momentum)
+//   • Stocks with fresh catalysts from news (even before price moves)
+//
+// Falls back to static NSE_UNIVERSE only if bhavcopy is unavailable.
 // ──────────────────────────────────────────────────────────────────
 async function fetchUniverseData(
     dataApi: MarketDataApi | null,
-    concurrency = 6
+    newsCatalystTickers: string[] = [],
+    concurrency = 8
 ): Promise<Array<{ ticker: string; candles: any[] }>> {
-    const entries = Object.entries(NSE_UNIVERSE);
-    const out: Array<{ ticker: string; candles: any[] }> = [];
 
+    // ── Source 1: NSE Bhavcopy (dynamic, zero hardcoding) ──────────
+    let entries: Array<[string, string]> = [];
+    try {
+        const bhavCandidates = await getMomentumCandidates(300);
+        if (bhavCandidates.length > 50) {
+            entries = bhavCandidates.map(r => [r.symbol, r.yahooTicker]);
+            console.log(`[scanner] 🌐 Bhavcopy universe: ${entries.length} stocks`);
+        }
+    } catch (err) {
+        console.warn('[scanner] Bhavcopy unavailable, falling back to static universe.');
+    }
+
+    // Fallback: static universe if bhavcopy failed
+    if (entries.length === 0) {
+        entries = Object.entries(NSE_UNIVERSE);
+        console.warn(`[scanner] ⚠️  Static fallback: ${entries.length} stocks`);
+    }
+
+    // ── Source 2: News catalyst tickers (AI-discovered) ──────────
+    // Add any AI-identified tickers not already in the bhavcopy set.
+    // These are stocks with fresh news catalysts that may not yet show
+    // technical momentum — but need to be watched.
+    const existingSymbols = new Set(entries.map(([sym]) => sym.toUpperCase()));
+    let newCatalystCount = 0;
+    for (const rawTicker of newsCatalystTickers) {
+        const sym = rawTicker.replace(/\.NS$/i, '').toUpperCase();
+        if (sym && !existingSymbols.has(sym)) {
+            entries.push([sym, `${sym}.NS`]);
+            existingSymbols.add(sym);
+            newCatalystCount++;
+        }
+    }
+    if (newCatalystCount > 0) {
+        console.log(`[scanner] 📰 News catalyst additions: +${newCatalystCount} stocks`);
+    }
+
+    // ── Fetch historical candles for all candidates ───────────────
+    const out: Array<{ ticker: string; candles: any[] }> = [];
     for (let i = 0; i < entries.length; i += concurrency) {
         const batch = entries.slice(i, i + concurrency);
         const settled = await Promise.allSettled(
@@ -353,6 +401,105 @@ async function fetchUniverseData(
         }
     }
     return out;
+}
+
+// ── Public helpers ──────────────────────────────────────────────────
+export async function getTodayTopGainers(minPct = 5): Promise<{ symbol: string; pctChange: number }[]> {
+    try {
+        const gainers = await getTopGainersToday(minPct, 50);
+        return gainers.map(g => ({ symbol: g.symbol, pctChange: g.pctChange }));
+    } catch {
+        return [];
+    }
+}
+export { getBhavcopyCacheStatus };
+
+function scoreSwingComposite(candidate: StockIndicators): number {
+    return (
+        (candidate.volumeRatio * 0.4) +
+        ((candidate.returns3m - candidate.nifty3mReturn) * 0.3) +
+        (candidate.adx14 / 100 * 0.2) +
+        (candidate.rsi14 / 100 * 0.1)
+    );
+}
+
+function scoreSwingWatchConfidence(params: {
+    volumeRatio?: number;
+    adx14?: number;
+    rsi14?: number;
+    pctChange?: number;
+}): number {
+    const { volumeRatio = 1, adx14 = 14, rsi14 = 55, pctChange = 0 } = params;
+    return +clamp(
+        4.8 +
+        Math.max(0, volumeRatio - 1) * 1.6 +
+        Math.max(0, adx14 - 14) * 0.08 +
+        Math.max(0, Math.min(12, pctChange)) * 0.14 +
+        (rsi14 >= 52 && rsi14 <= 72 ? 0.45 : 0),
+        4.6,
+        9.2,
+    ).toFixed(1);
+}
+
+export async function finalizeSwingDiagnostics(
+    diagnostics: ScanDiagnostics,
+    qualified: StockIndicators[],
+    setups: TradeSetup[],
+): Promise<ScanDiagnostics> {
+    const setupTickers = new Set(setups.map(setup => setup.ticker));
+    const watchItems = new Map<string, NonNullable<ScanDiagnostics['nearMisses']>[number]>();
+
+    for (const candidate of qualified
+        .filter(item => !setupTickers.has(item.ticker))
+        .sort((a, b) => scoreSwingComposite(b) - scoreSwingComposite(a))
+        .slice(0, 8)) {
+        watchItems.set(candidate.ticker, {
+            ticker: candidate.ticker,
+            setupType: identifySetupType(candidate) as string,
+            confidenceScore: scoreSwingWatchConfidence({
+                volumeRatio: candidate.volumeRatio,
+                adx14: candidate.adx14,
+                rsi14: candidate.rsi14,
+            }),
+            primaryReason: 'Cleared the first-stage momentum scan but did not become trade-ready. Keep it on tomorrow\'s swing watchlist for continuation or pullback confirmation.',
+            source: 'QUALIFIED_WATCHLIST',
+        });
+    }
+
+    const topGainers = await getTodayTopGainers(5);
+    for (const gainer of topGainers) {
+        if (setupTickers.has(gainer.symbol) || watchItems.has(gainer.symbol)) continue;
+        watchItems.set(gainer.symbol, {
+            ticker: gainer.symbol,
+            setupType: 'Momentum Watch',
+            confidenceScore: scoreSwingWatchConfidence({ pctChange: gainer.pctChange }),
+            primaryReason: `Strong daily move of ${gainer.pctChange.toFixed(2)}% detected in the dynamic NSE universe. Monitor tomorrow for follow-through or a cleaner entry.`,
+            movePct: gainer.pctChange,
+            source: 'TOP_GAINER',
+        });
+    }
+
+    diagnostics.setupCount = setups.length;
+    diagnostics.nearMisses = Array.from(watchItems.values())
+        .sort((a, b) => {
+            const moveDiff = (b.movePct ?? 0) - (a.movePct ?? 0);
+            if (Math.abs(moveDiff) > 0.01) return moveDiff;
+            return b.confidenceScore - a.confidenceScore;
+        })
+        .slice(0, 6);
+
+    if (setups.length > 0) {
+        diagnostics.summary = `${setups.length} swing setup${setups.length === 1 ? '' : 's'} are trade-ready. Strong movers that were not fully trade-ready are preserved below as a tomorrow watchlist.`;
+        diagnostics.recommendedAction = 'TRADE_READY';
+    } else if (diagnostics.nearMisses.length > 0) {
+        diagnostics.summary = `${diagnostics.nearMisses.length} strong swing candidates are on the tomorrow watchlist even though none cleared every final entry-quality gate today.`;
+        diagnostics.recommendedAction = 'WATCHLIST';
+    } else {
+        diagnostics.summary = 'No swing setups or high-momentum watchlist names were produced from the current scan universe.';
+        diagnostics.recommendedAction = 'WAIT';
+    }
+
+    return diagnostics;
 }
 
 /**
@@ -496,50 +643,101 @@ async function enrichSetupsWithGroundedNews(
 }
 
 // ──────────────────────────────────────────────────────────────────
-// MAIN SCANNER — all gates enforced
+// MAIN SCANNER
+// Two-source discovery: NSE Bhavcopy + AI news-catalyst tickers
+// Both are merged before technical filters run — so no stock with
+// a real catalyst can ever be missed due to a hardcoded list.
 // ──────────────────────────────────────────────────────────────────
 export async function runScanner(
     dataApi: MarketDataApi | null = null
-): Promise<{ qualified: StockIndicators[]; marketStatus: MarketStatus }> {
+): Promise<{ qualified: StockIndicators[]; marketStatus: MarketStatus; diagnostics: ScanDiagnostics }> {
 
     const marketStatus = await checkMarketCondition();
+    const diagnostics: ScanDiagnostics = {
+        mode: 'swing',
+        universeCount: 0,
+        qualifiedCount: 0,
+        setupCount: 0,
+        rejectionCounts: {},
+        notes: [],
+        nearMisses: [],
+        recommendedAction: 'WAIT',
+    };
+    const reject = (reason: string) => {
+        diagnostics.rejectionCounts[reason] = (diagnostics.rejectionCounts[reason] || 0) + 1;
+    };
 
-    // ── GATE: No new longs in RISK-OFF ────────────────────────────
     if (marketStatus.regime === 'RISK_OFF') {
-        return { qualified: [], marketStatus };
+        diagnostics.notes?.push('Market regime is RISK_OFF, so new swing longs are disabled.');
+        diagnostics.summary = 'Swing scan is disabled because the market regime is risk-off.';
+        return { qualified: [], marketStatus, diagnostics };
     }
 
+    // ── Step 1: Collect news-catalyst tickers (AI-discovered) ─────
+    // These are stocks the AI identified from news in the last 24-48h.
+    // They get added to the scan universe even if they have no
+    // technical momentum yet — so catalysts are caught early.
+    let newsCatalystTickers: string[] = [];
+    try {
+        newsCatalystTickers = await getNewsCatalystTickers();
+        if (newsCatalystTickers.length > 0) {
+            console.log(`[scanner] 📰 News-first: ${newsCatalystTickers.length} AI-discovered tickers queued`);
+        }
+    } catch (err) {
+        console.warn('[scanner] News catalyst tickers unavailable:', err);
+    }
+
+    // ── Step 2: Fetch full merged universe + historical candles ───
     const niftyCandles = await fetchHistoricalData('^NSEI', 300);
-    const allData = await fetchUniverseData(dataApi, 6);
+    const allData = await fetchUniverseData(dataApi, newsCatalystTickers, 8);
     const optionsFlow = await getOptionsFlow();
     const qualified: StockIndicators[] = [];
+    diagnostics.universeCount = allData.length;
 
     for (const { ticker, candles } of allData) {
         // ── GATE 1: Dynamic Liquidity ─────────────────────────────
-        if (candles.length < 20) continue;
+        if (candles.length < 20) {
+            reject('insufficient_candles');
+            continue;
+        }
         const last20 = candles.slice(-20);
         const avgVol20 = last20.reduce((s, c) => s + c.volume, 0) / 20;
         const lastClose = candles[candles.length - 1]?.close ?? 0;
         const avgTurnoverCr = (avgVol20 * lastClose) / 10000000; // ₹ in Crores
-        if (avgTurnoverCr < 10) continue; // Minimum ₹10 Cr daily turnover
+        if (avgTurnoverCr < 10) {
+            reject('turnover_gate');
+            continue;
+        } // Minimum ₹10 Cr daily turnover
 
         // Rough proxy if missing to keep formatting intact
-        let marketCapCr = MARKET_CAP_CR_MAP[ticker] ?? Math.round(avgTurnoverCr * 50);
+        const marketCapCr = MARKET_CAP_CR_MAP[ticker] ?? Math.round(avgTurnoverCr * 50);
 
         // ── GATE 2: Enough history ────────────────────────────────
-        if (candles.length < 200) continue;
+        if (candles.length < 200) {
+            reject('history_gate');
+            continue;
+        }
 
         // ── GATE 3: Price ≥ ₹50 ─────────────────────────────────
-        if (lastClose < MIN_PRICE) continue;
+        if (lastClose < MIN_PRICE) {
+            reject('price_gate');
+            continue;
+        }
 
         // ── GATE 4: ATR filter — exclude erratic stocks ───────────
         const atr14 = calcATR(candles.slice(-30));
         const atrPct = lastClose > 0 ? (atr14 / lastClose) * 100 : 99;
-        if (atrPct > MAX_ATR_PCT) continue;
+        if (atrPct > MAX_ATR_PCT) {
+            reject('atr_gate');
+            continue;
+        }
 
         // ── Compute indicators ────────────────────────────────────
         const ind = computeIndicators(ticker, candles, niftyCandles);
-        if (!ind) continue;
+        if (!ind) {
+            reject('indicator_failure');
+            continue;
+        }
 
         // ── GATE 5 to 10: Setup Routing (Trend vs Deep Value vs Bull Flag) ──────
         const isSmall = marketCapCr < 5000;
@@ -555,9 +753,15 @@ export async function runScanner(
             ind.ema50Slope > 0;
 
         // ── Phase 4 GATE: Minimum Accumulation Score (Demand Index > 45%)
-        if ((ind.accumulationScore ?? 0) < 45) continue;
+        if ((ind.accumulationScore ?? 0) < 45) {
+            reject('accumulation_gate');
+            continue;
+        }
 
-        if (!isStandardTrend && !ind.isBullFlag && !ind.isDeepValue) continue;
+        if (!isStandardTrend && !ind.isBullFlag && !ind.isDeepValue) {
+            reject('trend_structure_gate');
+            continue;
+        }
 
         // Note: For Deep Value, price is explicitly BELOW 200 DMA, so it bypasses standard filters.
 
@@ -571,24 +775,31 @@ export async function runScanner(
             ind.derivativeStatus = optData.derivativeStatus;
 
             // Reject if institutional derivatives flow is fundamentally against the trade
-            if (optData.derivativeStatus === 'Short Buildup') continue;
-            if (optData.pcr < 0.6) continue; // Massive call writing resistance ceiling
+            if (optData.derivativeStatus === 'Short Buildup') {
+                reject('derivatives_short_buildup');
+                continue;
+            }
+            if (optData.pcr < 0.6) {
+                reject('pcr_gate');
+                continue;
+            } // Massive call writing resistance ceiling
         }
 
         qualified.push(ind);
     }
 
-    // Sort by composite momentum score before setup building
-    qualified.sort((a, b) => {
-        const score = (x: StockIndicators) =>
-            (x.volumeRatio * 0.4) +
-            ((x.returns3m - x.nifty3mReturn) * 0.3) +
-            (x.adx14 / 100 * 0.2) +
-            (x.rsi14 / 100 * 0.1);
-        return score(b) - score(a);
-    });
+    diagnostics.qualifiedCount = qualified.length;
 
-    return { qualified, marketStatus };
+    // Sort by composite momentum score before setup building
+    qualified.sort((a, b) => scoreSwingComposite(b) - scoreSwingComposite(a));
+    diagnostics.summary = qualified.length
+        ? `${qualified.length} names cleared the first-stage swing scan. Final trade-ready setups and tomorrow watchlist are built next.`
+        : 'No names cleared the first-stage swing momentum and quality gates.';
+    if (!qualified.length) {
+        diagnostics.notes?.push('Use the rejection counts and tomorrow watchlist to review strong movers that were not trade-ready today.');
+    }
+
+    return { qualified, marketStatus, diagnostics };
 }
 
 // ──────────────────────────────────────────────────────────────────

@@ -192,6 +192,37 @@ export async function syncNewsIntelligence(scan: ScanResult | null = null): Prom
     return { items: state.items.slice(0, 50), lastSyncedAt: state.lastSyncedAt };
 }
 
+// ── News Catalyst Tickers ────────────────────────────────────────────
+// Collects ALL NSE tickers the AI identified from recent news items:
+//   - Direct mentions (entities.tickers)
+//   - Peer basket (entities.peerBasket)
+//   - Sector exposure impacts (entities.exposures[].tickers)
+//   - Affected tickers in events (events[].affectedTickers)
+//
+// These are fed back into runScanner() as additional candidates so
+// the agent proactively scans stocks discovered from news — even if
+// they show no technical momentum yet. This is the "news-first" path.
+export async function getNewsCatalystTickers(): Promise<string[]> {
+    const state = await readNewsStore();
+    const tickers = new Set<string>();
+
+    // Read from the most recent 150 news items (covers ~24-48h of news)
+    for (const item of state.items.slice(0, 150)) {
+        for (const t of item.entities?.tickers ?? [])    tickers.add(t.toUpperCase());
+        for (const t of item.entities?.peerBasket ?? []) tickers.add(t.toUpperCase());
+        for (const exp of item.entities?.exposures ?? []) {
+            for (const t of exp.tickers ?? []) tickers.add(t.toUpperCase());
+        }
+        for (const ev of item.events ?? []) {
+            for (const t of ev.affectedTickers ?? []) tickers.add(t.toUpperCase());
+        }
+    }
+
+    // Only return tokens that look like valid NSE symbols
+    const NSE_SYMBOL_RE = /^[A-Z][A-Z0-9&-]{2,14}$/;
+    return Array.from(tickers).filter(t => NSE_SYMBOL_RE.test(t));
+}
+
 export async function ingestTickerNews(ticker: string, scan: ScanResult | null = null): Promise<NewsIntelligenceItem[]> {
     const upperTicker = ticker.toUpperCase();
     const report = await fetchStockReport(upperTicker);

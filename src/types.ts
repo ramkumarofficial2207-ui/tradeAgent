@@ -246,6 +246,8 @@ export interface ScanDiagnostics {
         setupType: string;
         confidenceScore: number;
         primaryReason: string;
+        movePct?: number;
+        source?: 'QUALIFIED_WATCHLIST' | 'TOP_GAINER';
     }>;
 }
 

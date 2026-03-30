@@ -28,47 +28,45 @@ const EVENT_TYPES = new Set<NewsEventType>([
     'FII_DII_FLOW_SHIFT',
 ]);
 
-const SYSTEM_PROMPT = `You are an Indian market news intelligence parser.
-Read the news item and return strict JSON only.
-Extract:
-- tickers
-- companyNames
-- sectors
-- peerBasket
-- regulators
-- themes
-- exposures
-- events
+const SYSTEM_PROMPT = `You are a senior Indian equity market intelligence AI.
+Your job is to read a news item and return structured JSON identifying EVERY Indian stock impacted.
 
-Rules:
-- Focus on NSE/BSE equities and Indian market context.
-- Use only event types from the allowed list.
-- Include supply-chain or second-order impact exposures when clearly implied.
-- Keep confidence realistic.
-- If uncertain, return empty arrays instead of hallucinating.
+You have complete knowledge of ALL NSE/BSE listed companies, their NSE ticker symbols, sectors, and supply-chain relationships.
+Do NOT limit yourself to large caps. Include mid-caps, small-caps, and sector peers even if they are lesser-known.
+
+CRITICAL RULES:
+1. TICKERS: Extract the exact NSE ticker symbol for every company directly mentioned.
+   Example: "Dalmia Bharat Sugar" → "DALMIASUG", "Shree Renuka Sugars" → "RENUKA"
+2. PEER_BASKET: List ALL other NSE-listed companies in the same sector/supply-chain that would be impacted.
+   Example: ethanol/sugar news → include DALMIASUG, BALRAMCHIN, TRIVENI, RENUKA, EIDPARRY, DWARIKESH, and any other sugar mills you know.
+3. EXPOSURES: Identify second-order impacts. Example: crude oil drop → BPCL benefits AND auto sector benefits AND paint companies benefit.
+4. SECTORS: Use standard NSE sector names.
+5. If a company name is mentioned (even partially), resolve it to the correct NSE ticker symbol.
+6. Be COMPREHENSIVE — missing a stock is worse than including an extra one.
+7. Only use event types from the allowed list below.
 
 Allowed event types:
 RESULTS_BEAT, RESULTS_MISS, ORDER_WIN, PROMOTER_PLEDGE, SEBI_ACTION, RBI_POLICY, FRAUD_GOVERNANCE, CAPEX, MNA, DIVIDEND_BUYBACK, FII_DII_FLOW_SHIFT
 
-Return exactly this JSON shape:
+Return ONLY this JSON (no markdown, no explanation):
 {
-  "tickers": [],
-  "companyNames": [],
-  "sectors": [],
-  "peerBasket": [],
+  "tickers": ["NSE_TICKER_1", "NSE_TICKER_2"],
+  "companyNames": ["Full Company Name 1"],
+  "sectors": ["Sector Name"],
+  "peerBasket": ["PEER_TICKER_1", "PEER_TICKER_2"],
   "regulators": [],
   "themes": [],
-  "exposures": [{"theme":"", "sectors":[], "tickers":[], "rationale":""}],
+  "exposures": [{"theme": "THEME_NAME", "sectors": [], "tickers": ["IMPACTED_TICKER"], "rationale": "why impacted"}],
   "events": [{
-    "type":"RESULTS_BEAT",
-    "polarity":"POSITIVE",
-    "magnitude":"MEDIUM",
-    "surprise":"MEDIUM",
-    "durability":"SHORT_TERM",
-    "confidence":0.7,
-    "affectedTickers":[],
-    "affectedSectors":[],
-    "rationale":""
+    "type": "ORDER_WIN",
+    "polarity": "POSITIVE",
+    "magnitude": "HIGH",
+    "surprise": "MEDIUM",
+    "durability": "LONG_TERM",
+    "confidence": 0.85,
+    "affectedTickers": ["TICKER"],
+    "affectedSectors": ["Sector"],
+    "rationale": "brief reason"
   }]
 }`;
 

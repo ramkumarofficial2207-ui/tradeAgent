@@ -108,6 +108,8 @@ interface ScanDiagnostics {
         setupType: string
         confidenceScore: number
         primaryReason: string
+        movePct?: number
+        source?: 'QUALIFIED_WATCHLIST' | 'TOP_GAINER'
     }>
 }
 
@@ -633,7 +635,7 @@ export default function DashboardPage() {
                     </div>
 
                     {/* ΓöÇΓöÇΓöÇ TRACK RECORD UI ΓöÇΓöÇΓöÇ */}
-                    {!showTracker && scanMode === 'intraday' && scanDiagnostics && (
+                    {!showTracker && scanDiagnostics && (
                         <div className="card" style={{
                             marginTop: 14,
                             marginBottom: 6,
@@ -643,7 +645,9 @@ export default function DashboardPage() {
                         }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
                                 <div>
-                                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.88rem', fontWeight: 900 }}>Intraday Diagnostics</div>
+                                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.88rem', fontWeight: 900 }}>
+                                        {scanDiagnostics.mode === 'intraday' ? 'Intraday Diagnostics' : 'Swing Diagnostics'}
+                                    </div>
                                     <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>
                                         Universe {scanDiagnostics.universeCount} · Qualified {scanDiagnostics.qualifiedCount} · Final setups {scanDiagnostics.setupCount}
                                     </div>
@@ -711,7 +715,7 @@ export default function DashboardPage() {
                             {!!scanDiagnostics.nearMisses?.length && (
                                 <div style={{ marginTop: 12 }}>
                                     <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.76rem', fontWeight: 800, marginBottom: 8 }}>
-                                        Near-Miss Watchlist
+                                        {scanDiagnostics.mode === 'intraday' ? 'Near-Miss Watchlist' : 'Tomorrow Watchlist'}
                                     </div>
                                     <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
                                         {scanDiagnostics.nearMisses.map((item) => (
@@ -727,7 +731,14 @@ export default function DashboardPage() {
                                                         {item.confidenceScore.toFixed(1)}/10
                                                     </div>
                                                 </div>
-                                                <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)', marginTop: 3 }}>{item.setupType}</div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 3, alignItems: 'center' }}>
+                                                    <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)' }}>{item.setupType}</div>
+                                                    {(item.movePct != null || item.source) && (
+                                                        <div style={{ fontSize: '0.6rem', color: item.source === 'TOP_GAINER' ? '#34d399' : 'var(--text-muted)', fontWeight: 700 }}>
+                                                            {item.movePct != null ? `${item.movePct >= 0 ? '+' : ''}${item.movePct.toFixed(2)}%` : item.source === 'TOP_GAINER' ? 'Top gainer' : 'Qualified'}
+                                                        </div>
+                                                    )}
+                                                </div>
                                                 <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.45, marginTop: 8 }}>
                                                     {item.primaryReason}
                                                 </div>
@@ -868,11 +879,15 @@ export default function DashboardPage() {
                                     WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
                                     backgroundClip: 'text',
                                 }}>
-                                    {scanMode === 'intraday' && scanDiagnostics ? 'No Trade-Ready Intraday Setups' : 'AI Agent Ready'}
+                                    {scanDiagnostics
+                                        ? (scanDiagnostics.mode === 'intraday' ? 'No Trade-Ready Intraday Setups' : 'No Trade-Ready Swing Setups')
+                                        : 'AI Agent Ready'}
                                 </div>
                                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', maxWidth: 420, lineHeight: 1.7, margin: '0 auto' }}>
-                                    {scanMode === 'intraday' && scanDiagnostics
-                                        ? (scanDiagnostics.summary || 'The market is not offering a clean intraday long right now. Use the diagnostics and near-miss watchlist above instead of forcing entries.')
+                                    {scanDiagnostics
+                                        ? (scanDiagnostics.summary || (scanDiagnostics.mode === 'intraday'
+                                            ? 'The market is not offering a clean intraday long right now. Use the diagnostics and near-miss watchlist above instead of forcing entries.'
+                                            : 'No swing setup is trade-ready right now. Use the swing diagnostics and tomorrow watchlist above instead of forcing entries.'))
                                         : <>Run a full market scan to analyse <strong style={{ color: 'var(--text-primary)' }}>1000+ NSE stocks</strong> — Large, Mid and Small Cap — with live technical data, volume analysis, and Gemini AI signal generation.</>}
                                 </p>
                             </div>
@@ -882,8 +897,8 @@ export default function DashboardPage() {
                             </button>
 
                             <div style={{ display: 'flex', gap: 12, marginTop: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
-                                {(scanMode === 'intraday' && scanDiagnostics
-                                    ? ['Momentum Breadth', 'VWAP Check', 'Risk-Reward', 'Watchlist Names']
+                                {(scanDiagnostics
+                                    ? [scanDiagnostics.mode === 'intraday' ? 'Momentum Breadth' : 'Tomorrow Watchlist', scanDiagnostics.mode === 'intraday' ? 'VWAP Check' : 'Top Movers', 'Risk-Reward', 'Watchlist Names']
                                     : ['DMA200 Filter', 'RSI Zone', 'Volume Spike', 'AI Signal']).map(t => (
                                     <span key={t} style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
                                         <CheckCircle2 size={9} style={{ color: '#34d399', opacity: 0.6 }} /> {t}
