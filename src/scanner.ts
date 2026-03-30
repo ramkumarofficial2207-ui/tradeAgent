@@ -4,7 +4,7 @@
 // =====================================================
 
 import { fetchHistoricalData, fetchNiftyData, MARKET_CAP_CR_MAP, NSE_UNIVERSE, SECTOR_MAP } from './dataService';
-import { getMomentumCandidates, getTopGainersToday, getBhavcopyCacheStatus } from './nseDiscovery';
+import { getDynamicUniverse, getTopGainersToday, getBhavcopyCacheStatus } from './nseDiscovery';
 import { getNewsCatalystTickers } from './newsIntel/service';
 import { computeIndicators, computeConfidence, computeRegime, estimateHitProbability, identifySetupType, detectVCP } from './indicators';
 import prisma from './prismaClient';
@@ -451,11 +451,11 @@ function getLatestSessionCandles(candles: Candle[]): Candle[] {
 // ──────────────────────────────────────────────────────────────────
 // FETCH UNIVERSE — Two-source dynamic discovery
 //
-// Source 1: NSE Bhavcopy — top 300 momentum stocks from entire NSE
+// Source 1: NSE Bhavcopy — full liquid NSE universe
 // Source 2: News catalyst tickers — stocks AI identified from news
 //
 // Both sources are merged and deduped. This ensures the agent covers:
-//   • Stocks showing technical breakout (bhavcopy momentum)
+//   • The full liquid post-market NSE universe
 //   • Stocks with fresh catalysts from news (even before price moves)
 //
 // Falls back to static NSE_UNIVERSE only if bhavcopy is unavailable.
@@ -469,10 +469,16 @@ async function fetchUniverseData(
     // ── Source 1: NSE Bhavcopy (dynamic, zero hardcoding) ──────────
     let entries: Array<[string, string]> = [];
     try {
-        const bhavCandidates = await getMomentumCandidates(300);
-        if (bhavCandidates.length > 50) {
-            entries = bhavCandidates.map(r => [r.symbol, r.yahooTicker]);
-            console.log(`[scanner] 🌐 Bhavcopy universe: ${entries.length} stocks`);
+        const dynamicUniverse = await getDynamicUniverse({
+            minClose: 20,
+            minTurnoverCr: 2,
+            minTrades: 300,
+        });
+        if (dynamicUniverse.length > 50) {
+            entries = dynamicUniverse
+                .sort((a, b) => b.totalTradValCr - a.totalTradValCr || b.totalTrades - a.totalTrades)
+                .map(r => [r.symbol, r.yahooTicker]);
+            console.log(`[scanner] 🌐 Full liquid bhavcopy universe: ${entries.length} stocks`);
         }
     } catch (err) {
         console.warn('[scanner] Bhavcopy unavailable, falling back to static universe.');
