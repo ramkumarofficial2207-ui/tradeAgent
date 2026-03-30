@@ -25,9 +25,13 @@ export default function EconomicCalendarWidget() {
     const [events, setEvents] = useState<CalEvent[]>([])
 
     useEffect(() => {
-        axios.get('/api/economic-calendar').then(({ data }) => {
+        const load = () => axios.get('/api/economic-calendar').then(({ data }) => {
             if (data.success) setEvents(data.data)
         }).catch(() => {})
+
+        load()
+        const timer = window.setInterval(load, 30 * 60 * 1000)
+        return () => window.clearInterval(timer)
     }, [])
 
     if (!events.length) return null

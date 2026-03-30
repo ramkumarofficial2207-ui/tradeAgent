@@ -243,6 +243,120 @@ function setCachedScan(mode: ScanMode, scan: ScanResult): void {
     }
     lastSwingScan = scan;
 }
+
+type SectorPulseTile = { n: string; v: number };
+
+const SECTOR_PULSE_BASKETS: Record<string, string[]> = {
+    IT: ['TCS', 'INFY', 'HCLTECH'],
+    Bank: ['HDFCBANK', 'ICICIBANK', 'AXISBANK'],
+    Pharma: ['SUNPHARMA', 'DRREDDY', 'CIPLA'],
+    Auto: ['MARUTI', 'M&M', 'TATAMOTORS'],
+    Metal: ['JSWSTEEL', 'TATASTEEL', 'HINDALCO'],
+    FMCG: ['HINDUNILVR', 'ITC', 'NESTLEIND'],
+    Energy: ['RELIANCE', 'ONGC', 'BPCL'],
+    Realty: ['DLF', 'GODREJPROP', 'OBEROIRLTY'],
+    Infra: ['LT', 'NBCC', 'KEC'],
+};
+
+const SECTOR_PULSE_TTL_MS = 5 * 60 * 1000;
+let sectorPulseCache: { ts: number; data: { sectors: SectorPulseTile[]; fetchedAt: string; source: string } } | null = null;
+
+function roundNumber(value: number, digits = 2): number {
+    return Number(value.toFixed(digits));
+}
+
+function getLatestAvailableScan(): ScanResult | null {
+    if (!lastSwingScan) return lastIntradayScan;
+    if (!lastIntradayScan) return lastSwingScan;
+    const swingTs = new Date(lastSwingScan.timestamp || 0).getTime();
+    const intradayTs = new Date(lastIntradayScan.timestamp || 0).getTime();
+    return intradayTs > swingTs ? lastIntradayScan : lastSwingScan;
+}
+
+function buildSectorFallbackFromScan(scan: ScanResult | null): SectorPulseTile[] {
+    const breadth = scan?.sectorBreadth ? Object.values(scan.sectorBreadth) : [];
+    return breadth
+        .sort((a, b) => b.breadthScore - a.breadthScore)
+        .slice(0, 9)
+        .map(item => ({
+            n: item.sector,
+            v: roundNumber((item.breadthScore - 0.5) * 12, 2),
+        }));
+}
+
+async function buildSectorPulse(): Promise<{ sectors: SectorPulseTile[]; fetchedAt: string; source: string }> {
+    if (sectorPulseCache && Date.now() - sectorPulseCache.ts < SECTOR_PULSE_TTL_MS) {
+        return sectorPulseCache.data;
+    }
+
+    const liveEntries = await Promise.all(Object.entries(SECTOR_PULSE_BASKETS).map(async ([sector, tickers]) => {
+        const changes = (await Promise.all(tickers.map(async (ticker) => {
+            const yahooTicker = NSE_UNIVERSE[ticker] || `${ticker}.NS`;
+            let candles = await fetchHistoricalData(yahooTicker, 2, '5m');
+            if (candles.length < 2) candles = await fetchHistoricalData(yahooTicker, 5, '1d');
+            if (candles.length < 2) return null;
+            const latest = candles[candles.length - 1];
+            const previous = candles[candles.length - 2];
+            if (!previous?.close) return null;
+            return ((latest.close - previous.close) / previous.close) * 100;
+        }))).filter((value): value is number => value != null && Number.isFinite(value));
+
+        if (!changes.length) return null;
+        const averageChange = changes.reduce((sum, value) => sum + value, 0) / changes.length;
+        return { n: sector, v: roundNumber(averageChange, 2) };
+    }));
+
+    const sectors = liveEntries.filter((entry): entry is SectorPulseTile => Boolean(entry));
+    const data = sectors.length
+        ? { sectors, fetchedAt: new Date().toISOString(), source: 'live-sector-baskets' }
+        : {
+            sectors: buildSectorFallbackFromScan(getLatestAvailableScan()),
+            fetchedAt: new Date().toISOString(),
+            source: 'scan-sector-breadth',
+        };
+
+    sectorPulseCache = { ts: Date.now(), data };
+    return data;
+}
+
+function getLastThursdayUtc(year: number, monthIndex: number): Date {
+    const date = new Date(Date.UTC(year, monthIndex + 1, 0));
+    while (date.getUTCDay() !== 4) date.setUTCDate(date.getUTCDate() - 1);
+    return date;
+}
+
+function buildEconomicCalendar(now = new Date()) {
+    const events: Array<{ date: string; label: string; type: 'FNO' | 'RBI' | 'EARNINGS' | 'BUDGET'; importance: 'HIGH' | 'CRITICAL' }> = [];
+    const year = now.getUTCFullYear();
+    const start = Date.UTC(year, now.getUTCMonth(), now.getUTCDate());
+
+    for (let offset = 0; offset < 6; offset += 1) {
+        const monthIndex = now.getUTCMonth() + offset;
+        const expiry = getLastThursdayUtc(year + Math.floor(monthIndex / 12), ((monthIndex % 12) + 12) % 12);
+        if (expiry.getTime() >= start) {
+            events.push({
+                date: expiry.toISOString(),
+                label: `Monthly F&O Expiry - ${expiry.toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' })}`,
+                type: 'FNO',
+                importance: offset <= 1 ? 'CRITICAL' : 'HIGH',
+            });
+        }
+    }
+
+    const budgetThisYear = new Date(Date.UTC(year, 1, 1));
+    const budgetNextYear = new Date(Date.UTC(year + 1, 1, 1));
+    const nextBudget = budgetThisYear.getTime() >= start ? budgetThisYear : budgetNextYear;
+    events.push({
+        date: nextBudget.toISOString(),
+        label: 'Union Budget',
+        type: 'BUDGET',
+        importance: 'CRITICAL',
+    });
+
+    return events
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        .slice(0, 6);
+}
 let broker: any = null;
 let tradingApi: any = null;
 
@@ -1032,9 +1146,49 @@ app.get('/api/agent/stream', (req, res) => {
     req.on('close', () => removeSSEClient(res));
 });
 
+app.get('/api/fii-dii', async (req: Request, res: Response) => {
+    try {
+        const refresh = req.query.refresh === 'true';
+        let summary = refresh
+            ? await syncInstitutionalFlowFromOfficialReport()
+            : await getInstitutionalFlowSummary();
+
+        if (!summary.series.length) {
+            summary = await seedInstitutionalFlowIfEmpty();
+        }
+
+        res.json({ success: true, data: summary });
+    } catch (error: any) {
+        try {
+            const fallback = await getInstitutionalFlowSummary();
+            res.json({ success: true, data: fallback });
+        } catch (fallbackError: any) {
+            res.status(500).json({ success: false, message: sanitizeError(fallbackError || error) });
+        }
+    }
+});
+
+app.get('/api/economic-calendar', (_req: Request, res: Response) => {
+    res.json({ success: true, data: buildEconomicCalendar() });
+});
+
 // SECTORS
 app.get('/api/sectors', async (_req, res) => {
-    res.json({ success: true, data: { sectors: [], fetchedAt: new Date().toISOString() } });
+    try {
+        const data = await buildSectorPulse();
+        res.json({ success: true, data });
+    } catch (error: any) {
+        const scan = getLatestAvailableScan();
+        res.json({
+            success: true,
+            data: {
+                sectors: buildSectorFallbackFromScan(scan),
+                fetchedAt: scan?.timestamp || new Date().toISOString(),
+                source: 'scan-sector-breadth',
+                note: sanitizeError(error),
+            },
+        });
+    }
 });
 
 // PORTFOLIO

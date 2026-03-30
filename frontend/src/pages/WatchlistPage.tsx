@@ -13,6 +13,13 @@ import AIActionCard from '../components/AIActionCard'
 const fmt = (n: number) => '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2 })
 const pct = (n: number) => (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'
 
+type ChartApiResponse = {
+    success?: boolean
+    data?: {
+        candles?: Array<{ close: number }>
+    }
+}
+
 function SignalBadge({ signal }: { signal?: string }) {
     if (!signal) return null
     const Icon = (signal === 'BUY' || signal === 'LIGHT BUY') ? CheckCircle : signal === 'REJECT' ? AlertTriangle : MinusCircle
@@ -51,14 +58,23 @@ export default function WatchlistPage() {
         setRefreshing(true)
         try {
             const pricePromises = watchlistItems.map(async (item) => {
+                const getPriceFromChart = async (interval: '5m' | '1d', days: number) => {
+                    const { data } = await axios.get<ChartApiResponse>(`/api/chart/${item.ticker}?interval=${interval}&days=${days}`)
+                    const candles = data.data?.candles ?? []
+                    if (!data.success || candles.length === 0) return null
+
+                    const latest = candles[candles.length - 1]
+                    const prev = candles.length >= 2 ? candles[candles.length - 2] : latest
+                    const change = prev.close > 0 ? ((latest.close - prev.close) / prev.close) * 100 : 0
+                    return { livePrice: latest.close, priceChange: change }
+                }
+
                 try {
-                    const { data } = await axios.get(`/api/chart/${item.ticker}`)
-                    if (data.success && data.data?.length > 0) {
-                        const latest = data.data[data.data.length - 1]
-                        const prev = data.data.length >= 2 ? data.data[data.data.length - 2] : latest
-                        const change = prev.close > 0 ? ((latest.close - prev.close) / prev.close) * 100 : 0
-                        return { ...item, livePrice: latest.close, priceChange: change }
-                    }
+                    const intraday = await getPriceFromChart('5m', 2)
+                    if (intraday) return { ...item, ...intraday }
+
+                    const daily = await getPriceFromChart('1d', 5)
+                    if (daily) return { ...item, ...daily }
                 } catch { /* ignore */ }
                 return { ...item, livePrice: item.ltp, priceChange: 0 }
             })

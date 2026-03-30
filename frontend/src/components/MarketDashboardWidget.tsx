@@ -125,7 +125,11 @@ export default function MarketDashboardWidget({ sectors, sectorTime }: { sectors
         finally { setRefreshing(false) }
     }, [])
 
-    useEffect(() => { fetchData() }, [fetchData])
+    useEffect(() => {
+        fetchData()
+        const timer = window.setInterval(fetchData, 5 * 60 * 1000)
+        return () => window.clearInterval(timer)
+    }, [fetchData])
 
     const vLvl = pulse?.indices?.vix?.price ?? 0
     const vChg = pulse?.indices?.vix?.change ?? 0

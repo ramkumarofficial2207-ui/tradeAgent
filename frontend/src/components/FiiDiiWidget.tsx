@@ -96,6 +96,10 @@ export default function FiiDiiWidget() {
 
     useEffect(() => {
         load().catch(() => undefined)
+        const timer = window.setInterval(() => {
+            load().catch(() => undefined)
+        }, 5 * 60 * 1000)
+        return () => window.clearInterval(timer)
     }, [])
 
     if (loading) {

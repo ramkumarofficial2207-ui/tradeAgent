@@ -433,12 +433,16 @@ export default function DashboardPage() {
 
     // Fetch live sector data
     useEffect(() => {
-        axios.get('/api/sectors').then(({ data }) => {
+        const fetchSectors = () => axios.get('/api/sectors').then(({ data }) => {
             if (data.success && data.data?.sectors) {
                 setSectors(data.data.sectors)
                 setSectorTime(data.data.fetchedAt)
             }
         }).catch(() => { })
+
+        fetchSectors()
+        const timer = window.setInterval(fetchSectors, 5 * 60 * 1000)
+        return () => window.clearInterval(timer)
     }, [])
 
     // Fetch tracker data
