@@ -283,6 +283,81 @@ function scoreGapQuality(gapPct: number, trendRecovered: boolean): number {
     return +clamp(score, 0, 10).toFixed(1);
 }
 
+function scoreCloseLocation(lastCandle: Candle): number {
+    const range = Math.max(lastCandle.high - lastCandle.low, 0.01);
+    return clamp(((lastCandle.close - lastCandle.low) / range) * 100, 0, 100);
+}
+
+function scoreTomorrowContinuation(params: {
+    ind: StockIndicators;
+    lastCandle: Candle;
+    breakoutQuality: number;
+    gapQuality: number;
+}): number {
+    const { ind, lastCandle, breakoutQuality, gapQuality } = params;
+    const closeLocation = scoreCloseLocation(lastCandle);
+    const extensionFromEma20 = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) * 100;
+    let score = 4.4;
+
+    if (closeLocation >= 75) score += 1.5;
+    else if (closeLocation >= 60) score += 0.8;
+    else score -= 0.9;
+
+    if (ind.volumeRatio >= 1.8) score += 1.4;
+    else if (ind.volumeRatio >= 1.2) score += 0.8;
+
+    if (ind.returns10d >= 4) score += 0.9;
+    else if (ind.returns10d > 0) score += 0.45;
+    else score -= 0.8;
+
+    if (ind.rsi14 >= 54 && ind.rsi14 <= 72) score += 0.8;
+    else if (ind.rsi14 > 78) score -= 0.8;
+
+    if (ind.adx14 >= 20) score += 0.55;
+    if (ind.ema20 >= ind.ema50 * 0.995) score += 0.4;
+    if (extensionFromEma20 > 6) score -= 1.1;
+    else if (extensionFromEma20 > 4) score -= 0.45;
+
+    score += (breakoutQuality - 5) * 0.18;
+    score += (gapQuality - 5) * 0.08;
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
+function scoreFiveDaySwingPotential(params: {
+    ind: StockIndicators;
+    breakoutQuality: number;
+    pullbackQuality: number;
+}): number {
+    const { ind, breakoutQuality, pullbackQuality } = params;
+    const rs1m = ind.returns1m - ind.nifty1mReturn;
+    const rs3m = ind.returns3m - ind.nifty3mReturn;
+    let score = 4.8;
+
+    if (rs1m >= 4) score += 1.2;
+    else if (rs1m >= 1) score += 0.6;
+    else score -= 0.8;
+
+    if (rs3m >= 6) score += 1.15;
+    else if (rs3m >= 1) score += 0.6;
+    else score -= 0.9;
+
+    if (ind.ema50Slope > 0.8) score += 0.9;
+    else if (ind.ema50Slope > 0.2) score += 0.45;
+
+    if (ind.pctFrom52wHigh <= 12) score += 0.8;
+    else if (ind.pctFrom52wHigh <= 20) score += 0.35;
+    else score -= 0.7;
+
+    if ((ind.accumulationScore ?? 0) >= 60) score += 0.8;
+    else if ((ind.accumulationScore ?? 0) < 48) score -= 0.6;
+
+    score += (Math.max(breakoutQuality, pullbackQuality) - 5) * 0.2;
+    if (ind.isBullFlag) score += 0.45;
+    if (ind.isDeepValue) score -= 0.7;
+
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
 function scoreIntradayStructure(params: {
     close: number;
     fastEma: number;
@@ -868,9 +943,16 @@ export async function buildTradeSetups(
         const riskReward = effectiveRiskReward;
 
         // ── GATE: Minimum RR ≥ 2:1 ───────────────────────────────
-        if (riskReward < MIN_RR) continue;
+        const strongEarlyContinuation =
+            ind.volumeRatio >= 1.5 &&
+            ind.returns10d >= 3 &&
+            ind.rsi14 >= 54 &&
+            ind.rsi14 <= 72;
+        const minimumRiskReward = strongEarlyContinuation ? 1.35 : MIN_RR;
+        const minimumTargetPct = strongEarlyContinuation ? 3.2 : 4;
+        if (riskReward < minimumRiskReward) continue;
         // ── GATE: Target ≥ 4% ────────────────────────────────────
-        if (targetPct < 4) continue;
+        if (targetPct < minimumTargetPct) continue;
 
         // ── GATE: News risk check ─────────────────────────────────
         const news = await validateNewsRisk(ind.ticker);
@@ -905,9 +987,25 @@ export async function buildTradeSetups(
         const primaryExecutionQuality = setupType.includes('Pullback') || ind.isDeepValue
             ? pullbackQuality
             : breakoutQuality;
-        if (primaryExecutionQuality < 4.8 || gapQuality < 3.8) continue;
+        const tomorrowContinuationScore = scoreTomorrowContinuation({
+            ind,
+            lastCandle,
+            breakoutQuality,
+            gapQuality,
+        });
+        const fiveDaySwingScore = scoreFiveDaySwingPotential({
+            ind,
+            breakoutQuality,
+            pullbackQuality,
+        });
+        const predictiveEdgeScore = +(((tomorrowContinuationScore * 0.58) + (fiveDaySwingScore * 0.42))).toFixed(1);
+        const isPredictiveLeader = tomorrowContinuationScore >= 6.8 || fiveDaySwingScore >= 7.1;
+        const minimumExecutionQuality = isPredictiveLeader ? 4.4 : 4.8;
+        const minimumGapQuality = isPredictiveLeader ? 3.4 : 3.8;
+        if (primaryExecutionQuality < minimumExecutionQuality || gapQuality < minimumGapQuality) continue;
         const executionAdjustment = ((primaryExecutionQuality - 5) * 0.2) + ((gapQuality - 5) * 0.08) + ((effectiveRiskReward - 1.5) * 0.35);
-        const executionAdjustedConfidence = +clamp(breakdown.total + executionAdjustment, 0, 10).toFixed(1);
+        const predictiveAdjustment = ((tomorrowContinuationScore - 5) * 0.24) + ((fiveDaySwingScore - 5) * 0.22);
+        const executionAdjustedConfidence = +clamp(breakdown.total + executionAdjustment + predictiveAdjustment, 0, 10).toFixed(1);
 
         // ── GATE: Score ≥ MIN_CONFIDENCE — THE KEY FILTER ───────────────────
         if (executionAdjustedConfidence < MIN_CONFIDENCE) continue;
@@ -924,6 +1022,8 @@ export async function buildTradeSetups(
         // Precise short-term momentum alignment required (with slight tolerance for pullbacks)
         if (ind.ema20 < ind.ema50 * 0.98) continue;
 
+        if (predictiveEdgeScore < 6.2) continue;
+
         // Note: setupType was already computed above.
 
         // ── GATE: The VCP Volume Dry-Up Law ───────────────────────
@@ -939,7 +1039,11 @@ export async function buildTradeSetups(
         }
 
         // ── Timeframe categorization ─────────────────────────────
+        const horizonLabel = tomorrowContinuationScore >= fiveDaySwingScore
+            ? 'Tomorrow continuation'
+            : '2-5 day swing';
         const timeframe = (() => {
+            if (tomorrowContinuationScore >= 7.2) return 'Short Swing';
             if (ind.isDeepValue || setupType.includes('VCP')) return 'Medium Swing';
             if (ind.isBullFlag || setupType.includes('Breakout Base') || setupType.includes('Momentum Continuation')) return 'Short Swing';
             return 'Short Swing';
@@ -956,7 +1060,9 @@ export async function buildTradeSetups(
             if (vcp.isVCP) return `VCP breakout above pivot ${entryPrice}. Volume must be ≥ 1.5× on breakout day.`;
             if (Math.abs(ind.ltp - ind.ema20) / ind.ema20 < 0.02) return `Bounce from 20 EMA. Enter above ${entryPrice} on green candle.`;
             if (Math.abs(ind.ltp - ind.ema50) / ind.ema50 < 0.03) return `50 EMA pullback. Enter above ${entryPrice} with volume confirmation.`;
-            return `Momentum breakout above ${entryPrice}. Wait for next-day open.`;
+            return horizonLabel === 'Tomorrow continuation'
+                ? `Tomorrow continuation setup. Buy above ${entryPrice} if price holds strength into the next session.`
+                : `Short swing setup. Buy above ${entryPrice} if price confirms continuation over the next 1-2 sessions.`;
         })();
 
         // ── Catalyst text ─────────────────────────────────────────
@@ -966,6 +1072,7 @@ export async function buildTradeSetups(
             ind.isBullFlag ? `Flag Volume: Drying up (-30% avg)` : `Vol: ${ind.volumeRatio.toFixed(1)}× avg (${isSmall ? 'small cap 2× required' : '1.5× required'})`,
             `3M RS: ${ind.outperformsNifty ? '+' : ''}${(ind.returns3m - ind.nifty3mReturn).toFixed(1)}% vs Nifty`,
             `${ind.pctFrom52wHigh.toFixed(1)}% below 52W high`,
+            `Horizon: ${horizonLabel}`,
         ].join(' · ');
 
         setups.push({
@@ -1013,8 +1120,11 @@ export async function buildTradeSetups(
                 effectiveRiskReward,
                 slippagePct,
             },
+            calibratedEdgeScore: predictiveEdgeScore,
             rejectionReasons: [],
             confidenceDrivers: [
+                `Tomorrow continuation ${tomorrowContinuationScore}/10`,
+                `2-5 day swing ${fiveDaySwingScore}/10`,
                 `Relative strength ${(ind.returns3m - ind.nifty3mReturn).toFixed(1)}% vs Nifty`,
                 `Trend score ${breakdown.scoreTrend}/2`,
                 `Volume score ${breakdown.scoreVolume}/2`,
@@ -1026,7 +1136,13 @@ export async function buildTradeSetups(
     }
 
     // Take top 8 (after all gates — should be small quality set)
-    const finalSetups = setups.slice(0, 8);
+    const finalSetups = setups
+        .sort((a, b) =>
+            (b.calibratedEdgeScore ?? 0) - (a.calibratedEdgeScore ?? 0) ||
+            b.confidenceScore - a.confidenceScore ||
+            b.riskReward - a.riskReward
+        )
+        .slice(0, 8);
     await enrichTradeSetupsWithAI(finalSetups, qualified);
 
     // ── AI ENRICHMENT ────────────────────────────────────────────
