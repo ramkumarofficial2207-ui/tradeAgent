@@ -31,10 +31,13 @@ interface EdgeDashboardData {
     }
     strongestBuckets: Bucket[]
     weakestBuckets: Bucket[]
+    familyBuckets: Bucket[]
+    categoryBuckets: Bucket[]
     sectorBuckets: Bucket[]
     regimeBuckets: Bucket[]
     alignmentBuckets: Bucket[]
     confidenceBuckets: Bucket[]
+    confluenceBuckets: Bucket[]
     dayOfWeekBuckets: Bucket[]
     recentSignals: any[]
 }
@@ -119,6 +122,12 @@ export default function FounderEdgePage() {
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 16, marginBottom: 18 }}>
+                        <BucketList title="Setup Family Performance" items={data.familyBuckets} tone="neutral" />
+                        <BucketList title="Horizon Category Performance" items={data.categoryBuckets} tone="neutral" />
+                        <BucketList title="Confluence Band Performance" items={data.confluenceBuckets} tone="neutral" />
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 16, marginBottom: 18 }}>
                         <BucketList title="Sector Performance" items={data.sectorBuckets} tone="neutral" />
                         <BucketList title="Regime Performance" items={data.regimeBuckets} tone="neutral" />
                         <BucketList title="News Alignment Performance" items={data.alignmentBuckets} tone="neutral" />
@@ -145,6 +154,8 @@ export default function FounderEdgePage() {
                                     </div>
                                     <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                                         <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>Edge {signal.edgeScore}</span>
+                                        <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{signal.setupFamily}</span>
+                                        <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>Confluence {signal.confluenceScore}</span>
                                         <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{signal.newsAlignment}</span>
                                         <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{signal.confirmationStatus}</span>
                                     </div>

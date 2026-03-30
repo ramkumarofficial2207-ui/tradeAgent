@@ -6,7 +6,7 @@
 // =====================================================
 
 import axios from 'axios';
-import { Candle, GttOrderRequest, GttOrderResponse, MarketDataInterval, TradingApi } from './types';
+import { Candle, GttOrderRequest, GttOrderResponse, MarketDataApi, MarketDataInterval, TradingApi } from './types';
 
 // =====================================================
 // FULL NSE LARGE + MIDCAP + SMALLCAP UNIVERSE (Nifty 1000 equivalent)
@@ -1630,6 +1630,125 @@ export async function fetchNiftyData(): Promise<MarketDataChange> {
 }
 
 type BrokerProvider = 'paper' | 'kite';
+
+export interface LiveQuoteSnapshot {
+    ticker: string;
+    price: number;
+    previousClose: number;
+    changePct: number;
+    source: 'kite' | 'yahoo_5m' | 'yahoo_1d';
+    fetchedAt: string;
+}
+
+const quoteCache = new Map<string, { ts: number; data: LiveQuoteSnapshot }>();
+const DEFAULT_QUOTE_TTL_MS = 30 * 1000;
+
+function resolveQuoteReference(candles: Candle[], latestPrice: number): { previousClose: number; source: 'yahoo_5m' | 'yahoo_1d' } | null {
+    if (candles.length >= 2) {
+        const previousClose = candles[candles.length - 2]?.close;
+        if (Number.isFinite(previousClose) && previousClose > 0) {
+            return {
+                previousClose,
+                source: candles.length <= 5 ? 'yahoo_1d' : 'yahoo_5m',
+            };
+        }
+    }
+
+    if (candles.length >= 1) {
+        const previousClose = candles[candles.length - 1]?.close;
+        if (Number.isFinite(previousClose) && previousClose > 0) {
+            return {
+                previousClose,
+                source: candles.length <= 5 ? 'yahoo_1d' : 'yahoo_5m',
+            };
+        }
+    }
+
+    if (latestPrice > 0) {
+        return {
+            previousClose: latestPrice,
+            source: 'yahoo_1d',
+        };
+    }
+
+    return null;
+}
+
+export async function getLiveQuoteSnapshot(
+    ticker: string,
+    marketDataApi?: MarketDataApi | null,
+    ttlMs = DEFAULT_QUOTE_TTL_MS
+): Promise<LiveQuoteSnapshot> {
+    const normalizedTicker = ticker.toUpperCase();
+    const cached = quoteCache.get(normalizedTicker);
+    if (cached && Date.now() - cached.ts < ttlMs) {
+        return cached.data;
+    }
+
+    let livePrice: number | null = null;
+    if (marketDataApi) {
+        try {
+            const maybeLtp = await marketDataApi.getLtp(normalizedTicker);
+            if (Number.isFinite(maybeLtp) && maybeLtp > 0) {
+                livePrice = maybeLtp;
+            }
+        } catch { /* fallback below */ }
+    }
+
+    const yahooTicker = NSE_UNIVERSE[normalizedTicker] ?? `${normalizedTicker}.NS`;
+
+    let intradayCandles: Candle[] = [];
+    try {
+        intradayCandles = await fetchHistoricalData(yahooTicker, 2, '5m');
+    } catch { /* ignore */ }
+
+    let reference = resolveQuoteReference(intradayCandles, livePrice ?? 0);
+    if (!reference) {
+        let dailyCandles: Candle[] = [];
+        try {
+            dailyCandles = await fetchHistoricalData(yahooTicker, 5, '1d');
+        } catch { /* ignore */ }
+        reference = resolveQuoteReference(dailyCandles, livePrice ?? 0);
+    }
+
+    const derivedPrice = livePrice
+        ?? intradayCandles[intradayCandles.length - 1]?.close
+        ?? reference?.previousClose
+        ?? 0;
+
+    if (!Number.isFinite(derivedPrice) || derivedPrice <= 0 || !reference) {
+        throw new Error(`Live quote unavailable for ${normalizedTicker}`);
+    }
+
+    const data: LiveQuoteSnapshot = {
+        ticker: normalizedTicker,
+        price: +derivedPrice.toFixed(2),
+        previousClose: +reference.previousClose.toFixed(2),
+        changePct: +((((derivedPrice - reference.previousClose) / reference.previousClose) * 100) || 0).toFixed(2),
+        source: marketDataApi && livePrice != null ? 'kite' : reference.source,
+        fetchedAt: new Date().toISOString(),
+    };
+
+    quoteCache.set(normalizedTicker, { ts: Date.now(), data });
+    return data;
+}
+
+export async function getLiveQuoteSnapshots(
+    tickers: string[],
+    marketDataApi?: MarketDataApi | null,
+    ttlMs = DEFAULT_QUOTE_TTL_MS
+): Promise<LiveQuoteSnapshot[]> {
+    const uniqueTickers = Array.from(new Set(
+        tickers
+            .map(ticker => ticker?.trim().toUpperCase())
+            .filter((ticker): ticker is string => Boolean(ticker))
+    ));
+
+    const settled = await Promise.allSettled(uniqueTickers.map(ticker => getLiveQuoteSnapshot(ticker, marketDataApi, ttlMs)));
+    return settled
+        .filter((result): result is PromiseFulfilledResult<LiveQuoteSnapshot> => result.status === 'fulfilled')
+        .map(result => result.value);
+}
 
 function getKiteHeaders(apiKey: string, accessToken: string): Record<string, string> {
     return {

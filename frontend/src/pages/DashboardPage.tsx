@@ -60,6 +60,7 @@ interface TradeSetup {
     ticker: string
     sector: string
     setupType: string
+    setupFamily?: 'BREAKOUT' | 'PULLBACK' | 'COMPRESSION' | 'REVERSAL' | 'CONTINUATION'
     setupCategory?: 'TOMORROW' | 'SWING_2_5'
     thesisHorizonDays?: number
     marketCapCr?: number
@@ -89,6 +90,7 @@ interface TradeSetup {
     aiSignal?: 'BUY' | 'LIGHT BUY' | 'WATCH' | 'REJECT'
     aiLogic?: string
     calibratedEdgeScore?: number
+    confluenceScore?: number
     positionSizePct?: number
     riskFlags?: string[]
     rejectionReasons?: string[]
@@ -120,6 +122,15 @@ interface ScanDiagnostics {
         primaryReason: string
         movePct?: number
         source?: 'QUALIFIED_EXHAUSTED' | 'TOP_GAINER'
+    }>
+}
+
+interface QuoteApiResponse {
+    success?: boolean
+    data?: Record<string, {
+        price: number
+        changePct: number
+        fetchedAt?: string
     }>
 }
 
@@ -388,6 +399,7 @@ const FILTER_OPTIONS = [
 /* ΓöÇΓöÇΓöÇ MAIN Dashboard ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 export default function DashboardPage() {
     const [setups, setSetups] = useState<TradeSetup[]>([])
+    const [liveQuotes, setLiveQuotes] = useState<Record<string, { price: number; changePct: number }>>({})
     const [market, setMarket] = useState<MarketStatus | null>(null)
     const [pulse, setPulse] = useState<MarketPulse | null>(null)
     const [scanning, setScanning] = useState(false)
@@ -464,6 +476,24 @@ export default function DashboardPage() {
     })
 
     const [scanError, setScanError] = useState<string | null>(null)
+    const refreshSetupQuotes = useCallback(async (setupList: TradeSetup[]) => {
+        const tickers = Array.from(new Set(setupList.map(setup => setup.ticker).filter(Boolean)))
+        if (tickers.length === 0) {
+            setLiveQuotes({})
+            return
+        }
+        try {
+            const { data } = await axios.get<QuoteApiResponse>(`/api/quotes?tickers=${encodeURIComponent(tickers.join(','))}`)
+            if (!data.success || !data.data) return
+            const nextQuotes = Object.fromEntries(
+                Object.entries(data.data).map(([ticker, quote]) => [ticker.toUpperCase(), { price: quote.price, changePct: quote.changePct }])
+            )
+            setLiveQuotes(nextQuotes)
+        } catch {
+            // Keep existing quotes if live refresh fails.
+        }
+    }, [])
+
     const runScan = useCallback(async () => {
         setScanning(true)
         setScanError(null)
@@ -471,7 +501,9 @@ export default function DashboardPage() {
             const { data } = await axios.get(`/api/scan?force=true&mode=${scanMode}`, { timeout: 200000 })
             if (data.success) {
                 const scanData = data.data ?? data        // server wraps in .data
-                setSetups(scanData.setups || [])
+                const nextSetups = scanData.setups || []
+                setSetups(nextSetups)
+                void refreshSetupQuotes(nextSetups)
                 setMarket(scanData.marketStatus || null)
                 setScanAge(scanData.timestamp || scanData.scannedAt)
                 if (scanData.marketBrief?.brief) setMarketBrief(scanData.marketBrief.brief)
@@ -484,7 +516,14 @@ export default function DashboardPage() {
             setScanError(e.response?.data?.message || 'Market scanner is temporarily busy. Please try again soon.')
         }
         finally { setScanning(false) }
-    }, [scanMode])
+    }, [refreshSetupQuotes, scanMode])
+
+    useEffect(() => {
+        void refreshSetupQuotes(setups)
+        if (!setups.length) return
+        const timer = window.setInterval(() => { void refreshSetupQuotes(setups) }, 60 * 1000)
+        return () => window.clearInterval(timer)
+    }, [refreshSetupQuotes, setups])
 
     const filtered = setups.filter(s => {
         if (filter === 'All') return true
@@ -986,7 +1025,7 @@ export default function DashboardPage() {
                     {/* Cards grid */}
                     {!showTracker && filtered.length > 0 && (
                         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
-                            {filtered.map((s, i) => <AIActionCard key={s.ticker} s={s} delay={Math.min(i * 0.04, 0.5)} />)}
+                            {filtered.map((s, i) => <AIActionCard key={s.ticker} s={s} delay={Math.min(i * 0.04, 0.5)} livePrice={liveQuotes[s.ticker]?.price ?? s.ltp} />)}
                         </div>
                     )}
                 </main>

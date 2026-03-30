@@ -332,6 +332,79 @@ export function detectVCP(candles: Candle[], currentIdx?: number): VCPResult {
     return { isVCP, quality, tightness, contractionCount, pivotPrice: peakHigh, pctFromPivot };
 }
 
+export interface CompressionResult {
+    isCompression: boolean;
+    quality: number;
+    nr4: boolean;
+    nr7: boolean;
+    insideBar: boolean;
+    volumeDryUp: boolean;
+    rangeTightnessPct: number;
+    pctFromPivot: number;
+}
+
+export function detectCompressionSetup(candles: Candle[], currentIdx?: number): CompressionResult {
+    const EMPTY: CompressionResult = {
+        isCompression: false,
+        quality: 0,
+        nr4: false,
+        nr7: false,
+        insideBar: false,
+        volumeDryUp: false,
+        rangeTightnessPct: 99,
+        pctFromPivot: 99,
+    };
+    const idx = currentIdx ?? candles.length - 1;
+    if (idx < 7) return EMPTY;
+
+    const latest = candles[idx];
+    const previous = candles[idx - 1];
+    if (!latest || !previous) return EMPTY;
+
+    const recent = candles.slice(idx - 7, idx + 1);
+    const latestRange = Math.max(latest.high - latest.low, 0.01);
+    const prev4Ranges = candles.slice(idx - 3, idx).map(candle => candle.high - candle.low);
+    const prev7Ranges = candles.slice(idx - 6, idx).map(candle => candle.high - candle.low);
+    const nr4 = prev4Ranges.length === 3 && latestRange <= Math.min(...prev4Ranges);
+    const nr7 = prev7Ranges.length === 6 && latestRange <= Math.min(...prev7Ranges);
+    const insideBar = latest.high <= previous.high && latest.low >= previous.low;
+
+    const avgVolume5 = avg(candles.slice(Math.max(0, idx - 5), idx).map(candle => candle.volume));
+    const volumeDryUp = avgVolume5 > 0 && latest.volume < avgVolume5 * 0.82;
+
+    const pivotHigh = Math.max(...recent.map(candle => candle.high));
+    const pivotLow = Math.min(...recent.map(candle => candle.low));
+    const rangeTightnessPct = ((pivotHigh - pivotLow) / Math.max(latest.close, 1)) * 100;
+    const pctFromPivot = ((pivotHigh - latest.close) / Math.max(pivotHigh, 1)) * 100;
+
+    let quality = 0;
+    if (nr4) quality += 2;
+    if (nr7) quality += 2;
+    if (insideBar) quality += 2;
+    if (volumeDryUp) quality += 2;
+    if (rangeTightnessPct <= 4.5) quality += 2;
+    else if (rangeTightnessPct <= 6.5) quality += 1;
+    if (pctFromPivot <= 2.5) quality += 1;
+
+    const isCompression =
+        quality >= 5 &&
+        (nr4 || nr7 || insideBar) &&
+        volumeDryUp &&
+        rangeTightnessPct <= 6.5 &&
+        pctFromPivot <= 4;
+
+    return {
+        isCompression,
+        quality,
+        nr4,
+        nr7,
+        insideBar,
+        volumeDryUp,
+        rangeTightnessPct: +rangeTightnessPct.toFixed(2),
+        pctFromPivot: +pctFromPivot.toFixed(2),
+    };
+}
+
 export function isBreakout(candles: Candle[], lookback = 20): boolean {
     if (candles.length < lookback + 2) return false;
     const recent = candles.slice(-lookback - 1, -1);
@@ -347,6 +420,9 @@ export function identifySetupType(ind: StockIndicators): string {
     const vcp = detectVCP(ind.candles);
     if (vcp.isVCP && vcp.quality >= 7) return 'VCP Breakout 🔥';
     if (vcp.isVCP) return 'VCP Contraction';
+
+    const compression = detectCompressionSetup(ind.candles);
+    if (compression.isCompression && compression.quality >= 6) return 'Compression Breakout';
 
     const breakout = isBreakout(ind.candles, 20);
     const { ltp, ema20, ema50, high3m, rsi14, high52w } = ind;
@@ -368,7 +444,9 @@ export function estimateHitProbability(ind: StockIndicators, targetPct: number):
     const rsiFactor = (50 - Math.abs(ind.rsi14 - 45)) / 50;
     const vcp = detectVCP(ind.candles);
     const vcpFactor = vcp.isVCP ? (0.1 + (10 - vcp.tightness) / 100) : 0;
+    const compression = detectCompressionSetup(ind.candles);
+    const compressionFactor = compression.isCompression ? (0.08 + compression.quality / 100) : 0;
     const rsFactor = ind.outperformsNifty ? 0.15 : 0;
-    const raw = (volFactor * 0.30 + rsiFactor * 0.25 + (ind.volumeRatio / 2.5) * 0.20 + rsFactor + vcpFactor) * 100;
+    const raw = (volFactor * 0.28 + rsiFactor * 0.22 + (ind.volumeRatio / 2.5) * 0.18 + rsFactor + vcpFactor + compressionFactor) * 100;
     return Math.min(95, Math.max(30, Math.round(raw)));
 }

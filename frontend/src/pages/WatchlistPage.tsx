@@ -20,6 +20,14 @@ type ChartApiResponse = {
     }
 }
 
+type QuoteApiResponse = {
+    success?: boolean
+    data?: Record<string, {
+        price: number
+        changePct: number
+    }>
+}
+
 function SignalBadge({ signal }: { signal?: string }) {
     if (!signal) return null
     const Icon = (signal === 'BUY' || signal === 'LIGHT BUY') ? CheckCircle : signal === 'REJECT' ? AlertTriangle : MinusCircle
@@ -57,6 +65,20 @@ export default function WatchlistPage() {
         if (watchlistItems.length === 0) return
         setRefreshing(true)
         try {
+            const tickers = watchlistItems.map(item => item.ticker).join(',')
+            const { data } = await axios.get<QuoteApiResponse>(`/api/quotes?tickers=${encodeURIComponent(tickers)}`)
+            const quoteMap = data.data ?? {}
+
+            setItems(watchlistItems.map(item => {
+                const quote = quoteMap[item.ticker.toUpperCase()]
+                if (!quote) return { ...item, livePrice: item.ltp, priceChange: 0 }
+                return {
+                    ...item,
+                    livePrice: quote.price,
+                    priceChange: quote.changePct,
+                }
+            }))
+        } catch {
             const pricePromises = watchlistItems.map(async (item) => {
                 const getPriceFromChart = async (interval: '5m' | '1d', days: number) => {
                     const { data } = await axios.get<ChartApiResponse>(`/api/chart/${item.ticker}?interval=${interval}&days=${days}`)
@@ -66,15 +88,14 @@ export default function WatchlistPage() {
                     const latest = candles[candles.length - 1]
                     const prev = candles.length >= 2 ? candles[candles.length - 2] : latest
                     const change = prev.close > 0 ? ((latest.close - prev.close) / prev.close) * 100 : 0
-                    return { livePrice: latest.close, priceChange: change }
+                    return { ...item, livePrice: latest.close, priceChange: change }
                 }
 
                 try {
                     const intraday = await getPriceFromChart('5m', 2)
-                    if (intraday) return { ...item, ...intraday }
-
+                    if (intraday) return intraday
                     const daily = await getPriceFromChart('1d', 5)
-                    if (daily) return { ...item, ...daily }
+                    if (daily) return daily
                 } catch { /* ignore */ }
                 return { ...item, livePrice: item.ltp, priceChange: 0 }
             })
@@ -86,6 +107,12 @@ export default function WatchlistPage() {
     useEffect(() => {
         if (watchlistItems.length > 0) refreshPrices()
     }, [watchlistItems.length]) // eslint-disable-line
+
+    useEffect(() => {
+        if (!watchlistItems.length) return
+        const timer = window.setInterval(() => { void refreshPrices() }, 60 * 1000)
+        return () => window.clearInterval(timer)
+    }, [refreshPrices, watchlistItems.length])
 
     const handleRemove = async (ticker: string) => {
         await toggleWatchlist({ ticker } as any)

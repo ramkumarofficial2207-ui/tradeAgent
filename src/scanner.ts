@@ -6,7 +6,7 @@
 import { fetchHistoricalData, fetchNiftyData, MARKET_CAP_CR_MAP, NSE_UNIVERSE, SECTOR_MAP } from './dataService';
 import { getDynamicUniverse, getTopGainersToday, getBhavcopyCacheStatus } from './nseDiscovery';
 import { getNewsCatalystTickers } from './newsIntel/service';
-import { computeIndicators, computeConfidence, computeRegime, estimateHitProbability, identifySetupType, detectVCP } from './indicators';
+import { computeIndicators, computeConfidence, computeRegime, estimateHitProbability, identifySetupType, detectCompressionSetup, detectVCP } from './indicators';
 import prisma from './prismaClient';
 import { validateNewsRisk } from './newsValidator';
 import { validateEarningsRisk } from './earningsValidator';
@@ -280,6 +280,70 @@ function scoreGapQuality(gapPct: number, trendRecovered: boolean): number {
     if (gapPct < -0.6 && !trendRecovered) score -= 1.4;
     if (gapPct > 2.2) score -= 0.9;
     if (trendRecovered) score += 0.8;
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
+function scoreCompressionQuality(params: {
+    quality: number;
+    volumeDryUp: boolean;
+    pctFromPivot: number;
+    rangeTightnessPct: number;
+}): number {
+    const { quality, volumeDryUp, pctFromPivot, rangeTightnessPct } = params;
+    let score = 4.2 + (quality * 0.65);
+    if (volumeDryUp) score += 0.8;
+    if (pctFromPivot <= 2.5) score += 0.9;
+    else if (pctFromPivot > 4) score -= 0.7;
+    if (rangeTightnessPct <= 4.5) score += 0.9;
+    else if (rangeTightnessPct > 6.5) score -= 1.1;
+    return +clamp(score, 0, 10).toFixed(1);
+}
+
+function inferSetupFamily(setupType: string, ind: StockIndicators): TradeSetup['setupFamily'] {
+    if (setupType === 'Compression Breakout') return 'COMPRESSION';
+    if (ind.isDeepValue) return 'REVERSAL';
+    if (setupType.includes('Pullback') || setupType.includes('Bounce')) return 'PULLBACK';
+    if (setupType.includes('VCP') || setupType.includes('Breakout')) return 'BREAKOUT';
+    return 'CONTINUATION';
+}
+
+function scoreConfluence(params: {
+    ind: StockIndicators;
+    setupFamily: TradeSetup['setupFamily'];
+    breakoutQuality: number;
+    pullbackQuality: number;
+    gapQuality: number;
+    compressionQuality: number;
+    effectiveRiskReward: number;
+}): number {
+    const { ind, setupFamily, breakoutQuality, pullbackQuality, gapQuality, compressionQuality, effectiveRiskReward } = params;
+    let score = 3.8;
+    const rsDelta = ind.returns3m - ind.nifty3mReturn;
+
+    if (ind.ema20 >= ind.ema50 * 0.995) score += 1.1;
+    if (ind.ema50Slope > 0.35) score += 0.8;
+    if (ind.volumeRatio >= 1.35) score += 1.2;
+    else if (ind.volumeRatio >= 1.05) score += 0.5;
+    if (rsDelta >= 5) score += 1.3;
+    else if (rsDelta >= 1.5) score += 0.7;
+    if ((ind.accumulationScore ?? 0) >= 58) score += 0.7;
+    if (ind.rsi14 >= 52 && ind.rsi14 <= 72) score += 0.8;
+    else if (ind.rsi14 > 78) score -= 0.7;
+    if (effectiveRiskReward >= 2) score += 0.6;
+    else if (effectiveRiskReward < 1.55) score -= 0.7;
+    score += (gapQuality - 5) * 0.08;
+
+    if (setupFamily === 'BREAKOUT' || setupFamily === 'CONTINUATION') {
+        score += (breakoutQuality - 5) * 0.28;
+    }
+    if (setupFamily === 'PULLBACK' || setupFamily === 'REVERSAL') {
+        score += (pullbackQuality - 5) * 0.26;
+    }
+    if (setupFamily === 'COMPRESSION') {
+        score += (compressionQuality - 5) * 0.34;
+        if (ind.volumeRatio <= 1.2) score += 0.25;
+    }
+
     return +clamp(score, 0, 10).toFixed(1);
 }
 
@@ -704,7 +768,9 @@ async function calculateExpectedValue(setup: TradeSetup): Promise<number> {
         }
     } catch { /* fallback to technical-only EV */ }
 
-    const ev = (winProb * (reward * historicalWeight)) - (lossProb * risk);
+    const confluenceWeight = 0.9 + ((setup.confluenceScore ?? setup.confidenceScore) / 10) * 0.25;
+    const horizonWeight = setup.setupCategory === 'TOMORROW' ? 1.04 : 1;
+    const ev = (winProb * (reward * historicalWeight * confluenceWeight * horizonWeight)) - (lossProb * risk);
     return +ev.toFixed(2);
 }
 
@@ -1088,21 +1154,44 @@ export async function buildTradeSetups(
             shallowRetracePct: ((Math.max(...ind.candles.slice(-10).map(candle => candle.high)) - recentSwingLow) / Math.max(ind.ltp, 1)) * 100,
         });
         const gapQuality = scoreGapQuality(gapPct, lastCandle.close >= ind.ema20 && ind.ema20 >= ind.ema50 * 0.99);
+        const compression = detectCompressionSetup(ind.candles);
+        const compressionQuality = scoreCompressionQuality({
+            quality: compression.quality,
+            volumeDryUp: compression.volumeDryUp,
+            pctFromPivot: compression.pctFromPivot,
+            rangeTightnessPct: compression.rangeTightnessPct,
+        });
         const primaryExecutionQuality = setupType.includes('Pullback') || ind.isDeepValue
             ? pullbackQuality
-            : breakoutQuality;
-        const tomorrowContinuationScore = scoreTomorrowContinuation({
+            : setupType === 'Compression Breakout'
+                ? Math.max(breakoutQuality, compressionQuality)
+                : breakoutQuality;
+        const setupFamily = inferSetupFamily(setupType, ind);
+        let tomorrowContinuationScore = scoreTomorrowContinuation({
             ind,
             lastCandle,
             breakoutQuality,
             gapQuality,
         });
-        const fiveDaySwingScore = scoreFiveDaySwingPotential({
+        let fiveDaySwingScore = scoreFiveDaySwingPotential({
             ind,
             breakoutQuality,
             pullbackQuality,
         });
-        const predictiveEdgeScore = +(((tomorrowContinuationScore * 0.58) + (fiveDaySwingScore * 0.42))).toFixed(1);
+        if (compression.isCompression) {
+            tomorrowContinuationScore = +clamp(tomorrowContinuationScore + Math.min(1.2, compressionQuality * 0.1), 0, 10).toFixed(1);
+            fiveDaySwingScore = +clamp(fiveDaySwingScore + Math.min(1.0, compressionQuality * 0.08), 0, 10).toFixed(1);
+        }
+        const confluenceScore = scoreConfluence({
+            ind,
+            setupFamily,
+            breakoutQuality,
+            pullbackQuality,
+            gapQuality,
+            compressionQuality,
+            effectiveRiskReward,
+        });
+        const predictiveEdgeScore = +(((tomorrowContinuationScore * 0.46) + (fiveDaySwingScore * 0.34) + (confluenceScore * 0.20))).toFixed(1);
         const isPredictiveLeader = tomorrowContinuationScore >= 6.8 || fiveDaySwingScore >= 7.1;
         const minimumExecutionQuality = isPredictiveLeader ? 4.4 : 4.8;
         const minimumGapQuality = isPredictiveLeader ? 3.4 : 3.8;
@@ -1148,6 +1237,7 @@ export async function buildTradeSetups(
         const timeframe = (() => {
             if (tomorrowContinuationScore >= 7.2) return 'Short Swing';
             if (ind.isDeepValue || setupType.includes('VCP')) return 'Medium Swing';
+            if (setupType === 'Compression Breakout') return 'Short Swing';
             if (ind.isBullFlag || setupType.includes('Breakout Base') || setupType.includes('Momentum Continuation')) return 'Short Swing';
             return 'Short Swing';
         })();
@@ -1161,6 +1251,15 @@ export async function buildTradeSetups(
             if (ind.isBullFlag) return `Bull Flag breakout. Buy as it crosses ${entryPrice} with early volume.`;
             const vcp = detectVCP(ind.candles);
             if (vcp.isVCP) return `VCP breakout above pivot ${entryPrice}. Volume must be ≥ 1.5× on breakout day.`;
+            if (compression.isCompression) {
+                const patternBits = [
+                    compression.nr7 ? 'NR7' : null,
+                    compression.nr4 ? 'NR4' : null,
+                    compression.insideBar ? 'inside bar' : null,
+                ].filter((value): value is string => Boolean(value));
+                const patternLabel = patternBits.length ? ` (${patternBits.join(' + ')})` : '';
+                return `Compression breakout${patternLabel}. Buy above ${entryPrice} only if price expands with volume follow-through.`;
+            }
             if (Math.abs(ind.ltp - ind.ema20) / ind.ema20 < 0.02) return `Bounce from 20 EMA. Enter above ${entryPrice} on green candle.`;
             if (Math.abs(ind.ltp - ind.ema50) / ind.ema50 < 0.03) return `50 EMA pullback. Enter above ${entryPrice} with volume confirmation.`;
             return horizonLabel === 'Tomorrow continuation'
@@ -1173,14 +1272,16 @@ export async function buildTradeSetups(
             `RSI: ${ind.rsi14.toFixed(1)} ${ind.isDeepValue ? '(oversold)' : '(momentum zone)'}`,
             ind.isDeepValue ? `Stretch: ${ind.distFrom200.toFixed(1)}% below 200 DMA` : `ADX: ${ind.adx14.toFixed(1)} (${ind.adx14 > 30 ? 'strong' : 'moderate'} trend)`,
             ind.isBullFlag ? `Flag Volume: Drying up (-30% avg)` : `Vol: ${ind.volumeRatio.toFixed(1)}× avg (${isSmall ? 'small cap 2× required' : '1.5× required'})`,
+            compression.isCompression ? `Compression: q${compression.quality}/10, range ${compression.rangeTightnessPct.toFixed(1)}%, pivot ${compression.pctFromPivot.toFixed(1)}% away` : null,
             `3M RS: ${ind.outperformsNifty ? '+' : ''}${(ind.returns3m - ind.nifty3mReturn).toFixed(1)}% vs Nifty`,
             `${ind.pctFrom52wHigh.toFixed(1)}% below 52W high`,
             `Horizon: ${horizonLabel}`,
-        ].join(' · ');
+        ].filter((value): value is string => Boolean(value)).join(' · ');
 
         setups.push({
             ticker: ind.ticker,
             sector: SECTOR_MAP[ind.ticker] ?? 'Diversified',
+            setupFamily,
             marketCapCr,
             ltp: +ind.ltp.toFixed(2),
             trendStatus: `${ind.ltp.toFixed(2)} is ${ind.distFrom200.toFixed(1)}% above 200 DMA. 50EMA slope: ${ind.ema50Slope > 0 ? '+' : ''}${ind.ema50Slope.toFixed(2)}%/10d`,
@@ -1226,14 +1327,17 @@ export async function buildTradeSetups(
                 slippagePct,
             },
             calibratedEdgeScore: predictiveEdgeScore,
+            confluenceScore,
             rejectionReasons: [],
             confidenceDrivers: [
                 `Tomorrow continuation ${tomorrowContinuationScore}/10`,
                 `2-5 day swing ${fiveDaySwingScore}/10`,
+                `Confluence ${confluenceScore}/10`,
                 `Relative strength ${(ind.returns3m - ind.nifty3mReturn).toFixed(1)}% vs Nifty`,
                 `Trend score ${breakdown.scoreTrend}/2`,
                 `Volume score ${breakdown.scoreVolume}/2`,
                 `Exec quality B${breakoutQuality}/P${pullbackQuality}/G${gapQuality}`,
+                ...(compression.isCompression ? [`Compression q${compressionQuality}/10${compression.volumeDryUp ? ' with volume dry-up' : ''}`] : []),
                 `Slippage-adjusted RR ${effectiveRiskReward}:1 (raw ${rawRiskReward}:1)`,
             ],
             alertStage: 'SETUP_DETECTED',
@@ -1245,6 +1349,7 @@ export async function buildTradeSetups(
         .sort((a, b) =>
             (a.setupCategory === 'TOMORROW' ? 0 : 1) - (b.setupCategory === 'TOMORROW' ? 0 : 1) ||
             (b.calibratedEdgeScore ?? 0) - (a.calibratedEdgeScore ?? 0) ||
+            (b.confluenceScore ?? 0) - (a.confluenceScore ?? 0) ||
             b.confidenceScore - a.confidenceScore ||
             b.riskReward - a.riskReward
         )

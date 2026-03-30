@@ -10,7 +10,7 @@ import bcrypt from 'bcryptjs';
 import { exec } from 'child_process';
 import { runScanner, buildTradeSetups, finalizeSwingDiagnostics, runIntradayScanner } from './scanner';
 import { MarketDataInterval, ScanResult } from './types';
-import { fetchHistoricalData, fetchNiftyData, NSE_UNIVERSE, SECTOR_MAP, getTradingApiFromEnv } from './dataService';
+import { fetchHistoricalData, fetchNiftyData, getLiveQuoteSnapshots, NSE_UNIVERSE, SECTOR_MAP, getTradingApiFromEnv } from './dataService';
 import { fetchStockReport, batchPrefetch } from './fundamentalService';
 import { sendPreMarketAlert } from './alerter';
 import axios from 'axios';
@@ -786,6 +786,27 @@ app.get('/api/chart/:ticker', async (req: Request, res: Response) => {
         };
         chartCache[cacheKey] = { ts: Date.now(), data: chartData };
         res.json({ success: true, data: chartData });
+    } catch (error: any) {
+        res.status(500).json({ success: false, message: sanitizeError(error) });
+    }
+});
+
+app.get('/api/quotes', async (req: Request, res: Response) => {
+    try {
+        const tickersRaw = typeof req.query.tickers === 'string' ? req.query.tickers : '';
+        const tickers = tickersRaw
+            .split(',')
+            .map(ticker => ticker.trim().toUpperCase())
+            .filter(Boolean)
+            .slice(0, 100);
+
+        if (!tickers.length) {
+            return res.status(400).json({ success: false, message: 'Provide tickers as a comma-separated query string.' });
+        }
+
+        const quotes = await getLiveQuoteSnapshots(tickers, tradingApi);
+        const quoteMap = Object.fromEntries(quotes.map(quote => [quote.ticker, quote]));
+        res.json({ success: true, data: quoteMap });
     } catch (error: any) {
         res.status(500).json({ success: false, message: sanitizeError(error) });
     }

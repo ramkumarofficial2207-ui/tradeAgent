@@ -77,6 +77,7 @@ export type SetupType =
     | 'Volatility Contraction (VCP)'
     | 'VCP Breakout 🔥'
     | 'VCP Contraction'
+    | 'Compression Breakout'
     | 'Breakout Base'
     | 'EMA20 Bounce'
     | 'Momentum Continuation'
@@ -150,6 +151,7 @@ export interface ExecutionQualityContext {
 export interface TradeSetup {
     ticker: string;
     sector: string;
+    setupFamily?: 'BREAKOUT' | 'PULLBACK' | 'COMPRESSION' | 'REVERSAL' | 'CONTINUATION';
     marketCapCr?: number;
     ltp: number;
     trendStatus: string;
@@ -198,6 +200,7 @@ export interface TradeSetup {
     newsDistribution?: NewsDistributionContext;
     executionQuality?: ExecutionQualityContext;
     calibratedEdgeScore?: number;
+    confluenceScore?: number;
     positionSizePct?: number;
     riskFlags?: string[];
     rejectionReasons?: string[];

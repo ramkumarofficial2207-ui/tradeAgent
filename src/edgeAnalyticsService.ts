@@ -11,10 +11,15 @@ export interface TrackedSignal {
     historicalSetupId: string;
     ticker: string;
     setupType: string;
+    setupFamily: string;
+    setupCategory: string;
+    thesisHorizonDays: number | null;
     timeframe: string | null;
     aiSignal: string;
     confidenceScore: number;
     confidenceBand: 'LOW' | 'MEDIUM' | 'HIGH';
+    confluenceScore: number;
+    confluenceBand: 'LOW' | 'MEDIUM' | 'HIGH';
     sector: string;
     regime: string;
     newsAlignment: string;
@@ -43,6 +48,12 @@ function toConfidenceBand(score: number): TrackedSignal['confidenceBand'] {
     return 'LOW';
 }
 
+function toConfluenceBand(score: number): TrackedSignal['confluenceBand'] {
+    if (score >= 7.5) return 'HIGH';
+    if (score >= 5.8) return 'MEDIUM';
+    return 'LOW';
+}
+
 function toDayOfWeek(value: string | Date): string {
     return new Date(value).toLocaleDateString('en-US', { weekday: 'short', timeZone: 'Asia/Calcutta' });
 }
@@ -66,7 +77,12 @@ async function readStore(): Promise<EdgeAnalyticsState> {
             signals: Array.isArray(parsed.signals)
                 ? parsed.signals.map((signal: any) => ({
                     ...signal,
+                    setupFamily: signal?.setupFamily ?? 'UNKNOWN',
+                    setupCategory: signal?.setupCategory ?? 'UNKNOWN',
+                    thesisHorizonDays: typeof signal?.thesisHorizonDays === 'number' ? signal.thesisHorizonDays : null,
                     dayOfWeek: signal?.dayOfWeek ?? toDayOfWeek(signal?.createdAt ?? new Date()),
+                    confluenceScore: typeof signal?.confluenceScore === 'number' ? signal.confluenceScore : 0,
+                    confluenceBand: signal?.confluenceBand ?? toConfluenceBand(signal?.confluenceScore ?? 0),
                 }))
                 : [],
             updatedAt: parsed.updatedAt ?? null,
@@ -93,10 +109,15 @@ export async function trackHistoricalSetup(
         historicalSetupId,
         ticker: setup.ticker,
         setupType: setup.setupType,
+        setupFamily: setup.setupFamily ?? 'UNKNOWN',
+        setupCategory: setup.setupCategory ?? 'UNKNOWN',
+        thesisHorizonDays: setup.thesisHorizonDays ?? null,
         timeframe: setup.timeframe ?? null,
         aiSignal: setup.aiSignal || 'WATCH',
         confidenceScore: setup.confidenceScore,
         confidenceBand: toConfidenceBand(setup.confidenceScore),
+        confluenceScore: +(setup.confluenceScore ?? 0).toFixed(2),
+        confluenceBand: toConfluenceBand(setup.confluenceScore ?? 0),
         sector: setup.sector || 'Diversified',
         regime,
         newsAlignment: setup.newsDistribution?.signalAlignment ?? 'UNAVAILABLE',
@@ -224,10 +245,13 @@ export async function buildEdgeDashboard() {
         },
         strongestBuckets: buildBucketSummary(resolved, 'setupType').slice(0, 5),
         weakestBuckets: buildBucketSummary(resolved, 'setupType').slice(-5).reverse(),
+        familyBuckets: buildBucketSummary(resolved, 'setupFamily'),
+        categoryBuckets: buildBucketSummary(resolved, 'setupCategory'),
         sectorBuckets: buildBucketSummary(resolved, 'sector'),
         regimeBuckets: buildBucketSummary(resolved, 'regime'),
         alignmentBuckets: buildBucketSummary(resolved, 'newsAlignment'),
         confidenceBuckets: buildBucketSummary(resolved, 'confidenceBand'),
+        confluenceBuckets: buildBucketSummary(resolved, 'confluenceBand'),
         dayOfWeekBuckets: buildBucketSummary(resolved, 'dayOfWeek'),
         recentSignals: signals.slice(-20).reverse(),
     };
@@ -244,6 +268,18 @@ export async function getCalibrationMap() {
         if (qualifiesForDowngrade(bucket)) setupMap.set(bucket.bucket, -0.45);
     }
 
+    const familyMap = new Map<string, number>();
+    for (const bucket of dashboard.familyBuckets) {
+        if (qualifiesForPromotion(bucket)) familyMap.set(bucket.bucket, 0.2);
+        else if (qualifiesForDowngrade(bucket)) familyMap.set(bucket.bucket, -0.24);
+    }
+
+    const categoryMap = new Map<string, number>();
+    for (const bucket of dashboard.categoryBuckets) {
+        if (qualifiesForPromotion(bucket)) categoryMap.set(bucket.bucket, 0.12);
+        else if (qualifiesForDowngrade(bucket)) categoryMap.set(bucket.bucket, -0.16);
+    }
+
     const alignmentMap = new Map<string, number>();
     for (const bucket of dashboard.alignmentBuckets) {
         if (qualifiesForPromotion(bucket)) alignmentMap.set(bucket.bucket, 0.2);
@@ -254,6 +290,12 @@ export async function getCalibrationMap() {
     for (const bucket of dashboard.confidenceBuckets) {
         if (qualifiesForPromotion(bucket)) confidenceMap.set(bucket.bucket, 0.15);
         else if (qualifiesForDowngrade(bucket)) confidenceMap.set(bucket.bucket, -0.2);
+    }
+
+    const confluenceMap = new Map<string, number>();
+    for (const bucket of dashboard.confluenceBuckets) {
+        if (qualifiesForPromotion(bucket)) confluenceMap.set(bucket.bucket, 0.18);
+        else if (qualifiesForDowngrade(bucket)) confluenceMap.set(bucket.bucket, -0.22);
     }
 
     const sectorMap = new Map<string, number>();
@@ -276,8 +318,11 @@ export async function getCalibrationMap() {
 
     return {
         setupMap,
+        familyMap,
+        categoryMap,
         alignmentMap,
         confidenceMap,
+        confluenceMap,
         sectorMap,
         regimeMap,
         dayOfWeekMap,
@@ -299,10 +344,15 @@ export async function backfillTrackedSignalsFromDb(): Promise<void> {
             historicalSetupId: item.id,
             ticker: item.ticker,
             setupType: item.setupType,
+            setupFamily: 'UNKNOWN',
+            setupCategory: 'UNKNOWN',
+            thesisHorizonDays: null,
             timeframe: item.timeframe,
             aiSignal: item.aiSignal,
             confidenceScore: item.confidenceScore,
             confidenceBand: toConfidenceBand(item.confidenceScore),
+            confluenceScore: 0,
+            confluenceBand: 'LOW',
             sector: 'Unknown',
             regime: 'UNKNOWN',
             newsAlignment: 'UNAVAILABLE',

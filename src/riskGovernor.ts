@@ -28,11 +28,12 @@ export async function applyRiskGovernor(
         acc[key] = (acc[key] || 0) + 1;
         return acc;
     }, {});
-    const { setupMap, alignmentMap, confidenceMap, sectorMap, regimeMap, dayOfWeekMap, totals } = await getCalibrationMap();
+    const { setupMap, familyMap, categoryMap, alignmentMap, confidenceMap, confluenceMap, sectorMap, regimeMap, dayOfWeekMap, totals } = await getCalibrationMap();
 
     for (const setup of setups) {
         const alignment = setup.newsDistribution?.signalAlignment ?? 'UNAVAILABLE';
         const confidenceBand = setup.confidenceScore >= 8 ? 'HIGH' : setup.confidenceScore >= 6 ? 'MEDIUM' : 'LOW';
+        const confluenceBand = (setup.confluenceScore ?? 0) >= 7.5 ? 'HIGH' : (setup.confluenceScore ?? 0) >= 5.8 ? 'MEDIUM' : 'LOW';
         const executionQuality = setup.executionQuality;
         const executionValues = [
             executionQuality?.breakoutQuality,
@@ -44,8 +45,11 @@ export async function applyRiskGovernor(
             : 0;
         const calibration =
             (setupMap.get(setup.setupType) ?? 0) +
+            (familyMap.get(setup.setupFamily ?? 'UNKNOWN') ?? 0) +
+            (categoryMap.get(setup.setupCategory ?? 'UNKNOWN') ?? 0) +
             (alignmentMap.get(alignment) ?? 0) +
             (confidenceMap.get(confidenceBand) ?? 0) +
+            (confluenceMap.get(confluenceBand) ?? 0) +
             (sectorMap.get(setup.sector || 'Diversified') ?? 0) +
             (regimeMap.get(marketStatus.regime ?? 'UNKNOWN') ?? 0) +
             (dayOfWeekMap.get(new Date().toLocaleDateString('en-US', { weekday: 'short', timeZone: 'Asia/Calcutta' })) ?? 0);
@@ -67,8 +71,9 @@ export async function applyRiskGovernor(
                 ? ((((executionQuality.structure5m ?? 5) + (executionQuality.structure15m ?? 5)) / 2) - 5) * 0.16
                 : 0)
             : 0;
+        const confluenceBoost = ((setup.confluenceScore ?? 5) - 5) * 0.22;
         const edgeScore = clamp(
-            setup.confidenceScore + calibration + confirmationBoost + newsPenalty + regulatoryPenalty + openSectorPenalty + regimePenalty + executionBoost,
+            setup.confidenceScore + calibration + confirmationBoost + newsPenalty + regulatoryPenalty + openSectorPenalty + regimePenalty + executionBoost + confluenceBoost,
             0,
             10
         );
@@ -103,6 +108,7 @@ export async function applyRiskGovernor(
             ...(executionQuality
                 ? [`Execution avg ${(avgExecutionQuality || 0).toFixed(1)}/10 | Eff RR ${(executionQuality.effectiveRiskReward ?? setup.riskReward).toFixed(2)}:1`]
                 : []),
+            ...(setup.confluenceScore != null ? [`Confluence ${setup.confluenceScore.toFixed(1)}/10 | Family ${setup.setupFamily ?? 'UNKNOWN'}`] : []),
         ];
 
         if (

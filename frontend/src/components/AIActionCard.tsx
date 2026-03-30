@@ -15,6 +15,7 @@ interface TradeSetup {
     ticker: string
     sector: string
     setupType: string
+    setupFamily?: 'BREAKOUT' | 'PULLBACK' | 'COMPRESSION' | 'REVERSAL' | 'CONTINUATION'
     setupCategory?: 'TOMORROW' | 'SWING_2_5'
     thesisHorizonDays?: number
     timeframe?: string
@@ -82,6 +83,7 @@ interface TradeSetup {
         eventDurability?: number | null
     }
     calibratedEdgeScore?: number
+    confluenceScore?: number
     positionSizePct?: number
     riskFlags?: string[]
     rejectionReasons?: string[]
@@ -215,8 +217,10 @@ export default function AIActionCard({
                                 {s.timeframe || 'Swing'}
                             </span>
                             <span className="badge badge-neutral" style={{ fontSize: '0.56rem' }}>{s.setupType}</span>
+                            {s.setupFamily && <span className="badge badge-neutral" style={{ fontSize: '0.54rem' }}>{s.setupFamily}</span>}
                             <span className="badge badge-neutral" style={{ fontSize: '0.56rem' }}>{s.sector}</span>
                             {s.momentumRank > 0 && s.momentumRank <= 10 && <span className="badge badge-buy" style={{ fontSize: '0.54rem' }}>#{s.momentumRank} Momentum</span>}
+                            {s.confluenceScore != null && <span className="badge badge-buy" style={{ fontSize: '0.54rem' }}>Confluence {s.confluenceScore.toFixed(1)}</span>}
                             {s.marketGrounding?.confirmationStatus && <span className={confirmationBadge.cls} style={{ fontSize: '0.54rem' }}>{confirmationBadge.label}</span>}
                             {s.newsDistribution?.signalAlignment && <span className={alignmentBadge.cls} style={{ fontSize: '0.54rem' }}>{alignmentBadge.label}</span>}
                             {s.newsDistribution?.regulatoryRiskFlag && <span className="badge badge-avoid" style={{ fontSize: '0.54rem' }}>Regulatory Risk</span>}
