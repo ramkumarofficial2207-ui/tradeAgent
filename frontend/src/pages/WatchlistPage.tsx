@@ -172,15 +172,14 @@ export default function WatchlistPage() {
                 {sorted.map((item, i) => {
                     if (hasFullScannerSnapshot(item)) {
                         const snapshot = item.snapshot as Record<string, any>
-                        const fullCard = {
-                            ...snapshot,
-                            ltp: item.livePrice ?? snapshot.ltp ?? item.ltp,
-                        }
                         return (
                             <AIActionCard
                                 key={item.ticker}
-                                s={fullCard as any}
+                                s={snapshot as any}
                                 delay={Math.min(i * 0.04, 0.5)}
+                                watchlistMode
+                                onRemove={() => handleRemove(item.ticker)}
+                                livePrice={item.livePrice ?? snapshot.ltp ?? item.ltp}
                             />
                         )
                     }

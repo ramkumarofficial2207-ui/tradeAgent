@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import {
     Zap, MessageSquare, Bookmark, BookmarkCheck, TrendingUp, TrendingDown,
     Shield, Target, Activity, ChevronDown, ChevronUp, ExternalLink,
-    AlertTriangle, Clock, BarChart3, Brain, Copy, CheckCircle,
+    AlertTriangle, Clock, BarChart3, Brain, Copy, CheckCircle, Trash2,
     Star, ThumbsUp, Eye, LineChart
 } from 'lucide-react'
 import { toggleWatchlistItem, isWatched } from '../lib/watchlist'
@@ -117,7 +117,19 @@ function getSatisfaction(score: number, signal?: string): { label: string; emoji
     return { label: 'Needs More Confirmation', emoji: '\u23F3', color: '#f87171', stars: 1 }
 }
 
-export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: number }) {
+export default function AIActionCard({
+    s,
+    delay = 0,
+    watchlistMode = false,
+    onRemove,
+    livePrice,
+}: {
+    s: TradeSetup
+    delay?: number
+    watchlistMode?: boolean
+    onRemove?: () => void | Promise<void>
+    livePrice?: number
+}) {
     const [expanded, setExpanded] = useState(false)
     const [showChart, setShowChart] = useState(false)
     const [saved, setSaved] = useState(() => isWatched(s.ticker))
@@ -129,9 +141,12 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
     const confirmationBadge = confirmationTone(s.marketGrounding?.confirmationStatus)
     const alignmentBadge = alignmentTone(s.newsDistribution?.signalAlignment)
     const eventPreview = s.newsDistribution?.eventTypes?.slice(0, 2) || []
+    const currentPrice = livePrice ?? s.ltp
+    const currentTargetPct = currentPrice > 0 ? ((s.target - currentPrice) / currentPrice) * 100 : s.targetPct
+    const currentSlPct = currentPrice > 0 ? ((currentPrice - s.stopLoss) / currentPrice) * 100 : s.slPct
 
     const handleCopySetup = () => {
-        const text = `${s.ticker} | ${s.setupType} | ${s.aiSignal}\nBuy: ${fmt(s.buyZone)} | Target: ${fmt(s.target)} (+${s.targetPct.toFixed(1)}%)\nSL: ${fmt(s.stopLoss)} (-${s.slPct.toFixed(1)}%) | RR: ${s.riskReward}:1\nConfidence: ${s.confidenceScore}/10 | ${satisfaction.label}`
+        const text = `${s.ticker} | ${s.setupType} | ${s.aiSignal}\nCMP: ${fmt(currentPrice)} | Buy: ${fmt(s.buyZone)} | Target: ${fmt(s.target)} (${currentTargetPct >= 0 ? '+' : ''}${currentTargetPct.toFixed(1)}%)\nSL: ${fmt(s.stopLoss)} (-${currentSlPct.toFixed(1)}%) | RR: ${s.riskReward}:1\nConfidence: ${s.confidenceScore}/10 | ${satisfaction.label}`
         navigator.clipboard.writeText(text).then(() => {
             setCopied(true)
             setTimeout(() => setCopied(false), 2000)
@@ -141,8 +156,8 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
     // Capital required for 1 lot (rough estimate based on buyZone)
     const estimatedLotSize = Math.max(1, Math.floor(50000 / s.buyZone))
     const estimatedCapital = estimatedLotSize * s.buyZone
-    const expectedReturn = estimatedCapital * (s.targetPct / 100)
-    const maxLoss = estimatedCapital * (s.slPct / 100)
+    const expectedReturn = estimatedCapital * (Math.max(currentTargetPct, 0) / 100)
+    const maxLoss = estimatedCapital * (Math.max(currentSlPct, 0) / 100)
 
     return (
         <div
@@ -209,9 +224,9 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                         </div>
                     </div>
                     <div style={{ textAlign: isPhone ? 'left' : 'right', flexShrink: 0, width: isPhone ? '100%' : 'auto' }}>
-                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: isPhone ? '1rem' : '1.12rem', fontWeight: 700, marginBottom: 4 }}>{fmt(s.ltp)}</div>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: isPhone ? '1rem' : '1.12rem', fontWeight: 700, marginBottom: 4 }}>{fmt(currentPrice)}</div>
                         <div style={{ display: 'flex', gap: 4, justifyContent: isPhone ? 'flex-start' : 'flex-end' }}>
-                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', fontWeight: 700, color: '#34d399' }}>+{s.targetPct.toFixed(1)}%</span>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', fontWeight: 700, color: currentTargetPct >= 0 ? '#34d399' : '#f87171' }}>{currentTargetPct >= 0 ? '+' : ''}{currentTargetPct.toFixed(1)}%</span>
                             <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>RR {s.riskReward}:1</span>
                             {s.calibratedEdgeScore != null && <span style={{ fontSize: '0.6rem', color: '#93c5fd' }}>Edge {s.calibratedEdgeScore.toFixed(1)}</span>}
                         </div>
@@ -439,7 +454,7 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                         buyZone={s.buyZone}
                         target={s.target}
                         stopLoss={s.stopLoss}
-                        ltp={s.ltp}
+                        ltp={currentPrice}
                     />
                 </div>
             )}
@@ -601,14 +616,24 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                     <button onClick={() => navigate(`/chat?q=${encodeURIComponent(`Analyse ${s.ticker}`)}`)} className="btn btn-ghost" style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3 }}>
                         <MessageSquare size={11} /> AI
                     </button>
-                    {/* Save */}
-                    <button
-                        onClick={() => { toggleWatchlistItem({ ticker: s.ticker, sector: s.sector, signal: s.aiSignal, ltp: s.ltp, target: s.target, stopLoss: s.stopLoss, targetPct: s.targetPct, slPct: s.slPct, riskReward: s.riskReward, confidenceScore: s.confidenceScore, setupType: s.setupType, buyZone: s.buyZone, snapshot: s as unknown as Record<string, unknown> }); setSaved(v => !v) }}
-                        className={`btn ${saved ? 'btn-purple' : 'btn-ghost'}`} style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3 }}
-                    >
-                        {saved ? <BookmarkCheck size={11} /> : <Bookmark size={11} />}
-                        {saved ? 'Saved' : 'Save'}
-                    </button>
+                    {watchlistMode ? (
+                        <button
+                            onClick={() => { void onRemove?.() }}
+                            className="btn btn-ghost"
+                            style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3, color: '#f87171' }}
+                        >
+                            <Trash2 size={11} />
+                            Remove
+                        </button>
+                    ) : (
+                        <button
+                            onClick={() => { toggleWatchlistItem({ ticker: s.ticker, sector: s.sector, signal: s.aiSignal, ltp: s.ltp, target: s.target, stopLoss: s.stopLoss, targetPct: s.targetPct, slPct: s.slPct, riskReward: s.riskReward, confidenceScore: s.confidenceScore, setupType: s.setupType, buyZone: s.buyZone, snapshot: s as unknown as Record<string, unknown> }); setSaved(v => !v) }}
+                            className={`btn ${saved ? 'btn-purple' : 'btn-ghost'}`} style={{ padding: '5px 8px', fontSize: '0.68rem', gap: 3 }}
+                        >
+                            {saved ? <BookmarkCheck size={11} /> : <Bookmark size={11} />}
+                            {saved ? 'Saved' : 'Save'}
+                        </button>
+                    )}
                 </div>
             </div>
         </div>
