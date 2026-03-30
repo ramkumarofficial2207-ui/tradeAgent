@@ -60,6 +60,8 @@ interface TradeSetup {
     ticker: string
     sector: string
     setupType: string
+    setupCategory?: 'TOMORROW' | 'SWING_2_5'
+    thesisHorizonDays?: number
     marketCapCr?: number
     ltp: number
     buyZone: number
@@ -110,6 +112,14 @@ interface ScanDiagnostics {
         primaryReason: string
         movePct?: number
         source?: 'QUALIFIED_WATCHLIST' | 'TOP_GAINER'
+    }>
+    avoids?: Array<{
+        ticker: string
+        setupType: string
+        confidenceScore: number
+        primaryReason: string
+        movePct?: number
+        source?: 'QUALIFIED_EXHAUSTED' | 'TOP_GAINER'
     }>
 }
 
@@ -736,6 +746,41 @@ export default function DashboardPage() {
                                                     {(item.movePct != null || item.source) && (
                                                         <div style={{ fontSize: '0.6rem', color: item.source === 'TOP_GAINER' ? '#34d399' : 'var(--text-muted)', fontWeight: 700 }}>
                                                             {item.movePct != null ? `${item.movePct >= 0 ? '+' : ''}${item.movePct.toFixed(2)}%` : item.source === 'TOP_GAINER' ? 'Top gainer' : 'Qualified'}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.45, marginTop: 8 }}>
+                                                    {item.primaryReason}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {!!scanDiagnostics.avoids?.length && (
+                                <div style={{ marginTop: 12 }}>
+                                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.76rem', fontWeight: 800, marginBottom: 8 }}>
+                                        Avoid / Exhausted
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
+                                        {scanDiagnostics.avoids.map((item) => (
+                                            <div key={item.ticker} style={{
+                                                padding: '10px 12px',
+                                                borderRadius: 12,
+                                                border: '1px solid rgba(239,68,68,0.18)',
+                                                background: 'rgba(239,68,68,0.05)',
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                                                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', fontWeight: 900 }}>{item.ticker}</div>
+                                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', color: '#fca5a5', fontWeight: 800 }}>
+                                                        {item.confidenceScore.toFixed(1)}/10
+                                                    </div>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 3, alignItems: 'center' }}>
+                                                    <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)' }}>{item.setupType}</div>
+                                                    {(item.movePct != null || item.source) && (
+                                                        <div style={{ fontSize: '0.6rem', color: item.source === 'TOP_GAINER' ? '#f87171' : 'var(--text-muted)', fontWeight: 700 }}>
+                                                            {item.movePct != null ? `${item.movePct >= 0 ? '+' : ''}${item.movePct.toFixed(2)}%` : item.source === 'TOP_GAINER' ? 'Spike' : 'Extended'}
                                                         </div>
                                                     )}
                                                 </div>

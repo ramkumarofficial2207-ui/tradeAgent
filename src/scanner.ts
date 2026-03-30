@@ -358,6 +358,49 @@ function scoreFiveDaySwingPotential(params: {
     return +clamp(score, 0, 10).toFixed(1);
 }
 
+function classifySwingHorizon(tomorrowScore: number, fiveDayScore: number): {
+    category: 'TOMORROW' | 'SWING_2_5';
+    label: 'Tomorrow continuation' | '2-5 day swing';
+    horizonDays: number;
+} {
+    if (tomorrowScore >= fiveDayScore) {
+        return { category: 'TOMORROW', label: 'Tomorrow continuation', horizonDays: 1 };
+    }
+    return { category: 'SWING_2_5', label: '2-5 day swing', horizonDays: 5 };
+}
+
+function evaluateExhaustionRisk(ind: StockIndicators, lastCandle: Candle): {
+    exhausted: boolean;
+    reason: string;
+} {
+    const closeLocation = scoreCloseLocation(lastCandle);
+    const extensionFromEma20 = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) * 100;
+    const hardExtension = extensionFromEma20 >= 6.5 || ind.rsi14 >= 78;
+    const weakCloseAfterRun = ind.returns10d >= 8 && closeLocation <= 42;
+    const extremeStretch = ind.distFrom200 >= 26 && ind.returns10d >= 10;
+
+    if (hardExtension && weakCloseAfterRun) {
+        return {
+            exhausted: true,
+            reason: 'Recent run is overextended and the stock did not finish near the day high. Risk of next-session mean reversion is elevated.',
+        };
+    }
+    if (extremeStretch) {
+        return {
+            exhausted: true,
+            reason: 'Price is stretched far above the long-term trend after a sharp move. Better to wait for consolidation or pullback.',
+        };
+    }
+    if (ind.rsi14 >= 80) {
+        return {
+            exhausted: true,
+            reason: 'Momentum is overheated after a sharp advance. Chasing here raises pullback risk versus reward.',
+        };
+    }
+
+    return { exhausted: false, reason: '' };
+}
+
 function scoreIntradayStructure(params: {
     close: number;
     fastEma: number;
@@ -523,30 +566,82 @@ export async function finalizeSwingDiagnostics(
 ): Promise<ScanDiagnostics> {
     const setupTickers = new Set(setups.map(setup => setup.ticker));
     const watchItems = new Map<string, NonNullable<ScanDiagnostics['nearMisses']>[number]>();
+    const avoidItems = new Map<string, NonNullable<ScanDiagnostics['avoids']>[number]>();
 
     for (const candidate of qualified
         .filter(item => !setupTickers.has(item.ticker))
         .sort((a, b) => scoreSwingComposite(b) - scoreSwingComposite(a))
         .slice(0, 8)) {
+        const lastCandle = candidate.candles[candidate.candles.length - 1];
+        const previousClose = candidate.candles[candidate.candles.length - 2]?.close ?? lastCandle.close;
+        const gapPct = calcGapPct(lastCandle.open, previousClose);
+        const recentSwingHigh = Math.max(...candidate.candles.slice(-21, -1).map(candle => candle.high));
+        const recentSwingLow = Math.min(...candidate.candles.slice(-10).map(candle => candle.low));
+        const breakoutQuality = scoreBreakoutQuality({
+            breakoutPct: ((lastCandle.close - recentSwingHigh) / Math.max(recentSwingHigh, 1)) * 100,
+            volumeRatio: candidate.volumeRatio,
+            alignedTrend: candidate.ema20 >= candidate.ema50 * 0.99,
+            aboveReference: lastCandle.close >= recentSwingHigh * 0.997,
+            trendStrength: candidate.adx14,
+        });
+        const pullbackQuality = scorePullbackQuality({
+            distanceToReferencePct: Math.min(
+                Math.abs(candidate.ltp - candidate.ema20) / Math.max(candidate.ema20, 1) * 100,
+                Math.abs(candidate.ltp - candidate.ema50) / Math.max(candidate.ema50, 1) * 100,
+            ),
+            holdsReference: lastCandle.close >= candidate.ema20 * 0.995,
+            bounceStrengthPct: ((lastCandle.close - lastCandle.low) / Math.max(lastCandle.low, 1)) * 100,
+            volumeRatio: candidate.volumeRatio,
+            shallowRetracePct: ((Math.max(...candidate.candles.slice(-10).map(candle => candle.high)) - recentSwingLow) / Math.max(candidate.ltp, 1)) * 100,
+        });
+        const gapQuality = scoreGapQuality(gapPct, lastCandle.close >= candidate.ema20 && candidate.ema20 >= candidate.ema50 * 0.99);
+        const tomorrowScore = scoreTomorrowContinuation({ ind: candidate, lastCandle, breakoutQuality, gapQuality });
+        const fiveDayScore = scoreFiveDaySwingPotential({ ind: candidate, breakoutQuality, pullbackQuality });
+        const horizon = classifySwingHorizon(tomorrowScore, fiveDayScore);
+        const exhaustion = evaluateExhaustionRisk(candidate, lastCandle);
+        const confidenceScore = scoreSwingWatchConfidence({
+            volumeRatio: candidate.volumeRatio,
+            adx14: candidate.adx14,
+            rsi14: candidate.rsi14,
+        });
+
+        if (exhaustion.exhausted) {
+            avoidItems.set(candidate.ticker, {
+                ticker: candidate.ticker,
+                setupType: `${identifySetupType(candidate)} · Avoid`,
+                confidenceScore,
+                primaryReason: exhaustion.reason,
+                source: 'QUALIFIED_EXHAUSTED',
+            });
+            continue;
+        }
+
         watchItems.set(candidate.ticker, {
             ticker: candidate.ticker,
-            setupType: identifySetupType(candidate) as string,
-            confidenceScore: scoreSwingWatchConfidence({
-                volumeRatio: candidate.volumeRatio,
-                adx14: candidate.adx14,
-                rsi14: candidate.rsi14,
-            }),
-            primaryReason: 'Cleared the first-stage momentum scan but did not become trade-ready. Keep it on tomorrow\'s swing watchlist for continuation or pullback confirmation.',
+            setupType: `${identifySetupType(candidate)} · ${horizon.label}`,
+            confidenceScore,
+            primaryReason: `Cleared the first-stage momentum scan but did not become trade-ready. Best fit is ${horizon.label.toLowerCase()} if price confirms clean follow-through.`,
             source: 'QUALIFIED_WATCHLIST',
         });
     }
 
     const topGainers = await getTodayTopGainers(5);
     for (const gainer of topGainers) {
-        if (setupTickers.has(gainer.symbol) || watchItems.has(gainer.symbol)) continue;
+        if (setupTickers.has(gainer.symbol) || watchItems.has(gainer.symbol) || avoidItems.has(gainer.symbol)) continue;
+        if (gainer.pctChange >= 9) {
+            avoidItems.set(gainer.symbol, {
+                ticker: gainer.symbol,
+                setupType: 'Momentum Spike · Avoid',
+                confidenceScore: scoreSwingWatchConfidence({ pctChange: gainer.pctChange }),
+                primaryReason: `The stock already moved ${gainer.pctChange.toFixed(2)}% in one session. Avoid chasing unless it rebuilds a fresh continuation structure.`,
+                movePct: gainer.pctChange,
+                source: 'TOP_GAINER',
+            });
+            continue;
+        }
         watchItems.set(gainer.symbol, {
             ticker: gainer.symbol,
-            setupType: 'Momentum Watch',
+            setupType: 'Momentum Watch · Tomorrow continuation',
             confidenceScore: scoreSwingWatchConfidence({ pctChange: gainer.pctChange }),
             primaryReason: `Strong daily move of ${gainer.pctChange.toFixed(2)}% detected in the dynamic NSE universe. Monitor tomorrow for follow-through or a cleaner entry.`,
             movePct: gainer.pctChange,
@@ -562,12 +657,15 @@ export async function finalizeSwingDiagnostics(
             return b.confidenceScore - a.confidenceScore;
         })
         .slice(0, 6);
+    diagnostics.avoids = Array.from(avoidItems.values())
+        .sort((a, b) => (b.movePct ?? 0) - (a.movePct ?? 0) || b.confidenceScore - a.confidenceScore)
+        .slice(0, 6);
 
     if (setups.length > 0) {
-        diagnostics.summary = `${setups.length} swing setup${setups.length === 1 ? '' : 's'} are trade-ready. Strong movers that were not fully trade-ready are preserved below as a tomorrow watchlist.`;
+        diagnostics.summary = `${setups.length} swing setup${setups.length === 1 ? '' : 's'} are trade-ready. Near-miss opportunities are preserved below, and extended names are separated into Avoid / Exhausted.`;
         diagnostics.recommendedAction = 'TRADE_READY';
     } else if (diagnostics.nearMisses.length > 0) {
-        diagnostics.summary = `${diagnostics.nearMisses.length} strong swing candidates are on the tomorrow watchlist even though none cleared every final entry-quality gate today.`;
+        diagnostics.summary = `${diagnostics.nearMisses.length} strong swing candidates remain on the watchlist even though none cleared every final entry-quality gate today.`;
         diagnostics.recommendedAction = 'WATCHLIST';
     } else {
         diagnostics.summary = 'No swing setups or high-momentum watchlist names were produced from the current scan universe.';
@@ -1039,9 +1137,8 @@ export async function buildTradeSetups(
         }
 
         // ── Timeframe categorization ─────────────────────────────
-        const horizonLabel = tomorrowContinuationScore >= fiveDaySwingScore
-            ? 'Tomorrow continuation'
-            : '2-5 day swing';
+        const horizon = classifySwingHorizon(tomorrowContinuationScore, fiveDaySwingScore);
+        const horizonLabel = horizon.label;
         const timeframe = (() => {
             if (tomorrowContinuationScore >= 7.2) return 'Short Swing';
             if (ind.isDeepValue || setupType.includes('VCP')) return 'Medium Swing';
@@ -1101,6 +1198,8 @@ export async function buildTradeSetups(
                 scoreRR: breakdown.scoreRR,
             },
             setupType,
+            setupCategory: horizon.category,
+            thesisHorizonDays: horizon.horizonDays,
             timeframe,
             earningsRisk: earnings.blocked,
             newsRisk: news.blocked,
@@ -1138,6 +1237,7 @@ export async function buildTradeSetups(
     // Take top 8 (after all gates — should be small quality set)
     const finalSetups = setups
         .sort((a, b) =>
+            (a.setupCategory === 'TOMORROW' ? 0 : 1) - (b.setupCategory === 'TOMORROW' ? 0 : 1) ||
             (b.calibratedEdgeScore ?? 0) - (a.calibratedEdgeScore ?? 0) ||
             b.confidenceScore - a.confidenceScore ||
             b.riskReward - a.riskReward

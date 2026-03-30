@@ -15,6 +15,8 @@ interface TradeSetup {
     ticker: string
     sector: string
     setupType: string
+    setupCategory?: 'TOMORROW' | 'SWING_2_5'
+    thesisHorizonDays?: number
     timeframe?: string
     marketCapCr?: number
     ltp: number
@@ -189,6 +191,11 @@ export default function AIActionCard({ s, delay = 0 }: { s: TradeSetup; delay?: 
                             }}>{s.aiSignal || 'WATCH'}</span>
                         </div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                            {s.setupCategory && (
+                                <span className={s.setupCategory === 'TOMORROW' ? 'badge badge-buy' : 'badge badge-watch'} style={{ fontSize: '0.54rem', fontWeight: 800 }}>
+                                    {s.setupCategory === 'TOMORROW' ? 'Tomorrow Setup' : '2-5 Day Swing'}
+                                </span>
+                            )}
                             <span className="badge badge-purple" style={{ fontSize: '0.54rem', fontWeight: 800, background: 'rgba(139,92,246,0.1)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.25)' }}>
                                 {s.timeframe || 'Swing'}
                             </span>

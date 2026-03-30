@@ -173,6 +173,8 @@ export interface TradeSetup {
         scoreRR: number   // 0–2
     };
     setupType: SetupType;
+    setupCategory?: 'TOMORROW' | 'SWING_2_5';
+    thesisHorizonDays?: number;
     timeframe: 'Intraday' | 'Short Swing' | 'Medium Swing';
     earningsRisk: boolean;
     newsRisk: boolean;
@@ -248,6 +250,14 @@ export interface ScanDiagnostics {
         primaryReason: string;
         movePct?: number;
         source?: 'QUALIFIED_WATCHLIST' | 'TOP_GAINER';
+    }>;
+    avoids?: Array<{
+        ticker: string;
+        setupType: string;
+        confidenceScore: number;
+        primaryReason: string;
+        movePct?: number;
+        source?: 'QUALIFIED_EXHAUSTED' | 'TOP_GAINER';
     }>;
 }
 
