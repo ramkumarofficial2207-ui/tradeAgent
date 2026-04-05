@@ -1,6 +1,8 @@
 {
   "cli": {
-    "version": ">= 15.0.0"
+    "version": ">= 15.0.0",
+    "requireCommit": true,
+    "projectRoot": "./mobile"
   },
   "build": {
     "development": {
