@@ -4,28 +4,39 @@ import { z, ZodTypeAny } from 'zod';
 export const registerSchema = z.object({
     name: z.string().trim().min(2).max(80),
     email: z.string().trim().email().max(120),
+    mobileNumber: z.string().trim().regex(/^\+?[0-9]{10,15}$/, 'Provide a valid mobile number.').optional(),
     password: z.string().min(6).max(128).optional(),
     secret: z.string().min(6).max(128).optional(),
+    mpin: z.string().trim().regex(/^\d{4,6}$/, 'MPIN must be 4 to 6 digits.').optional(),
 }).superRefine((value, ctx) => {
-    if (!value.password && !value.secret) {
+    if (!value.password && !value.secret && !value.mpin) {
         ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['password'],
-            message: 'Password is required.',
+            message: 'Password or MPIN is required.',
         });
     }
 });
 
 export const loginSchema = z.object({
-    email: z.string().trim().email().max(120),
+    email: z.string().trim().email().max(120).optional(),
+    mobileNumber: z.string().trim().regex(/^\+?[0-9]{10,15}$/, 'Provide a valid mobile number.').optional(),
     password: z.string().min(1).max(128).optional(),
     secret: z.string().min(1).max(128).optional(),
+    mpin: z.string().trim().regex(/^\d{4,6}$/, 'MPIN must be 4 to 6 digits.').optional(),
 }).superRefine((value, ctx) => {
-    if (!value.password && !value.secret) {
+    if (!value.email && !value.mobileNumber) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['email'],
+            message: 'Email or mobile number is required.',
+        });
+    }
+    if (!value.password && !value.secret && !value.mpin) {
         ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['password'],
-            message: 'Password is required.',
+            message: 'Password or MPIN is required.',
         });
     }
 });
@@ -124,6 +135,11 @@ export const userPreferencesSchema = z.object({
     notifyBuySignals: z.boolean().optional(),
     notifyEmail: z.boolean().optional(),
     name: z.string().trim().min(2).max(80).optional(),
+});
+
+export const deviceRegistrationSchema = z.object({
+    pushToken: z.string().trim().min(20).max(400),
+    platform: z.enum(['ios', 'android']),
 });
 
 export const adminActivateSchema = z.object({

@@ -43,6 +43,7 @@ import {
     adminInstitutionalFlowImportSchema,
     adminActivateSchema,
     chatSchema,
+    deviceRegistrationSchema,
     loginSchema,
     newsImpactSchema,
     portfolioTradeSchema,
@@ -57,6 +58,7 @@ import { analyzeNewsImpact, buildTechnicalContextFromStock } from './newsImpactS
 import { getNewsFeed, getStoredNewsStatus, getTickerNewsDigest, syncNewsIntelligence } from './newsIntel/service';
 import { buildMarketGroundingFromReport, buildSectorBreadthMap } from './newsIntel/marketGrounding';
 import { backfillTrackedSignalsFromDb, buildEdgeDashboard, trackHistoricalSetup } from './edgeAnalyticsService';
+import { registerDeviceToken } from './pushNotificationService';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -75,6 +77,31 @@ const dbHealth: {
 };
 let dbRepairAttempted = false;
 let dbRepairInFlight = false;
+
+const SAFE_USER_SELECT = {
+    id: true,
+    name: true,
+    email: true,
+    mobileNumber: true,
+    createdAt: true,
+    subscriptionStatus: true,
+    subscriptionExpiry: true,
+} as const;
+
+function normalizeEmail(value?: string): string | undefined {
+    return value?.trim().toLowerCase() || undefined;
+}
+
+function normalizeMobileNumber(value?: string): string | undefined {
+    if (!value) return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    return trimmed.startsWith('+') ? `+${trimmed.slice(1).replace(/\D/g, '')}` : trimmed.replace(/\D/g, '');
+}
+
+function getPasswordCredential(body: Record<string, any>): string | undefined {
+    return body?.password ?? body?.secret;
+}
 
 function isDatabaseError(err: any): boolean {
     const raw = (err && typeof err === 'object' && err.message) ? String(err.message) : String(err || '');
@@ -405,14 +432,23 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
 
 // POST /api/auth/register
 app.post('/api/auth/register', authLimiter, validateBody(registerSchema), async (req: Request, res: Response) => {
-    const { name, email } = req.body || {};
-    const password = req.body?.password ?? req.body?.secret;
-    if (!name || !email || !password) {
-        res.status(400).json({ success: false, message: 'Name, email and password are required.' });
+    const { name } = req.body || {};
+    const email = normalizeEmail(req.body?.email);
+    const mobileNumber = normalizeMobileNumber(req.body?.mobileNumber);
+    const password = getPasswordCredential(req.body ?? {});
+    const mpin = req.body?.mpin;
+    const primarySecret = password ?? mpin;
+
+    if (!name || !email || !primarySecret) {
+        res.status(400).json({ success: false, message: 'Name, email and password or MPIN are required.' });
         return;
     }
-    if (password.length < 6) {
+    if (password && password.length < 6) {
         res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+        return;
+    }
+    if (mpin && !/^\d{4,6}$/.test(mpin)) {
+        res.status(400).json({ success: false, message: 'MPIN must be 4 to 6 digits.' });
         return;
     }
     try {
@@ -421,7 +457,16 @@ app.post('/api/auth/register', authLimiter, validateBody(registerSchema), async 
             res.status(409).json({ success: false, message: 'An account with this email already exists.' });
             return;
         }
-        const hashed = await bcrypt.hash(password, 12);
+        if (mobileNumber) {
+            const existingMobile = await prisma.user.findUnique({ where: { mobileNumber } });
+            if (existingMobile) {
+                res.status(409).json({ success: false, message: 'An account with this mobile number already exists.' });
+                return;
+            }
+        }
+
+        const hashed = await bcrypt.hash(primarySecret, 12);
+        const mpinHash = mpin ? await bcrypt.hash(mpin, 12) : null;
         // Grant a 7-day trial for all new registrations
         const trialExpiry = new Date();
         trialExpiry.setDate(trialExpiry.getDate() + 7);
@@ -429,11 +474,13 @@ app.post('/api/auth/register', authLimiter, validateBody(registerSchema), async 
             data: {
                 name,
                 email,
+                mobileNumber,
                 password: hashed,
+                mpinHash,
                 subscriptionStatus: 'TRIAL',
                 subscriptionExpiry: trialExpiry,
             },
-            select: { id: true, name: true, email: true, createdAt: true },
+            select: SAFE_USER_SELECT,
         });
         const token = generateToken(user.id, user.email);
         res.json({ success: true, token, user, trialDaysLeft: 7 });
@@ -445,25 +492,32 @@ app.post('/api/auth/register', authLimiter, validateBody(registerSchema), async 
 
 // POST /api/auth/login
 app.post('/api/auth/login', authLimiter, validateBody(loginSchema), async (req: Request, res: Response) => {
-    const { email } = req.body || {};
-    const password = req.body?.password ?? req.body?.secret;
-    if (!email || !password) {
-        res.status(400).json({ success: false, message: 'Email and password are required.' });
+    const email = normalizeEmail(req.body?.email);
+    const mobileNumber = normalizeMobileNumber(req.body?.mobileNumber);
+    const password = getPasswordCredential(req.body ?? {});
+    const mpin = req.body?.mpin;
+    const secret = password ?? mpin;
+    if ((!email && !mobileNumber) || !secret) {
+        res.status(400).json({ success: false, message: 'Email or mobile number and password/MPIN are required.' });
         return;
     }
     try {
-        const user = await prisma.user.findUnique({ where: { email } });
+        const user = mobileNumber
+            ? await prisma.user.findUnique({ where: { mobileNumber } })
+            : await prisma.user.findUnique({ where: { email } });
         if (!user) {
-            res.status(401).json({ success: false, message: 'Invalid email or password.' });
+            res.status(401).json({ success: false, message: 'Invalid credentials.' });
             return;
         }
-        const match = await bcrypt.compare(password, (user as any).password);
+        const useMpinHash = Boolean(mobileNumber) || Boolean(mpin);
+        const targetHash = useMpinHash ? ((user as any).mpinHash || (user as any).password) : (user as any).password;
+        const match = await bcrypt.compare(secret, targetHash);
         if (!match) {
-            res.status(401).json({ success: false, message: 'Invalid email or password.' });
+            res.status(401).json({ success: false, message: 'Invalid credentials.' });
             return;
         }
         const token = generateToken(user.id, user.email);
-        const { password: _, ...safeUser } = user as any;
+        const { password: _, mpinHash: __, ...safeUser } = user as any;
         res.json({ success: true, token, user: safeUser });
     } catch (err: any) {
         console.error('[Login] Error:', err);
@@ -476,13 +530,79 @@ app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res: Response) => 
     try {
         const user = await prisma.user.findUnique({
             where: { id: req.userId },
-            select: { id: true, name: true, email: true, createdAt: true },
+            select: SAFE_USER_SELECT,
         });
         if (!user) { res.status(404).json({ success: false, message: 'User not found.' }); return; }
         res.json({ success: true, user });
     } catch (err: any) {
         console.error('[Auth-Me] Error:', err);
         res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.get('/api/user/preferences', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const user = await prisma.user.findUnique({
+            where: { id: req.userId },
+            select: {
+                name: true,
+                email: true,
+                mobileNumber: true,
+                telegramChatId: true,
+                notifyBuySignals: true,
+                notifyEmail: true,
+                subscriptionStatus: true,
+                subscriptionExpiry: true,
+                createdAt: true,
+            },
+        });
+        if (!user) {
+            res.status(404).json({ success: false, message: 'User not found.' });
+            return;
+        }
+        res.json({ success: true, data: user });
+    } catch (err: any) {
+        console.error('[UserPreferences-GET] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.post('/api/user/preferences', requireAuth, validateBody(userPreferencesSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const updated = await prisma.user.update({
+            where: { id: req.userId },
+            data: {
+                name: req.body?.name,
+                telegramChatId: req.body?.whatsappNumber,
+                notifyBuySignals: req.body?.notifyBuySignals,
+                notifyEmail: req.body?.notifyEmail,
+            },
+            select: {
+                name: true,
+                email: true,
+                mobileNumber: true,
+                telegramChatId: true,
+                notifyBuySignals: true,
+                notifyEmail: true,
+                subscriptionStatus: true,
+                subscriptionExpiry: true,
+                createdAt: true,
+            },
+        });
+        res.json({ success: true, data: updated });
+    } catch (err: any) {
+        console.error('[UserPreferences-POST] Error:', err);
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.post('/api/notifications/register-device', requireAuth, validateBody(deviceRegistrationSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        await registerDeviceToken(req.userId!, req.body.pushToken, req.body.platform);
+        res.json({ success: true });
+    } catch (err: any) {
+        console.error('[RegisterDevice] Error:', err);
+        res.status(400).json({ success: false, message: sanitizeError(err) });
     }
 });
 

@@ -1,6 +1,7 @@
 import prisma from './prismaClient';
 import { TradeSetup } from './types';
 import { sendPreMarketDigestToEmail, sendPostMarketSummaryToEmail } from './alerter';
+import { sendPushNotificationToUser } from './pushNotificationService';
 import { sendPreMarketDigest as sendWhatsAppDigest } from './whatsappAlert';
 import { sendPreMarketDigest as sendTelegramDigest } from './telegramAlert';
 
@@ -60,6 +61,18 @@ export async function notifyUsersWithMorningDigest(setups: TradeSetup[], regime:
         if (user.notifyEmail) {
             await sendPreMarketDigestToEmail(user.email, premiumSetups, regime);
         }
+
+        if (user.notifyBuySignals && premiumSetups.length > 0) {
+            await sendPushNotificationToUser(user.id, {
+                title: 'StockSage morning brief',
+                body: `${premiumSetups.length} premium setup${premiumSetups.length === 1 ? '' : 's'} ready in ${regime} regime.`,
+                data: {
+                    screen: '/(tabs)',
+                    regime,
+                    setupCount: premiumSetups.length,
+                },
+            });
+        }
     }));
 }
 
@@ -68,6 +81,23 @@ export async function notifyUsersWithPostMarketSummary(setups: TradeSetup[], reg
     const users = await getNotificationUsers();
 
     await Promise.allSettled(users
-        .filter(user => user.notifyEmail)
-        .map(user => sendPostMarketSummaryToEmail(user.email, premiumSetups, regime)));
+        .filter(user => user.notifyEmail || user.notifyBuySignals)
+        .map(async user => {
+            if (user.notifyEmail) {
+                await sendPostMarketSummaryToEmail(user.email, premiumSetups, regime);
+            }
+            if (user.notifyBuySignals) {
+                await sendPushNotificationToUser(user.id, {
+                    title: 'StockSage post-market summary',
+                    body: premiumSetups.length
+                        ? `${premiumSetups.length} premium setup${premiumSetups.length === 1 ? '' : 's'} survived the close.`
+                        : 'No premium BUY setups survived the closing scan today.',
+                    data: {
+                        screen: '/(tabs)',
+                        regime,
+                        setupCount: premiumSetups.length,
+                    },
+                });
+            }
+        }));
 }
