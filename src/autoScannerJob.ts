@@ -1,123 +1,84 @@
 import cron from 'node-cron';
-import axios from 'axios';
 import { pushEvent } from './agentEvents';
-import prisma from './prismaClient';
-import { fetchHistoricalData } from './dataService';
-import { runTriggerMonitoring } from './triggerMonitor';
-import { runActivePositionManagement } from './positionManager';
+import type { ScanTrigger } from './scanCoordinator';
+
+const NSE_TIMEZONE = 'Asia/Kolkata';
+
+export interface ScheduledScanResult {
+    started: boolean;
+    job: { id: string; status: string };
+}
+
+export type ScheduledScanStarter = (trigger: ScanTrigger) => Promise<ScheduledScanResult>;
+
+function istDateKey(date = new Date()): string {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: NSE_TIMEZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(date);
+    const value = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)?.value ?? '';
+    return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+export function configuredNseHolidays(): Set<string> {
+    return new Set(
+        (process.env.NSE_MARKET_HOLIDAYS ?? '')
+            .split(',')
+            .map(value => value.trim())
+            .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value)),
+    );
+}
+
+export function isConfiguredNseHoliday(date = new Date()): boolean {
+    return configuredNseHolidays().has(istDateKey(date));
+}
+
+async function triggerScheduledScan(startScan: ScheduledScanStarter, trigger: ScanTrigger): Promise<void> {
+    if (isConfiguredNseHoliday()) {
+        console.log(`[AutoScanner] Skipped ${trigger} scan on configured NSE holiday.`);
+        return;
+    }
+
+    try {
+        const result = await startScan(trigger);
+        if (result.started) {
+            console.log(`[AutoScanner] ${trigger} scan ${result.job.id} queued.`);
+        } else {
+            console.log(`[AutoScanner] ${trigger} scan skipped; ${result.job.id} is already active.`);
+        }
+    } catch (error: any) {
+        console.error(`[AutoScanner] Unable to queue ${trigger} scan:`, error?.message || error);
+        pushEvent('SCAN_FAILED', 'critical', 'Auto Scan Could Not Start',
+            'The scheduler could not queue the market scan. Existing setups remain available.');
+    }
+}
 
 /**
- * Initializes the fully autonomous scanning chron job.
- * Runs every 30 minutes during NSE market hours (9:15 AM - 3:30 PM, Mon-Fri).
+ * Registers one scheduler per API instance. Railway currently runs one API
+ * replica; durable ScanJob overlap checks prevent a second scan if a replica
+ * or manual request races the scheduler.
  */
-export function initAutoScanner() {
-    console.log('[AutoScanner] 🤖 Initializing Level 1000 Autonomous Agent...');
+export function initAutoScanner(startScan: ScheduledScanStarter): void {
+    if (process.env.ENABLE_AUTO_SCAN !== 'true') {
+        console.log('[AutoScanner] Scheduled scanning is disabled.');
+        return;
+    }
 
-    // Main EOD/30-min Deep Scan
-    cron.schedule('0,30 9-15 * * 1-5', async () => {
-        const now = new Date();
-        const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-        const h = istTime.getHours();
-        const m = istTime.getMinutes();
-
-        // Strict market hours check (9:15 AM - 3:30 PM)
-        if (h === 9 && m < 15) return; // Before 9:15
-        if (h === 15 && m > 30) return; // After 3:30
-
-        console.log(`[AutoScanner] 🕒 Triggering autonomous background scan at ${istTime.toLocaleTimeString('en-IN')}`);
-
-        try {
-            pushEvent('SYSTEM', 'info', 'Autonomous Scan Started', 'The agent is running a scheduled background analysis.');
-
-            const port = process.env.PORT || 3000;
-            axios.get(`http://localhost:${port}/api/scan`, { timeout: 300000 })
-                .then(res => {
-                    if (res.data.success) {
-                        console.log(`[AutoScanner] ✅ Background scan complete. Found ${res.data.data.setups?.length || 0} setups.`);
-                    }
-                })
-                .catch(err => {
-                    console.error('[AutoScanner] ❌ Background scan failure:', err.message);
-                });
-
-        } catch (error: any) {
-            console.error('[AutoScanner] Cron trigger failed:', error.message);
-        }
+    // Every 30 minutes, anchored to the 9:15 NSE open: 09:15, 09:45,
+    // 10:15 ... 14:45, 15:15. The final 15:35 run captures the close.
+    cron.schedule('15,45 9-14 * * 1-5', () => triggerScheduledScan(startScan, 'scheduled'), {
+        timezone: NSE_TIMEZONE,
+    });
+    cron.schedule('15 15 * * 1-5', () => triggerScheduledScan(startScan, 'scheduled'), {
+        timezone: NSE_TIMEZONE,
+    });
+    cron.schedule('35 15 * * 1-5', () => triggerScheduledScan(startScan, 'closing'), {
+        timezone: NSE_TIMEZONE,
     });
 
-    // ── Phase 2: Intraday Squawk Box (Live Polling every 5 mins) ──
-    cron.schedule('*/5 9-15 * * 1-5', async () => {
-        const now = new Date();
-        const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-        const h = istTime.getHours();
-        const m = istTime.getMinutes();
-        if ((h === 9 && m < 15) || (h === 15 && m > 30)) return;
-
-        try {
-            // Find all active watchlist items with a buyZone set
-            const watchItems = await prisma.watchlistItem.findMany({
-                where: { buyZone: { not: null } }
-            });
-
-            if (!watchItems.length) return;
-
-            let crossCount = 0;
-            // Iterate the watchlist and check current levels
-            for (const item of watchItems) {
-                if (!item.buyZone) continue;
-                const tickerQuery = item.ticker.endsWith('.NS') ? item.ticker : `${item.ticker}.NS`;
-                const candles = await fetchHistoricalData(tickerQuery, 2);
-                if (candles.length === 0) continue;
-
-                const latest = candles[candles.length - 1];
-
-                // If price crossed buy zone Today
-                if (latest.close > item.buyZone || latest.high > item.buyZone) {
-                    // Alert if price is within 5% of the buy limit so we don't alert on old massively extended runners
-                    if (latest.close < (item.buyZone * 1.05)) {
-                        pushEvent('SYSTEM', 'success', `⚡ SQUAWK: ${item.ticker} BREAKOUT`,
-                            `Live Price ₹${latest.close} crossed setup pivot ₹${item.buyZone}. Active Trade Triggered.`);
-                        crossCount++;
-                    }
-                }
-            }
-            if (crossCount > 0) {
-                console.log(`[Intraday Squawk] Alerted on ${crossCount} live crossovers.`);
-            }
-        } catch (e: any) {
-            console.error('[Intraday Squawk] Error:', e.message);
-        }
-    });
-
-    // ── Phase 1: High-Frequency Trigger Monitoring (Every 1 min) ──
-    cron.schedule('* 9-15 * * 1-5', async () => {
-        const now = new Date();
-        const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-        const h = istTime.getHours();
-        const m = istTime.getMinutes();
-        if ((h === 9 && m < 15) || (h === 15 && m > 30)) return;
-
-        try {
-            await runTriggerMonitoring();
-        } catch (e: any) {
-            console.error('[TriggerMonitor Job] Error:', e.message);
-        }
-    });
-
-    // ── Phase 2: Active Position Manager (Every 15 mins) ──
-    cron.schedule('*/15 9-15 * * 1-5', async () => {
-        const now = new Date();
-        const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-        const h = istTime.getHours();
-        const m = istTime.getMinutes();
-        if ((h === 9 && m < 15) || (h === 15 && m > 30)) return;
-
-        try {
-            await runActivePositionManagement();
-        } catch (e: any) {
-            console.error('[PositionManager Job] Error:', e.message);
-        }
-    });
-
-    console.log('[AutoScanner] ✓ Chron triggers registered.');
+    console.log('[AutoScanner] Scheduled scans active for NSE market hours in Asia/Kolkata.');
+    pushEvent('SYSTEM', 'success', 'Auto Scanner Enabled',
+        'Scheduled scans will run every 30 minutes during NSE market hours, plus a closing scan.');
 }

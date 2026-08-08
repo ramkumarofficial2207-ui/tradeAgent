@@ -59,8 +59,19 @@ async function buildIntelligenceItem(
     targetSector?: string,
     technicalContext?: MarketGroundingContext | null
 ): Promise<NewsIntelligenceItem> {
-    const resolvedEntities = resolveNewsEntities(`${item.title} ${item.body} ${item.summary}`, targetTicker, targetSector);
-    const modelAssist = await parseNewsWithModelAssist({
+    const text = `${item.title} ${item.body || ''} ${item.summary || ''}`.toLowerCase();
+    const catalystKeywords = [
+        'result', 'earning', 'profit', 'revenue', 'ebitda', 'dividend', 'buyback',
+        'order', 'contract', 'deal', 'bag', 'secure', 'bid', 'project',
+        'sebi', 'rbi', 'pledge', 'promoter', 'fraud', 'scam', 'penalty', 'probe', 'investigat', 'fine', 'action',
+        'capex', 'expansion', 'capacity', 'plant', 'acquire', 'acquisition', 'merger', 'm&a', 'takeover', 'stake',
+        'fda', 'patent', 'approval', 'hike', 'cut', 'partner', 'collab', 'joint venture', 'jv', 'cvd', 'tariff', 'duty',
+        'import', 'export', 'guidance', 'forecast', 'outlook', 'surge', 'plunge', 'crash'
+    ];
+    const isCatalyst = catalystKeywords.some(kw => text.includes(kw));
+
+    const resolvedEntities = resolveNewsEntities(`${item.title} ${item.body || ''} ${item.summary || ''}`, targetTicker, targetSector);
+    const modelAssist = isCatalyst ? await parseNewsWithModelAssist({
         title: item.title,
         body: item.body,
         summary: item.summary,
@@ -68,7 +79,7 @@ async function buildIntelligenceItem(
         sourceType: item.sourceType,
         targetTicker,
         targetSector,
-    });
+    }) : null;
     const entities = mergeEntities(resolvedEntities, modelAssist ? {
         tickers: modelAssist.tickers,
         companyNames: modelAssist.companyNames,
@@ -82,7 +93,7 @@ async function buildIntelligenceItem(
         extractNewsEvents(`${item.title} ${item.body} ${item.summary}`, entities),
         modelAssist?.events ?? [],
     );
-    const analysis = analyzeNewsImpact({
+    const analysis = await analyzeNewsImpact({
         headline: item.title,
         articleText: item.body || item.summary,
         targetTicker: targetTicker || entities.tickers[0],
@@ -187,7 +198,10 @@ async function findHistoricalAnalogs(
 
 export async function syncNewsIntelligence(scan: ScanResult | null = null): Promise<{ items: NewsIntelligenceItem[]; lastSyncedAt: string | null }> {
     const rawItems = await fetchBaseNewsSources();
-    const items = await Promise.all(rawItems.map(item => buildIntelligenceItem(item)));
+    const items: NewsIntelligenceItem[] = [];
+    for (const item of rawItems) {
+        items.push(await buildIntelligenceItem(item));
+    }
     const state = await upsertNewsItems(items);
     return { items: state.items.slice(0, 50), lastSyncedAt: state.lastSyncedAt };
 }
@@ -235,7 +249,10 @@ export async function ingestTickerNews(ticker: string, scan: ScanResult | null =
             getSectorBreadthForTicker(upperTicker, scan),
         ) ?? buildTechnicalContextFromStock(report, setup);
     const rawItems = await fetchTickerNewsSource(upperTicker);
-    const items = await Promise.all(rawItems.map(item => buildIntelligenceItem(item, upperTicker, report?.sector, technicalContext)));
+    const items: NewsIntelligenceItem[] = [];
+    for (const item of rawItems) {
+        items.push(await buildIntelligenceItem(item, upperTicker, report?.sector, technicalContext));
+    }
     await upsertNewsItems(items);
     return items;
 }

@@ -33,7 +33,7 @@ export async function requireSubscription(req: AuthRequest, res: Response, next:
                 });
                 res.status(403).json({
                     success: false,
-                    message: 'Your subscription has expired. Please renew to continue using StockSage AI.',
+                    message: 'Your subscription has expired. Please renew to continue using ApexScan AI.',
                     code: 'SUBSCRIPTION_EXPIRED',
                 });
                 return;
@@ -61,8 +61,8 @@ export async function requireSubscription(req: AuthRequest, res: Response, next:
 
         // FREE or EXPIRED: block
         const expiredMsg = subscriptionStatus === 'EXPIRED'
-            ? 'Your subscription has expired. Please renew to continue using StockSage AI.'
-            : 'This feature requires an active StockSage AI subscription (₹2999/month).';
+            ? 'Your subscription has expired. Please renew to continue using ApexScan AI.'
+            : 'This feature requires an active ApexScan AI subscription (₹2999/month).';
 
         res.status(403).json({
             success: false,
@@ -71,7 +71,10 @@ export async function requireSubscription(req: AuthRequest, res: Response, next:
         });
     } catch (err) {
         console.error('[Subscription] Check error:', err);
-        // Fail open in case of DB error — don't block users due to infrastructure issues
-        next();
+        res.status(503).json({
+            success: false,
+            message: 'Subscription status is temporarily unavailable. Please try again shortly.',
+            code: 'SUBSCRIPTION_CHECK_UNAVAILABLE',
+        });
     }
 }

@@ -1,5 +1,5 @@
-// StockSage Pro - Prisma Schema (Phase 3 - Multi-User)
-// PostgreSQL (set DATABASE_URL). For SQLite local dev, change provider to "sqlite".
+// StockSage Pro - PostgreSQL schema.
+// Development and production intentionally use the same database provider.
 
 generator client {
   provider      = "prisma-client-js"
@@ -12,7 +12,7 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
+  id        String   @id @default(uuid()) @db.Uuid
   email     String   @unique
   mobileNumber String?  @unique
   name      String?
@@ -30,16 +30,23 @@ model User {
   notifyBuySignals    Boolean   @default(true)
   notifyEmail         Boolean   @default(true)
 
+  // Trading Capital & Position Sizing
+  tradingCapital      Float     @default(500000)    // ₹5L default
+  maxRiskPct          Float     @default(2.0)       // 2% max risk per trade
+  maxPositions        Int       @default(5)         // Max simultaneous positions
+  maxSectorConc       Int       @default(2)         // Max stocks per sector in primary
+
   brokerConfig    BrokerConfig?
   trades          Trade[]
   screenerPresets ScreenerPreset[]
   watchlistItems  WatchlistItem[]
   deviceTokens    DeviceToken[]
+  paymentOrders   PaymentOrder[]
 }
 
 model DeviceToken {
-  id        String   @id @default(uuid())
-  userId    String
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
   token     String   @unique
   platform  String
   createdAt DateTime @default(now())
@@ -51,8 +58,8 @@ model DeviceToken {
 }
 
 model WatchlistItem {
-  id              String   @id @default(uuid())
-  userId          String
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @db.Uuid
   ticker          String
   sector          String?
   signal          String?
@@ -75,12 +82,12 @@ model WatchlistItem {
 }
 
 model BrokerConfig {
-  id          String  @id @default(uuid())
-  userId      String  @unique
+  id          String  @id @default(uuid()) @db.Uuid
+  userId      String  @unique @db.Uuid
   provider    String
-  apiKey      String
-  apiSecret   String
-  accessToken String?
+  apiKeyCiphertext      String
+  apiSecretCiphertext   String
+  accessTokenCiphertext String?
   isLive      Boolean @default(false)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -97,8 +104,8 @@ model PortfolioConfig {
 }
 
 model Trade {
-  id            String    @id @default(uuid())
-  userId        String
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid
 
   // Stock info
   ticker        String
@@ -147,8 +154,8 @@ model Trade {
 }
 
 model ScreenerPreset {
-  id        String  @id @default(uuid())
-  userId    String
+  id        String  @id @default(uuid()) @db.Uuid
+  userId    String  @db.Uuid
   name      String
   filters   String
   isDefault Boolean @default(false)
@@ -157,7 +164,7 @@ model ScreenerPreset {
 }
 
 model HistoricalSetup {
-  id              String    @id @default(uuid())
+  id              String    @id @default(uuid()) @db.Uuid
   ticker          String
   setupType       String
   timeframe       String?
@@ -180,7 +187,7 @@ model HistoricalSetup {
 }
 
 model InstitutionalFlowSnapshot {
-  id          String   @id @default(uuid())
+  id          String   @id @default(uuid()) @db.Uuid
   tradingDate DateTime @unique
   fiiBuy      Float
   fiiSell     Float
@@ -196,4 +203,137 @@ model InstitutionalFlowSnapshot {
   updatedAt   DateTime @updatedAt
 
   @@index([tradingDate])
+}
+
+model InstitutionalDeal {
+  id          String   @id @default(uuid()) @db.Uuid
+  symbol      String
+  companyName String
+  clientName  String
+  entityType  String   // "FII" | "DII" | "PROMOTER" | "HNI" | "ARBITRAGE" | "OTHER"
+  dealType    String   // "BUY" | "SELL"
+  quantity    Int
+  price       Float
+  totalValue  Float    // (quantity * price) in ₹ Crores
+  remarks     String?
+  tradeDate   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([symbol, tradeDate])
+  @@index([entityType, tradeDate])
+  @@index([dealType])
+}
+
+model InstitutionalConfluence {
+  id               String   @id @default(uuid()) @db.Uuid
+  symbol           String   @unique
+  companyName      String?
+  tradeDate        DateTime
+  netFiiBuyCr      Float    @default(0)
+  netDiiBuyCr      Float    @default(0)
+  technicalPattern String?  // e.g. "VCP_BREAKOUT", "VOLUME_SURGE"
+  confluenceScore  Int      @default(0) // 0 - 100
+  isSuperSignal    Boolean  @default(false)
+  updatedAt        DateTime @updatedAt
+  createdAt        DateTime @default(now())
+
+  @@index([confluenceScore])
+  @@index([isSuperSignal])
+}
+
+model PaymentOrder {
+  id            String   @id @default(uuid()) @db.Uuid
+  providerOrderId String @unique
+  userId        String   @db.Uuid
+  planId        String
+  amountPaise   Int
+  currency      String   @default("INR")
+  status        String   @default("CREATED") // CREATED | PAID | FAILED | REFUNDED
+  paymentId     String?  @unique
+  paidAt        DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+// Durable lifecycle and result record for manual and scheduled market scans.
+// The result JSON lets every API instance recover the last successful scan
+// after a restart instead of relying on Railway's ephemeral filesystem.
+model ScanJob {
+  id              String    @id @default(uuid()) @db.Uuid
+  mode            String    @default("swing")
+  trigger         String
+  requestedBy     String?   @db.Uuid
+  status          String    @default("QUEUED")
+  stage           String    @default("Queued")
+  message         String?
+  progressPct     Int       @default(0)
+  processedStocks Int       @default(0)
+  totalStocks     Int       @default(0)
+  setupsFound     Int       @default(0)
+  result          Json?
+  error           String?
+  startedAt       DateTime?
+  heartbeatAt     DateTime?
+  deadlineAt      DateTime?
+  completedAt     DateTime?
+  durationMs      Int?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([mode, status])
+  @@index([mode, completedAt])
+  @@index([createdAt])
+}
+
+model InstitutionalFlow {
+  id          String   @id @default(uuid()) @db.Uuid
+  symbol      String
+  date        DateTime
+  clientName  String
+  buySell     String   // "BUY" | "SELL"
+  quantity    Int
+  avgPrice    Float
+  totalValueCr Float   @default(0)
+  isHftNoise  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([symbol, date])
+  @@index([isHftNoise])
+  @@map("institutional_flows")
+}
+
+model InstitutionalCandidatePool {
+  id                   String   @id @default(uuid()) @db.Uuid
+  symbol               String   @unique
+  addedAt              DateTime @default(now())
+  lastAccumulationDate DateTime
+  netInstitutionalQty  Int
+  netInstitutionalCr   Float
+  deliverySpikeRatio   Float    @default(0)
+  deliveryPct          Float    @default(0)
+  updatedAt            DateTime @updatedAt
+
+  @@index([symbol])
+  @@map("institutional_candidate_pool")
+}
+
+model SignalLabsAlert {
+  id                 String   @id @default(uuid()) @db.Uuid
+  symbol             String
+  alertDate          DateTime
+  breakoutPrice      Float
+  targetPrice        Float    // breakoutPrice * 1.08
+  stopLossPrice      Float    // candleLow * 0.97
+  technicalScore     Float    // e.g. 8.5/10
+  fiiDiiNetQty       Int      @default(0)
+  deliverySpikeRatio Float    @default(0)
+  setupType          String   @default("INSTITUTIONAL_BREAKOUT")
+  createdAt          DateTime @default(now())
+
+  @@index([symbol, alertDate])
+  @@map("signal_labs_alerts")
 }

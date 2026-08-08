@@ -5,20 +5,27 @@
     "main": "dist/index.js",
     "scripts": {
         "build": "npx prisma generate && tsc",
-        "build:full": "npm install --include=dev && cd frontend && npm install --include=dev && npm run build && cd .. && npm run build",
+        "build:full": "npm ci --include=dev && npm --prefix apex-intelligence ci && npm --prefix apex-intelligence run build && npm run build",
         "start": "npx cross-env NODE_ENV=production node dist/index.js",
         "dev:server": "ts-node-dev --respawn --transpile-only src/index.ts",
-        "dev:client": "cd frontend && npm run dev",
-        "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\""
+        "dev:client": "cd apex-intelligence && npm run dev",
+        "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+        "backtest": "ts-node --transpile-only backtest.ts",
+        "test": "vitest run",
+        "prep-backtest": "ts-node --transpile-only src/backtestDataPrep.ts",
+        "backtest:sample": "cross-env BACKTEST_UNIVERSE_MODE=sample ts-node --transpile-only backtest.ts",
+        "backtest:universe": "cross-env BACKTEST_UNIVERSE_MODE=broad_india BACKTEST_UNIVERSE_ONLY=1 ts-node --transpile-only backtest.ts"
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.78.0",
         "@google/generative-ai": "^0.24.1",
         "@prisma/client": "^5.22.0",
+        "@tensorflow/tfjs": "^4.22.0",
         "@types/adm-zip": "^0.5.7",
         "@types/node-telegram-bot-api": "^0.64.14",
         "@types/nodemailer": "^7.0.11",
-        "adm-zip": "^0.5.16",
+        "@types/ws": "^8.18.1",
+        "adm-zip": "^0.6.0",
         "axios": "^1.6.7",
         "bcryptjs": "^3.0.3",
         "cors": "^2.8.5",
@@ -28,13 +35,16 @@
         "express": "^4.18.2",
         "express-rate-limit": "^8.3.1",
         "jsonwebtoken": "^9.0.3",
+        "kiteconnect": "^5.3.0",
         "lowdb": "^1.0.0",
-        "node-cron": "^3.0.3",
-        "node-telegram-bot-api": "^0.67.0",
-        "nodemailer": "^8.0.1",
+        "node-cron": "^4.6.0",
+        "node-telegram-bot-api": "^1.2.0",
+        "nodemailer": "^9.0.3",
         "prisma": "^5.22.0",
+        "puppeteer-core": "^25.4.0",
         "technicalindicators": "^3.1.0",
         "twilio": "^5.13.1",
+        "ws": "^8.21.1",
         "zod": "^4.3.6"
     },
     "devDependencies": {
@@ -48,6 +58,11 @@
         "concurrently": "^9.2.1",
         "prisma": "^5.22.0",
         "ts-node-dev": "^2.0.0",
-        "typescript": "^5.3.3"
+        "typescript": "^5.3.3",
+        "vitest": "^3.2.4"
+    },
+    "overrides": {
+        "serialize-javascript": "7.0.5",
+        "js-yaml": "4.3.1"
     }
 }

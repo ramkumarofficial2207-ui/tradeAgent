@@ -191,5 +191,12 @@ function broadcastSSE(data: { type: string; payload: any }): void {
     });
 }
 
+// Scanner lifecycle updates use the same authenticated SSE channel as agent
+// events, while the dashboard also polls the durable database status as a
+// reconnect-safe fallback.
+export function publishScanStatus(status: unknown): void {
+    broadcastSSE({ type: 'scan_status', payload: status });
+}
+
 // Initialize with a startup event
-pushEvent('SYSTEM', 'info', 'StockSage AI Agent Online', 'AI agent initialized and ready to monitor markets');
+pushEvent('SYSTEM', 'info', 'ApexScan AI Agent Online', 'AI agent initialized and ready to monitor markets');

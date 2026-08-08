@@ -3,18 +3,52 @@ node_modules/
 
 # Environment variables — NEVER commit this (contains API keys!)
 .env
+.env.*
+!.env.example
+.kite_token.json
+.dhan_securities.json
 
 # Database
 *.db
 *.db-journal
 prisma/dev.db
 
+# Runtime-generated market and analytics data
+data/*
+!data/.gitkeep
+
 # Build outputs
 dist/
-frontend/dist/
+apex-intelligence/dist/
+coverage/
+.vite/
 
 # Logs
 *.log
+
+# Local QA, screenshots, archives, and recovery artifacts
+/*.png
+/*.zip
+/build*.txt
+/errors*.txt
+/generated_data.txt
+/log.txt
+/prisma_gen_log.txt
+/reports/backtests/
+/scratch/
+/scratch_*.ts
+/src/debug_paths.ts
+/old_*.ts
+/fix_*.js
+/update*.js
+/poll_deploy.js
+/test*.js
+/test*.ts
+/generate_universe*.ts
+
+# Local agent metadata
+.agents/
+.codex/
 
 # OS
 .DS_Store

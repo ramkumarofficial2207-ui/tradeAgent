@@ -5,9 +5,9 @@ export const registerSchema = z.object({
     name: z.string().trim().min(2).max(80),
     email: z.string().trim().email().max(120),
     mobileNumber: z.string().trim().regex(/^\+?[0-9]{10,15}$/, 'Provide a valid mobile number.').optional(),
-    password: z.string().min(6).max(128).optional(),
-    secret: z.string().min(6).max(128).optional(),
-    mpin: z.string().trim().regex(/^\d{4,6}$/, 'MPIN must be 4 to 6 digits.').optional(),
+    password: z.string().min(10).max(128).optional(),
+    secret: z.string().min(10).max(128).optional(),
+    mpin: z.string().trim().regex(/^\d{6}$/, 'MPIN must be exactly 6 digits.').optional(),
 }).superRefine((value, ctx) => {
     if (!value.password && !value.secret && !value.mpin) {
         ctx.addIssue({
@@ -23,7 +23,7 @@ export const loginSchema = z.object({
     mobileNumber: z.string().trim().regex(/^\+?[0-9]{10,15}$/, 'Provide a valid mobile number.').optional(),
     password: z.string().min(1).max(128).optional(),
     secret: z.string().min(1).max(128).optional(),
-    mpin: z.string().trim().regex(/^\d{4,6}$/, 'MPIN must be 4 to 6 digits.').optional(),
+    mpin: z.string().trim().regex(/^\d{6}$/, 'MPIN must be exactly 6 digits.').optional(),
 }).superRefine((value, ctx) => {
     if (!value.email && !value.mobileNumber) {
         ctx.addIssue({
@@ -88,8 +88,11 @@ export const newsImpactSchema = z.object({
     }
 });
 
+const tickerSchema = z.string().trim().min(1).max(20)
+    .regex(/^[A-Z0-9&.-]+$/i, 'Ticker contains unsupported characters.');
+
 export const portfolioTradeSchema = z.object({
-    ticker: z.string().trim().min(1).max(20),
+    ticker: tickerSchema,
     entryPrice: z.coerce.number().positive(),
     quantity: z.coerce.number().int().positive(),
     stopLossInit: z.coerce.number().positive(),
@@ -102,19 +105,43 @@ export const portfolioTradeSchema = z.object({
     regimeAtEntry: z.string().trim().max(40).optional(),
     confidenceScore: z.coerce.number().min(0).max(10).optional(),
     notes: z.string().trim().max(2000).optional(),
+}).superRefine((value, ctx) => {
+    if (value.stopLossInit >= value.entryPrice) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['stopLossInit'],
+            message: 'stopLossInit must be below entryPrice for a long trade.',
+        });
+    }
+    if (value.target1 <= value.entryPrice) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['target1'],
+            message: 'target1 must be above entryPrice for a long trade.',
+        });
+    }
+    if (value.target2 !== undefined && value.target2 <= value.target1) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['target2'],
+            message: 'target2 must be above target1.',
+        });
+    }
 });
 
 export const portfolioTradeUpdateSchema = z.object({
     exitPrice: z.coerce.number().positive().optional(),
     exitReason: z.enum(['TARGET', 'STOP', 'TRAIL', 'MANUAL']).optional(),
     currentPrice: z.coerce.number().positive().optional(),
+    stopLossTrail: z.coerce.number().positive().optional(),
     notes: z.string().trim().max(2000).optional(),
 }).superRefine((value, ctx) => {
     const hasClose = value.exitPrice !== undefined || value.exitReason !== undefined;
     const hasPriceUpdate = value.currentPrice !== undefined;
+    const hasStopUpdate = value.stopLossTrail !== undefined;
     const hasNotesUpdate = value.notes !== undefined;
 
-    if (!hasClose && !hasPriceUpdate && !hasNotesUpdate) {
+    if (!hasClose && !hasPriceUpdate && !hasStopUpdate && !hasNotesUpdate) {
         ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: 'Provide exit details, current price, or notes.',
@@ -132,9 +159,46 @@ export const portfolioTradeUpdateSchema = z.object({
 
 export const userPreferencesSchema = z.object({
     whatsappNumber: z.string().trim().max(30).optional(),
+    telegramChatId: z.string().trim().max(80).optional(),
     notifyBuySignals: z.boolean().optional(),
     notifyEmail: z.boolean().optional(),
     name: z.string().trim().min(2).max(80).optional(),
+});
+
+export const capitalSettingsSchema = z.object({
+    tradingCapital: z.coerce.number().min(10_000).max(1_000_000_000).optional(),
+    maxRiskPct: z.coerce.number().min(0.1).max(5).optional(),
+    maxPositions: z.coerce.number().int().min(1).max(50).optional(),
+    maxSectorConc: z.coerce.number().int().min(1).max(20).optional(),
+}).refine(value => Object.values(value).some(item => item !== undefined), {
+    message: 'Provide at least one capital setting.',
+});
+
+export const signalLabsSchema = z.object({
+    prompt: z.string().trim().min(3).max(4000),
+    model: z.enum(['gemini', 'claude', 'groq']).default('gemini'),
+});
+
+export const riskCalculationSchema = z.object({
+    portfolioCapital: z.coerce.number().min(10_000).max(1_000_000_000),
+    maxRiskPct: z.coerce.number().min(0.1).max(5),
+    entryPrice: z.coerce.number().positive(),
+    stopLoss: z.coerce.number().positive(),
+    regime: z.enum(['BULLISH', 'BEARISH', 'NEUTRAL', 'RISK_OFF']),
+}).refine(value => value.stopLoss < value.entryPrice, {
+    path: ['stopLoss'],
+    message: 'stopLoss must be below entryPrice for a long trade.',
+});
+
+export const subscriptionOrderSchema = z.object({
+    planId: z.enum(['MONTHLY', 'ANNUAL']),
+});
+
+export const paymentVerificationSchema = z.object({
+    planId: z.enum(['MONTHLY', 'ANNUAL']),
+    orderId: z.string().trim().min(8).max(100),
+    paymentId: z.string().trim().min(8).max(100),
+    signature: z.string().trim().regex(/^[a-f0-9]{64}$/i, 'Invalid payment signature.'),
 });
 
 export const deviceRegistrationSchema = z.object({

@@ -19,7 +19,7 @@ export async function validateNewsRisk(ticker: string): Promise<NewsValidation> 
         const digest = await getTickerNewsDigest(ticker, null, true);
         const headlines = digest.items.map(item => item.title).slice(0, 8);
         const joined = headlines.join(' | ');
-        const analysis = analyzeNewsImpact({
+        const analysis = await analyzeNewsImpact({
             headline: headlines[0] || `${ticker} latest news`,
             articleText: joined,
             targetTicker: ticker,

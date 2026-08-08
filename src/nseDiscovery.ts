@@ -113,26 +113,7 @@ function parseCsv(csv: string): BhavRecord[] {
 let _cache: { records: BhavRecord[]; timestamp: number; dateLabel: string } | null = null;
 
 async function fetchLatestBhavcopy(): Promise<BhavRecord[]> {
-    // Try last 5 days — handles weekends, market holidays, pre-6pm same day
-    for (let offset = 0; offset <= 5; offset++) {
-        const date = new Date();
-        date.setDate(date.getDate() - offset);
-        const day = date.getDay();
-        if (day === 0 || day === 6) continue; // skip weekends
-
-        try {
-            const csv = await downloadCsv(date);
-            const records = parseCsv(csv);
-            if (records.length > 200) {
-                console.log(`[nseDiscovery] ✅ Bhavcopy loaded: ${date.toDateString()} → ${records.length} EQ symbols (zero hardcoding)`);
-                return records;
-            }
-        } catch {
-            // Not available yet — try previous trading day
-        }
-    }
-
-    console.warn('[nseDiscovery] ⚠️  Bhavcopy unavailable. Scanner will fall back to static universe.');
+    // Legacy Bhavcopy scraper bypassed in favor of Zerodha & Yahoo Finance APIs
     return [];
 }
 

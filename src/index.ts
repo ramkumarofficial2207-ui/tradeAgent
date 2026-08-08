@@ -7,10 +7,8 @@ import cors from 'cors';
 import path from 'path';
 import cron from 'node-cron';
 import bcrypt from 'bcryptjs';
-import { exec } from 'child_process';
-import { runScanner, buildTradeSetups, finalizeSwingDiagnostics, runIntradayScanner } from './scanner';
 import { MarketDataInterval, ScanResult } from './types';
-import { fetchHistoricalData, fetchNiftyData, getLiveQuoteSnapshots, NSE_UNIVERSE, SECTOR_MAP, getTradingApiFromEnv } from './dataService';
+import { fetchHistoricalData, fetchLtp, fetchNiftyData, getLiveQuoteSnapshots, NSE_UNIVERSE, SECTOR_MAP, getTradingApiFromEnv } from './dataService';
 import { fetchStockReport, batchPrefetch } from './fundamentalService';
 import { sendPreMarketAlert } from './alerter';
 import axios from 'axios';
@@ -19,18 +17,28 @@ import { groqAsk } from './groqClient';
 import { geminiAsk } from './geminiClient';
 import {
     pushEvent, getEvents, getUnreadCount, markAllRead, markRead,
-    setAgentState, getAgentStatus, incrementTasksCompleted,
-    setLastScan, setNextScan, setMonitoredStocks,
-    addThinkingStep, updateThinkingStep, clearThinkingSteps,
+    getAgentStatus,
     addSSEClient, removeSSEClient,
 } from './agentEvents';
+import { getDhanWebSocketInstance } from './dhanWebSocket';
+import { liveTickerStore } from './liveTickerStore';
 import prisma from './prismaClient';
 import { updatePerformanceRecords } from './performanceJob';
 import { initAutoScanner } from './autoScannerJob';
-import { requireAuth, generateToken, AuthRequest } from './authMiddleware';
-import { scanLimiter, chatLimiter, authLimiter } from './rateLimiter';
+import { initGlobalAgent } from './globalAgent';
+import {
+    requireAuth,
+    requireAdmin,
+    generateToken,
+    generateKiteOauthState,
+    verifyKiteOauthState,
+    isAdminEmail,
+    AuthRequest,
+    assertAuthConfiguration,
+} from './authMiddleware';
+import { scanLimiter, chatLimiter, authLimiter, paymentLimiter } from './rateLimiter';
 import { requireSubscription } from './subscriptionMiddleware';
-import { createTrade, closeTrade, getPortfolioIntelligence, getPortfolioNewsRisk, getPortfolioSummary, updateTradeCurrentPrice } from './portfolioService';
+import { createTrade, closeTrade, getPortfolioIntelligence, getPortfolioNewsRisk, getPortfolioSummary, updateOwnedTrade } from './portfolioService';
 import { sendBuyAlert, sendPreMarketDigest } from './whatsappAlert';
 import { notifyUsersWithMorningDigest, notifyUsersWithPostMarketSummary } from './notificationService';
 import {
@@ -39,16 +47,38 @@ import {
     seedInstitutionalFlowIfEmpty,
     syncInstitutionalFlowFromOfficialReport,
 } from './institutionalFlowService';
+import { syncNseDailyBulkDeals, backfillNseBulkDeals } from './services/institutionalService';
+import { getStockDeepDive } from './services/stockDeepDiveService';
+import { calculateRiskAndPosition, querySignalLabsAi } from './services/riskCalculatorService';
+import { scanIntradayDeliverySpikes } from './services/intradayDeliveryService';
+import {
+    createRazorpayOrder,
+    processRazorpayWebhook,
+    SUBSCRIPTION_PLANS,
+    verifyAndActivateSubscription,
+} from './services/subscriptionPaymentService';
+import { fetchTickerNewsSource } from './newsIntel/sources';
+
+
+
+
+
+import { getLiveIndexPrices, getLiveLtpBatch, getMarketStatus } from './liveMarket';
 import {
     adminInstitutionalFlowImportSchema,
     adminActivateSchema,
+    capitalSettingsSchema,
     chatSchema,
     deviceRegistrationSchema,
     loginSchema,
     newsImpactSchema,
     portfolioTradeSchema,
     portfolioTradeUpdateSchema,
+    paymentVerificationSchema,
     registerSchema,
+    riskCalculationSchema,
+    signalLabsSchema,
+    subscriptionOrderSchema,
     userPreferencesSchema,
     validateBody,
     watchlistCreateSchema,
@@ -56,15 +86,28 @@ import {
 import { buildGroundedChatResponse } from './chat/service';
 import { analyzeNewsImpact, buildTechnicalContextFromStock } from './newsImpactService';
 import { getNewsFeed, getStoredNewsStatus, getTickerNewsDigest, syncNewsIntelligence } from './newsIntel/service';
-import { buildMarketGroundingFromReport, buildSectorBreadthMap } from './newsIntel/marketGrounding';
+import { buildMarketGroundingFromReport } from './newsIntel/marketGrounding';
 import { backfillTrackedSignalsFromDb, buildEdgeDashboard, trackHistoricalSetup } from './edgeAnalyticsService';
 import { registerDeviceToken } from './pushNotificationService';
+import { generateKiteSession, getKiteLoginUrl, initializeKiteSession, isKiteAuthenticated } from './kiteAuth';
+import { SYSTEM_AGENT_EMAIL, SYSTEM_AGENT_USER_ID } from './systemConstants';
+import {
+    getCachedScan,
+    getLatestAvailableScan,
+    getScanStatus,
+    initializeScanCoordinator,
+    ScanMode,
+    startMarketScan,
+} from './scanCoordinator';
+
+// Initialize Kite Connect if token is cached
+initializeKiteSession();
 
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
+assertAuthConfiguration();
 type DbStatus = 'unknown' | 'ready' | 'error';
-type ScanMode = 'swing' | 'intraday';
 
 const dbHealth: {
     status: DbStatus;
@@ -75,9 +118,6 @@ const dbHealth: {
     checkedAt: null,
     message: null,
 };
-let dbRepairAttempted = false;
-let dbRepairInFlight = false;
-
 const SAFE_USER_SELECT = {
     id: true,
     name: true,
@@ -86,7 +126,18 @@ const SAFE_USER_SELECT = {
     createdAt: true,
     subscriptionStatus: true,
     subscriptionExpiry: true,
+    telegramChatId: true,
+    notifyBuySignals: true,
+    notifyEmail: true,
+    tradingCapital: true,
+    maxRiskPct: true,
+    maxPositions: true,
+    maxSectorConc: true,
 } as const;
+
+function safeUserPayload<T extends { email: string }>(user: T) {
+    return { ...user, isAdmin: isAdminEmail(user.email) };
+}
 
 function normalizeEmail(value?: string): string | undefined {
     return value?.trim().toLowerCase() || undefined;
@@ -124,14 +175,6 @@ function summarizeDbError(err: any): string {
     return normalized.slice(0, 240);
 }
 
-function shouldAttemptDatabaseRepair(err: any): boolean {
-    if (!isDatabaseError(err)) return false;
-    const message = summarizeDbError(err).toLowerCase();
-    return message.includes('does not exist in the current database') ||
-        message.includes('table') && message.includes('does not exist') ||
-        message.includes('has not been created yet');
-}
-
 function markDatabaseHealthy(): void {
     dbHealth.status = 'ready';
     dbHealth.checkedAt = new Date().toISOString();
@@ -144,22 +187,6 @@ function markDatabaseError(err: any): void {
     dbHealth.message = summarizeDbError(err);
 }
 
-function attemptDatabaseRepair(reason: any): void {
-    if (dbRepairAttempted || dbRepairInFlight || !shouldAttemptDatabaseRepair(reason)) return;
-    dbRepairAttempted = true;
-    dbRepairInFlight = true;
-    console.warn('[System] Database schema mismatch detected. Attempting one-time prisma db push...');
-    exec('npx prisma db push', { cwd: process.cwd() }, async (err, stdout, stderr) => {
-        dbRepairInFlight = false;
-        if (err) {
-            console.error('[System] Database repair failed:', (stderr || err.message || '').trim());
-            return;
-        }
-        if (stdout?.trim()) console.log('[System] Database repair output:', stdout.trim());
-        await verifyDatabaseConnection();
-    });
-}
-
 async function verifyDatabaseConnection(): Promise<void> {
     if (!process.env.DATABASE_URL) {
         markDatabaseError('DATABASE_URL is not set');
@@ -168,15 +195,30 @@ async function verifyDatabaseConnection(): Promise<void> {
     }
     try {
         await prisma.$connect();
-        await prisma.$queryRawUnsafe('SELECT 1');
+        await prisma.$queryRaw`SELECT 1`;
         // Check for InstitutionalFlowSnapshot table (using any property to verify existence)
         await prisma.institutionalFlowSnapshot.findFirst({ select: { id: true } });
+        
+        // Seed the Global Agent System User
+        const systemUser = await prisma.user.upsert({
+            where: { email: SYSTEM_AGENT_EMAIL },
+            update: {},
+            create: {
+                id: SYSTEM_AGENT_USER_ID,
+                email: SYSTEM_AGENT_EMAIL,
+                name: 'ApexScan AI System',
+                password: await bcrypt.hash(`disabled-${Date.now()}-${SYSTEM_AGENT_USER_ID}`, 12),
+            }
+        });
+        if (systemUser.id !== SYSTEM_AGENT_USER_ID) {
+            throw new Error('System agent user exists with an incompatible identifier.');
+        }
+        
         markDatabaseHealthy();
-        console.log('[System] Database connection ready.');
+        console.log('[System] Database connection ready. Global Agent Seeded.');
     } catch (err: any) {
         markDatabaseError(err);
         console.error('[System] Database connection failed:', summarizeDbError(err));
-        attemptDatabaseRepair(err);
     }
 }
 
@@ -187,7 +229,6 @@ function sanitizeError(err: any): string {
     
     if (isDatabaseError(err)) {
         markDatabaseError(err);
-        attemptDatabaseRepair(err);
         return 'Database is temporarily unavailable. Please try again later.';
     }
     
@@ -199,11 +240,42 @@ function sanitizeError(err: any): string {
     return 'Something went wrong on our end. Please try again later.';
 }
 
-app.use(cors());
-app.use(express.json());
+const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+if (process.env.NODE_ENV === 'production' && configuredOrigins.length === 0) {
+    throw new Error('CORS_ALLOWED_ORIGINS must be configured in production.');
+}
+const allowedOrigins = new Set(
+    configuredOrigins.length > 0
+        ? configuredOrigins
+        : ['http://localhost:5173', 'http://127.0.0.1:5173']
+);
+
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+        return callback(new Error('Origin is not allowed by CORS policy.'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-Razorpay-Signature'],
+    maxAge: 600,
+}));
+
+interface RawBodyRequest extends Request {
+    rawBody?: Buffer;
+}
+
+app.use(express.json({
+    limit: '100kb',
+    verify(req, _res, buffer) {
+        (req as RawBodyRequest).rawBody = Buffer.from(buffer);
+    },
+}));
 
 // In production, serve the built React frontend
-const FRONTEND_DIST = path.join(__dirname, '..', 'frontend', 'dist');
+const FRONTEND_DIST = path.join(__dirname, '..', 'apex-intelligence', 'dist');
 
 if (process.env.NODE_ENV === 'production') {
     app.use(express.static(FRONTEND_DIST));
@@ -212,20 +284,17 @@ if (process.env.NODE_ENV === 'production') {
 // Routes
 app.get('/api/health', (_req, res) => res.status(200).json({
     status: 'OK',
-    v: 'fix-Intelligence5.0',
-    db: dbHealth.status,
-    dbCheckedAt: dbHealth.checkedAt,
-    dbMessage: dbHealth.message,
+    version: '2.0.0',
 }));
-app.get('/api/ready', (_req, res) => {
-    const ready = dbHealth.status === 'ready';
-    res.status(ready ? 200 : 503).json({
-        status: ready ? 'READY' : 'NOT_READY',
-        v: 'fix-Intelligence5.0',
-        db: dbHealth.status,
-        dbCheckedAt: dbHealth.checkedAt,
-        dbMessage: dbHealth.message,
-    });
+app.get('/api/ready', async (_req, res) => {
+    try {
+        await prisma.$queryRaw`SELECT 1`;
+        markDatabaseHealthy();
+        res.status(200).json({ status: 'READY', database: 'ready' });
+    } catch (error) {
+        markDatabaseError(error);
+        res.status(503).json({ status: 'NOT_READY', database: 'unavailable' });
+    }
 });
 app.get('/', (_req, res) => {
     if (process.env.NODE_ENV === 'production') {
@@ -235,40 +304,26 @@ app.get('/', (_req, res) => {
         res.sendFile(indexPath, (err) => {
             if (err) {
                 console.error('[Static] Failed to serve index.html:', err.message);
-                res.status(200).send('StockSage AI Backend Operational (Initial Booting...)');
+                res.status(200).send('ApexScan AI Backend Operational (Initial Booting...)');
             }
         });
     } else {
-        res.status(200).send('StockSage AI Backend Operational (Development Mode)');
+        res.status(200).send('ApexScan AI Backend Operational (Development Mode)');
     }
 });
 
 // Global process handlers
 process.on('uncaughtException', (err) => {
     console.error('[System] Uncaught Exception:', err);
+    process.exit(1);
 });
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[System] Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
 });
-
-// Cache last scan result
-let lastSwingScan: ScanResult | null = null;
-let lastIntradayScan: ScanResult | null = null;
 
 function normalizeScanMode(value: unknown): ScanMode {
     return value === 'intraday' ? 'intraday' : 'swing';
-}
-
-function getCachedScan(mode: ScanMode): ScanResult | null {
-    return mode === 'intraday' ? lastIntradayScan : lastSwingScan;
-}
-
-function setCachedScan(mode: ScanMode, scan: ScanResult): void {
-    if (mode === 'intraday') {
-        lastIntradayScan = scan;
-        return;
-    }
-    lastSwingScan = scan;
 }
 
 type SectorPulseTile = { n: string; v: number };
@@ -290,14 +345,6 @@ let sectorPulseCache: { ts: number; data: { sectors: SectorPulseTile[]; fetchedA
 
 function roundNumber(value: number, digits = 2): number {
     return Number(value.toFixed(digits));
-}
-
-function getLatestAvailableScan(): ScanResult | null {
-    if (!lastSwingScan) return lastIntradayScan;
-    if (!lastIntradayScan) return lastSwingScan;
-    const swingTs = new Date(lastSwingScan.timestamp || 0).getTime();
-    const intradayTs = new Date(lastIntradayScan.timestamp || 0).getTime();
-    return intradayTs > swingTs ? lastIntradayScan : lastSwingScan;
 }
 
 function buildSectorFallbackFromScan(scan: ScanResult | null): SectorPulseTile[] {
@@ -346,44 +393,6 @@ async function buildSectorPulse(): Promise<{ sectors: SectorPulseTile[]; fetched
     return data;
 }
 
-function getLastThursdayUtc(year: number, monthIndex: number): Date {
-    const date = new Date(Date.UTC(year, monthIndex + 1, 0));
-    while (date.getUTCDay() !== 4) date.setUTCDate(date.getUTCDate() - 1);
-    return date;
-}
-
-function buildEconomicCalendar(now = new Date()) {
-    const events: Array<{ date: string; label: string; type: 'FNO' | 'RBI' | 'EARNINGS' | 'BUDGET'; importance: 'HIGH' | 'CRITICAL' }> = [];
-    const year = now.getUTCFullYear();
-    const start = Date.UTC(year, now.getUTCMonth(), now.getUTCDate());
-
-    for (let offset = 0; offset < 6; offset += 1) {
-        const monthIndex = now.getUTCMonth() + offset;
-        const expiry = getLastThursdayUtc(year + Math.floor(monthIndex / 12), ((monthIndex % 12) + 12) % 12);
-        if (expiry.getTime() >= start) {
-            events.push({
-                date: expiry.toISOString(),
-                label: `Monthly F&O Expiry - ${expiry.toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' })}`,
-                type: 'FNO',
-                importance: offset <= 1 ? 'CRITICAL' : 'HIGH',
-            });
-        }
-    }
-
-    const budgetThisYear = new Date(Date.UTC(year, 1, 1));
-    const budgetNextYear = new Date(Date.UTC(year + 1, 1, 1));
-    const nextBudget = budgetThisYear.getTime() >= start ? budgetThisYear : budgetNextYear;
-    events.push({
-        date: nextBudget.toISOString(),
-        label: 'Union Budget',
-        type: 'BUDGET',
-        importance: 'CRITICAL',
-    });
-
-    return events
-        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-        .slice(0, 6);
-}
 let broker: any = null;
 let tradingApi: any = null;
 
@@ -402,7 +411,7 @@ setTimeout(() => {
 }, 1500);
 
 setTimeout(() => {
-    syncNewsIntelligence(lastSwingScan).catch((err: any) => {
+    syncNewsIntelligence(getCachedScan('swing')).catch((err: any) => {
         console.warn('[NewsIntel] Initial sync skipped:', err?.message || err);
     });
 }, 2500);
@@ -411,7 +420,7 @@ setTimeout(() => {
 // ROUTES
 // ——————————————————————————————————————————
 
-app.get('/api/broker/status', (_req: Request, res: Response) => {
+app.get('/api/broker/status', requireAuth, (_req: Request, res: Response) => {
     if (!broker) {
         res.json({ success: true, data: { provider: 'initializing', live: false, note: 'Broker system starting...' } });
         return;
@@ -421,7 +430,7 @@ app.get('/api/broker/status', (_req: Request, res: Response) => {
         data: {
             provider: broker.provider,
             live: broker.live,
-            note: broker.live ? 'Live broker mode' : 'Paper mode fallback',
+            note: broker.live ? 'Live broker mode' : 'Paper trading mode',
         },
     });
 });
@@ -443,12 +452,12 @@ app.post('/api/auth/register', authLimiter, validateBody(registerSchema), async 
         res.status(400).json({ success: false, message: 'Name, email and password or MPIN are required.' });
         return;
     }
-    if (password && password.length < 6) {
-        res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+    if (password && password.length < 10) {
+        res.status(400).json({ success: false, message: 'Password must be at least 10 characters.' });
         return;
     }
-    if (mpin && !/^\d{4,6}$/.test(mpin)) {
-        res.status(400).json({ success: false, message: 'MPIN must be 4 to 6 digits.' });
+    if (mpin && !/^\d{6}$/.test(mpin)) {
+        res.status(400).json({ success: false, message: 'MPIN must be exactly 6 digits.' });
         return;
     }
     try {
@@ -483,7 +492,7 @@ app.post('/api/auth/register', authLimiter, validateBody(registerSchema), async 
             select: SAFE_USER_SELECT,
         });
         const token = generateToken(user.id, user.email);
-        res.json({ success: true, token, user, trialDaysLeft: 7 });
+        res.json({ success: true, token, user: safeUserPayload(user), trialDaysLeft: 7 });
     } catch (err: any) {
         console.error('[Register] Error:', err);
         res.status(500).json({ success: false, message: sanitizeError(err) });
@@ -517,8 +526,8 @@ app.post('/api/auth/login', authLimiter, validateBody(loginSchema), async (req: 
             return;
         }
         const token = generateToken(user.id, user.email);
-        const { password: _, mpinHash: __, ...safeUser } = user as any;
-        res.json({ success: true, token, user: safeUser });
+        const safeUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: SAFE_USER_SELECT });
+        res.json({ success: true, token, user: safeUserPayload(safeUser) });
     } catch (err: any) {
         console.error('[Login] Error:', err);
         res.status(500).json({ success: false, message: sanitizeError(err) });
@@ -533,7 +542,7 @@ app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res: Response) => 
             select: SAFE_USER_SELECT,
         });
         if (!user) { res.status(404).json({ success: false, message: 'User not found.' }); return; }
-        res.json({ success: true, user });
+        res.json({ success: true, user: safeUserPayload(user) });
     } catch (err: any) {
         console.error('[Auth-Me] Error:', err);
         res.status(500).json({ success: false, message: sanitizeError(err) });
@@ -573,7 +582,7 @@ app.post('/api/user/preferences', requireAuth, validateBody(userPreferencesSchem
             where: { id: req.userId },
             data: {
                 name: req.body?.name,
-                telegramChatId: req.body?.whatsappNumber,
+                telegramChatId: req.body?.telegramChatId ?? req.body?.whatsappNumber,
                 notifyBuySignals: req.body?.notifyBuySignals,
                 notifyEmail: req.body?.notifyEmail,
             },
@@ -660,148 +669,85 @@ app.delete('/api/watchlist/:ticker', requireAuth, async (req: AuthRequest, res: 
 
 
 // GET /api/scan — Run the full Phase 1+2 scanner (rate limited + subscription gated)
-app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: AuthRequest, res: Response) => {
+// ── Kite Connect Authentication Routes ──────────────────────────────
+
+app.get('/api/kite/status', requireAuth, requireAdmin, (_req: Request, res: Response) => {
+    res.json({ success: true, authenticated: isKiteAuthenticated() });
+});
+
+app.get('/api/kite/login', requireAuth, requireAdmin, (req: AuthRequest, res: Response) => {
+    const state = generateKiteOauthState(req.userId!, req.userEmail!);
+    const separator = getKiteLoginUrl().includes('?') ? '&' : '?';
+    res.json({ success: true, url: `${getKiteLoginUrl()}${separator}state=${encodeURIComponent(state)}` });
+});
+
+app.get('/api/kite/callback', async (req: Request, res: Response) => {
+    const requestToken = req.query.request_token as string;
+    const state = req.query.state as string;
+    if (!requestToken || !state) {
+        return res.status(400).send('Missing OAuth callback parameters.');
+    }
     try {
-        console.log('\n[API] /api/scan called');
-        const force = req.query.force === 'true';
+        const identity = verifyKiteOauthState(state);
+        if (!isAdminEmail(identity.email)) return res.status(403).send('Administrator access required.');
+    } catch {
+        return res.status(401).send('Invalid or expired OAuth state.');
+    }
+    const success = await generateKiteSession(requestToken);
+    if (success) {
+        res.send('<h1>Kite Connect Authenticated!</h1><p>You can close this window and return to the dashboard.</p><script>setTimeout(()=>window.close(), 2000)</script>');
+    } else {
+        res.status(500).send('<h1>Authentication Failed</h1><p>Check server logs.</p>');
+    }
+});
+
+// ── End Kite Routes ───────────────────────────────────────────────
+
+async function queueManualScan(req: AuthRequest, res: Response): Promise<void> {
+    try {
         const mode = normalizeScanMode(req.query.mode);
-        const cachedScan = getCachedScan(mode);
-
-        if (!force && cachedScan) {
-            console.log('[API] Serving cached scan results');
-            res.json({ success: true, data: cachedScan });
-            return;
-        }
-
-        clearThinkingSteps();
-        setAgentState('SCANNING', mode === 'intraday' ? 'Running intraday momentum scan' : 'Running full market scan');
-        pushEvent(
-            'SCAN_START',
-            'info',
-            mode === 'intraday' ? 'Intraday Scanner Started' : 'Scanner Started',
-            mode === 'intraday'
-                ? 'Running 5-minute intraday scan across the liquid NSE universe'
-                : 'Running full Phase 1+1000 scan across Nifty stocks'
-        );
-
-        const s1 = addThinkingStep('Fetching live market data from NSE', 'running');
-        console.log(`[API] Running ${mode} market scan...`);
-        let qualified: any[] = [];
-        let marketStatus: any;
-        let setups: any[] = [];
-        let diagnostics: ScanResult['diagnostics'];
-        if (mode === 'intraday') {
-            const intradayResult = await runIntradayScanner(tradingApi);
-            qualified = intradayResult.qualified;
-            marketStatus = intradayResult.marketStatus;
-            setups = intradayResult.setups;
-            diagnostics = intradayResult.diagnostics;
-        } else {
-            const swingResult = await runScanner(tradingApi);
-            qualified = swingResult.qualified;
-            marketStatus = swingResult.marketStatus;
-            diagnostics = swingResult.diagnostics;
-        }
-        updateThinkingStep(s1, 'done', `Market regime: ${marketStatus.regime || 'NEUTRAL'}`);
-
-        const s2 = addThinkingStep('Computing technical indicators & AI signals', 'running');
-        if (mode !== 'intraday') {
-            setups = await buildTradeSetups(qualified, marketStatus);
-            diagnostics = await finalizeSwingDiagnostics(diagnostics ?? {
-                mode: 'swing',
-                universeCount: qualified.length,
-                qualifiedCount: qualified.length,
-                setupCount: 0,
-                rejectionCounts: {},
-                notes: [],
-                nearMisses: [],
-                recommendedAction: 'WAIT',
-            }, qualified, setups);
-        }
-        updateThinkingStep(s2, 'done', `${setups.length} setups identified`);
-
-        const s3 = addThinkingStep('Finalizing scan results', 'running');
-        updateThinkingStep(s3, 'done', 'Ready');
-
-        const sectorBreadth = buildSectorBreadthMap(qualified, setups);
-        const scanPayload: ScanResult = {
-            timestamp: new Date().toISOString(),
-            marketStatus,
-            setups,
-            sectorBreadth,
-            diagnostics,
-        };
-        setCachedScan(mode, scanPayload);
-
-        const buyCount = setups.filter(s => s.aiSignal === 'BUY').length;
-        setAgentState('IDLE');
-        incrementTasksCompleted();
-        setLastScan(scanPayload.timestamp);
-        setMonitoredStocks(setups.length);
-        pushEvent('SCAN_COMPLETE', 'success',
-            `Scan Complete — ${setups.length} Setups Found`,
-            `${buyCount} BUY signals, ${setups.length - buyCount} WATCH/AVOID. Regime: ${marketStatus.regime || 'NEUTRAL'}`,
-            { data: { total: setups.length, buyCount } }
-        );
-
-        // ── AUTO-LOGGING TO PERFORMANCE DATABASE ──
-        setups
-            .filter(s => s.alertStage && (s.alertStage === 'TRADE_READY' || s.alertStage === 'TRIGGER_ARMED'))
-            .slice(0, 3)
-            .forEach(s => {
-                pushEvent(
-                    'TRADE_ALERT',
-                    s.alertStage === 'TRADE_READY' ? 'success' : 'info',
-                    `${s.alertStage === 'TRADE_READY' ? 'Trade Ready' : 'Trigger Armed'}: ${s.ticker}`,
-                    `${s.setupType} | Edge ${s.calibratedEdgeScore ?? s.confidenceScore}/10 | ${s.newsDistribution?.signalAlignment ?? 'UNAVAILABLE'} | ${s.marketGrounding?.confirmationStatus ?? 'UNAVAILABLE'}`,
-                    { ticker: s.ticker }
-                );
-            });
-
-        try {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const signalsToTrack = setups.filter(s => 
-                (s.aiSignal === 'BUY' && s.confidenceScore >= 7) || 
-                (s.aiSignal === 'LIGHT BUY' && s.confidenceScore >= 6) ||
-                (s.aiSignal === 'WATCH' && s.confidenceScore >= 8)
-            );
-            for (const s of signalsToTrack) {
-                const exists = await prisma.historicalSetup.findFirst({
-                    where: { ticker: s.ticker, status: 'IN_PROGRESS', createdAt: { gte: today } }
-                });
-                if (!exists) {
-                    const created = await prisma.historicalSetup.create({
-                        data: {
-                            ticker: s.ticker, setupType: s.setupType, timeframe: s.timeframe,
-                            aiSignal: s.aiSignal || 'WATCH', confidenceScore: s.confidenceScore,
-                            entryPrice: s.buyZone, targetPrice: s.target, stopLoss: s.stopLoss,
-                            aiLogic: s.aiLogic, status: 'IN_PROGRESS'
-                        }
-                    });
-                    await trackHistoricalSetup(created.id, s, marketStatus.regime || 'UNKNOWN');
-                }
-            }
-        } catch (dbErr: any) {
-            console.error('[Database] Failed to log setups:', dbErr.message);
-        }
-
-        res.json({ success: true, data: scanPayload });
-
-        const scanTickers = setups.map(s => s.ticker);
-        if (scanTickers.length) {
-            setImmediate(() => batchPrefetch(scanTickers).catch(() => { }));
-        }
+        const result = await startMarketScan({ mode, trigger: 'manual', requestedBy: req.userId });
+        res.status(result.started ? 202 : 200).json({
+            success: true,
+            isScanning: true,
+            message: result.started ? 'Market scan queued.' : 'A market scan is already active.',
+            scan: result.job,
+            data: getCachedScan(mode),
+        });
     } catch (error: any) {
-        console.error('[API] Scan error:', error.message);
-        setAgentState('IDLE');
-        pushEvent('SCAN_FAILED', 'critical', 'Scan Failed', 'System error during market scan. Check logs.');
+        console.error('[API] Unable to queue scan:', error?.message || error);
+        res.status(500).json({ success: false, message: sanitizeError(error) });
+    }
+}
+
+// Preferred mutation endpoint. The legacy GET route remains for older clients.
+app.post('/api/scans', scanLimiter, requireAuth, requireSubscription, queueManualScan);
+app.get('/api/scan', scanLimiter, requireAuth, requireSubscription, async (req: AuthRequest, res: Response) => {
+    const mode = normalizeScanMode(req.query.mode);
+    if (req.query.force !== 'true') {
+        const status = await getScanStatus(mode);
+        res.json({
+            success: true,
+            isScanning: Boolean(status.active),
+            scan: status.active ?? status.latest,
+            data: getCachedScan(mode),
+        });
+        return;
+    }
+    await queueManualScan(req, res);
+});
+
+app.get('/api/scan/status', requireAuth, requireSubscription, async (req: Request, res: Response) => {
+    try {
+        const mode = normalizeScanMode(req.query.mode);
+        res.json({ success: true, data: await getScanStatus(mode) });
+    } catch (error: any) {
         res.status(500).json({ success: false, message: sanitizeError(error) });
     }
 });
 
 // GET /api/performance — Fetch AI Track Record
-app.get('/api/performance', async (req: Request, res: Response) => {
+app.get('/api/performance', requireAuth, requireSubscription, async (req: Request, res: Response) => {
     try {
         const history = await prisma.historicalSetup.findMany({
             orderBy: { createdAt: 'desc' },
@@ -832,7 +778,7 @@ app.get('/api/performance', async (req: Request, res: Response) => {
     }
 });
 
-app.get('/api/founder/edge-dashboard', requireAuth, async (_req: AuthRequest, res: Response) => {
+app.get('/api/founder/edge-dashboard', requireAuth, requireAdmin, async (_req: AuthRequest, res: Response) => {
     try {
         const edge = await buildEdgeDashboard();
         res.json({ success: true, data: edge });
@@ -844,7 +790,7 @@ app.get('/api/founder/edge-dashboard', requireAuth, async (_req: AuthRequest, re
 
 // GET /api/chart/:ticker — Historical OHLCV + indicators
 const chartCache: Record<string, { ts: number; data: any }> = {};
-app.get('/api/chart/:ticker', async (req: Request, res: Response) => {
+app.get('/api/chart/:ticker', requireAuth, requireSubscription, async (req: Request, res: Response) => {
     try {
         const ticker = req.params.ticker.toUpperCase();
         const yahooBSE = `${ticker}.NS`;
@@ -911,7 +857,7 @@ app.get('/api/chart/:ticker', async (req: Request, res: Response) => {
     }
 });
 
-app.get('/api/quotes', async (req: Request, res: Response) => {
+app.get('/api/quotes', requireAuth, requireSubscription, async (req: Request, res: Response) => {
     try {
         const tickersRaw = typeof req.query.tickers === 'string' ? req.query.tickers : '';
         const tickers = tickersRaw
@@ -935,7 +881,7 @@ app.get('/api/quotes', async (req: Request, res: Response) => {
 // ── MARKET PULSE ───────────────────────────────────
 let pulseCache: { data: any; ts: number } | null = null;
 const PULSE_TTL = 5 * 60 * 1000;
-app.get('/api/market-pulse', async (_req: Request, res: Response) => {
+app.get('/api/market-pulse', requireAuth, requireSubscription, async (_req: Request, res: Response) => {
     if (pulseCache && Date.now() - pulseCache.ts < PULSE_TTL) return res.json({ success: true, data: pulseCache.data });
     try {
         const symbols = [
@@ -957,14 +903,15 @@ app.get('/api/market-pulse', async (_req: Request, res: Response) => {
                 const prev = c[c.length - 2].close;
                 const change = +(((price - prev) / prev) * 100).toFixed(2);
                 state[s.key] = { price, change };
-            } else state[s.key] = { price: 0, change: 0 };
+            } else state[s.key] = null;
         });
-        const vixPrice = state.vix?.price || 0;
-        let vixLabel = { text: 'Low Risk', color: '#34d399', detail: 'Market volatility is low.' };
-        if (vixPrice > 20) vixLabel = { text: 'High Risk', color: '#f87171', detail: 'High volatility detected.' };
-        else if (vixPrice > 16) vixLabel = { text: 'Moderate Risk', color: '#fbbf24', detail: 'Watch for swings.' };
+        const vixPrice = state.vix?.price;
+        let vixLabel = { text: 'Unavailable', color: '#9ca3af', detail: 'Volatility data is unavailable.' };
+        if (typeof vixPrice === 'number' && vixPrice > 20) vixLabel = { text: 'High Risk', color: '#f87171', detail: 'High volatility detected.' };
+        else if (typeof vixPrice === 'number' && vixPrice > 16) vixLabel = { text: 'Moderate Risk', color: '#fbbf24', detail: 'Watch for swings.' };
+        else if (typeof vixPrice === 'number' && vixPrice > 0) vixLabel = { text: 'Low Risk', color: '#34d399', detail: 'Market volatility is low.' };
         
-        const data = { indices: state, vixLabel, isMarketOpen: true, fetchedAt: new Date().toISOString() };
+        const data = { indices: state, vixLabel, isMarketOpen: getMarketStatus().isOpen, fetchedAt: new Date().toISOString() };
         pulseCache = { data, ts: Date.now() };
         res.json({ success: true, data });
     } catch (err: any) {
@@ -993,7 +940,7 @@ function parseFastXML(xml: string) {
     return items;
 }
 
-app.get('/api/market-outlook', async (req: Request, res: Response) => {
+app.get('/api/market-outlook', requireAuth, requireSubscription, async (_req: Request, res: Response) => {
     if (Date.now() - outlookTime < 15 * 60 * 1000 && cachedOutlook) return res.json({ success: true, summary: cachedOutlook, news: cachedNews });
     try {
         const [indiaRes, globalRes] = await Promise.all([
@@ -1028,20 +975,21 @@ app.post('/api/news/impact', chatLimiter, requireAuth, requireSubscription, vali
 
         if (!resolvedTechnicalContext && targetTicker) {
             const report = await fetchStockReport(targetTicker.toUpperCase());
-            const setup = lastSwingScan?.setups?.find(item => item.ticker === targetTicker.toUpperCase()) ?? null;
+            const swingScan = getCachedScan('swing');
+            const setup = swingScan?.setups?.find(item => item.ticker === targetTicker.toUpperCase()) ?? null;
             if (report) {
                 resolvedTechnicalContext =
                     await buildMarketGroundingFromReport(
                         report,
                         setup,
-                        lastSwingScan?.marketStatus,
-                        lastSwingScan?.sectorBreadth?.[report.sector],
+                        swingScan?.marketStatus,
+                        swingScan?.sectorBreadth?.[report.sector],
                     ) ?? buildTechnicalContextFromStock(report, setup);
                 resolvedSector = resolvedSector || report.sector;
             }
         }
 
-        const analysis = analyzeNewsImpact({
+        const analysis = await analyzeNewsImpact({
             headline,
             articleText,
             targetTicker: targetTicker?.toUpperCase(),
@@ -1064,7 +1012,7 @@ app.get('/api/news/feed', requireAuth, requireSubscription, async (req: AuthRequ
         const regulator = typeof req.query.regulator === 'string' ? req.query.regulator : undefined;
         const refresh = req.query.refresh === 'true';
         const limit = Number(req.query.limit) || 25;
-        const items = await getNewsFeed({ ticker, sector, regulator, refresh, limit }, lastSwingScan);
+        const items = await getNewsFeed({ ticker, sector, regulator, refresh, limit }, getCachedScan('swing'));
         const status = await getStoredNewsStatus();
         res.json({ success: true, data: { items, status } });
     } catch (err: any) {
@@ -1077,7 +1025,7 @@ app.get('/api/news/digest/:ticker', requireAuth, requireSubscription, async (req
     try {
         const ticker = req.params.ticker.toUpperCase();
         const refresh = req.query.refresh !== 'false';
-        const digest = await getTickerNewsDigest(ticker, lastSwingScan, refresh);
+        const digest = await getTickerNewsDigest(ticker, getCachedScan('swing'), refresh);
         res.json({ success: true, data: digest });
     } catch (err: any) {
         console.error('[NewsDigest] Error:', err.message);
@@ -1087,7 +1035,7 @@ app.get('/api/news/digest/:ticker', requireAuth, requireSubscription, async (req
 
 app.post('/api/news/sync', chatLimiter, requireAuth, requireSubscription, async (_req: AuthRequest, res: Response) => {
     try {
-        const result = await syncNewsIntelligence(lastSwingScan);
+        const result = await syncNewsIntelligence(getCachedScan('swing'));
         res.json({ success: true, data: result });
     } catch (err: any) {
         console.error('[NewsSync] Error:', err.message);
@@ -1101,7 +1049,7 @@ app.post('/api/chat', chatLimiter, requireAuth, requireSubscription, validateBod
         const response = await buildGroundedChatResponse({
             message,
             userId: req.userId!,
-            lastSwingScan,
+            lastSwingScan: getCachedScan('swing'),
         });
         res.json({ success: true, ...response });
     } catch (err: any) {
@@ -1187,14 +1135,14 @@ ${rawCandles}
         } catch { /* proceed */ }
     }
 
-    const nowIST = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
-    const topSetups = lastSwingScan?.setups?.slice(0, 3).map(s => s.ticker).join(', ') || 'Scanning...';
+    const now = new Date();
+    const isMarketHours = now.getHours() >= 9 && now.getHours() < 16;
+    const swingScan = getCachedScan('swing');
+    const topSetups = swingScan?.setups?.slice(0, 3).map(s => s.ticker).join(', ') || 'Scanning...';
 
-    const systemPrompt = `You are StockSage Intelligence — an autonomous Multi-Agent Quant Trading system.
-Current Time: ${nowIST} (IST)
-
-[CONTEXT]
-- Global Regime: ${lastSwingScan?.marketStatus?.regime || 'NEUTRAL'}
+    const systemPrompt = `You are ApexScan Intelligence - an autonomous Multi-Agent Quant Trading system.
+You are running as a Node.js background worker tracking the Indian NSE stock market.
+- Global Regime: ${swingScan?.marketStatus?.regime || 'NEUTRAL'}
 - Active Scanner alerts: ${topSetups}
 ${technicalContext}
 
@@ -1228,57 +1176,56 @@ ${technicalContext}
     }
 });
 
-app.get('/api/broker/status', (_req: Request, res: Response) => {
-    res.json({ success: true, data: { provider: broker?.provider || 'paper', live: !!broker?.live } });
-});
-
-app.get('/api/last', (req: Request, res: Response) => {
+app.get('/api/last', requireAuth, requireSubscription, (req: Request, res: Response) => {
     const mode = normalizeScanMode(req.query.mode);
     const scan = getCachedScan(mode);
     res.json({ success: !!scan, data: scan });
 });
 
-// CRON JOBS
-cron.schedule('45 8 * * 1-5', async () => {
-    try {
-        const { qualified, marketStatus, diagnostics } = await runScanner(tradingApi);
-        const setups = await buildTradeSetups(qualified, marketStatus);
-        lastSwingScan = {
-            timestamp: new Date().toISOString(),
-            marketStatus,
-            setups,
-            sectorBreadth: buildSectorBreadthMap(qualified, setups),
-            diagnostics: await finalizeSwingDiagnostics(diagnostics, qualified, setups),
-        };
-        await notifyUsersWithMorningDigest(setups.filter(s => s.confidenceScore >= 7), marketStatus.regime || 'NEUTRAL');
-    } catch { }
+// Notifications consume the last durable auto-scan; they do not start a
+// second expensive scanner pipeline.
+cron.schedule('40 9 * * 1-5', async () => {
+    const scan = getCachedScan('swing');
+    if (!scan) return;
+    await notifyUsersWithMorningDigest(
+        scan.setups.filter(setup => setup.confidenceScore >= 7),
+        scan.marketStatus.regime || 'NEUTRAL',
+    ).catch(() => undefined);
 }, { timezone: 'Asia/Kolkata' });
 
-cron.schedule('45 15 * * 1-5', async () => {
-    try {
-        const { qualified, marketStatus, diagnostics } = await runScanner(tradingApi);
-        const setups = await buildTradeSetups(qualified, marketStatus);
-        lastSwingScan = {
-            timestamp: new Date().toISOString(),
-            marketStatus,
-            setups,
-            sectorBreadth: buildSectorBreadthMap(qualified, setups),
-            diagnostics: await finalizeSwingDiagnostics(diagnostics, qualified, setups),
-        };
-        await notifyUsersWithPostMarketSummary(setups, marketStatus.regime || 'NEUTRAL');
-    } catch { }
+cron.schedule('50 15 * * 1-5', async () => {
+    const scan = getCachedScan('swing');
+    if (scan) {
+        await notifyUsersWithPostMarketSummary(scan.setups, scan.marketStatus.regime || 'NEUTRAL').catch(() => undefined);
+    }
+}, { timezone: 'Asia/Kolkata' });
+
+// NSE publishes institutional cash-flow and bulk-deal reports after the close.
+// Store one official snapshot per trading day so Signal Labs can build history.
+cron.schedule('10 16 * * 1-5', async () => {
+    const [flowResult, dealResult] = await Promise.allSettled([
+        syncInstitutionalFlowFromOfficialReport(),
+        syncNseDailyBulkDeals(),
+    ]);
+    if (flowResult.status === 'rejected') {
+        console.warn('[SignalLabs] FII/DII EOD sync failed:', flowResult.reason?.message || flowResult.reason);
+    }
+    if (dealResult.status === 'rejected' || !dealResult.value.success) {
+        const reason = dealResult.status === 'rejected' ? dealResult.reason : dealResult.value.message;
+        console.warn('[SignalLabs] Bulk-deal EOD sync failed:', reason);
+    }
 }, { timezone: 'Asia/Kolkata' });
 
 cron.schedule('*/30 8-18 * * 1-5', async () => {
     try {
-        await syncNewsIntelligence(lastSwingScan);
+        await syncNewsIntelligence(getCachedScan('swing'));
     } catch { }
 }, { timezone: 'Asia/Kolkata' });
 
 // AGENTIC AI
-app.get('/api/agent/status', (_req, res) => res.json({ success: true, data: getAgentStatus() }));
-app.get('/api/agent/events', (req, res) => res.json({ success: true, data: getEvents(50) }));
-app.get('/api/agent/stream', (req, res) => {
+app.get('/api/agent/status', requireAuth, requireSubscription, (_req, res) => res.json({ success: true, data: getAgentStatus() }));
+app.get('/api/agent/events', requireAuth, requireSubscription, (_req, res) => res.json({ success: true, data: getEvents(50) }));
+app.get('/api/agent/stream', requireAuth, requireSubscription, (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -1287,7 +1234,7 @@ app.get('/api/agent/stream', (req, res) => {
     req.on('close', () => removeSSEClient(res));
 });
 
-app.get('/api/fii-dii', async (req: Request, res: Response) => {
+app.get('/api/fii-dii', requireAuth, requireSubscription, async (req: Request, res: Response) => {
     try {
         const refresh = req.query.refresh === 'true';
         let summary = refresh
@@ -1309,12 +1256,267 @@ app.get('/api/fii-dii', async (req: Request, res: Response) => {
     }
 });
 
-app.get('/api/economic-calendar', (_req: Request, res: Response) => {
-    res.json({ success: true, data: buildEconomicCalendar() });
+// Institutional Bulk/Block Deals Feed
+app.get('/api/institutional/deals', requireAuth, requireSubscription, async (req: Request, res: Response) => {
+    try {
+        const entityType = req.query.entityType ? String(req.query.entityType) : undefined;
+        const symbol = req.query.symbol ? String(req.query.symbol).toUpperCase() : undefined;
+        const dealType = req.query.dealType ? String(req.query.dealType).toUpperCase() : undefined;
+        const daysParam = req.query.days ? parseInt(String(req.query.days), 10) : undefined;
+
+        const where: any = {};
+        if (entityType && entityType !== 'ALL') where.entityType = entityType;
+        if (symbol) where.symbol = { contains: symbol };
+        if (dealType && dealType !== 'ALL') where.dealType = dealType;
+        if (daysParam && Number.isFinite(daysParam) && daysParam > 0) {
+            const cutoff = new Date();
+            cutoff.setUTCDate(cutoff.getUTCDate() - daysParam);
+            where.tradeDate = { gte: cutoff };
+        }
+
+        const deals = await prisma.institutionalDeal.findMany({
+            where,
+            orderBy: { tradeDate: 'desc' },
+            take: 500,
+        });
+
+        const latest = deals[0] || null;
+        res.json({
+            success: true,
+            count: deals.length,
+            data: deals,
+            meta: {
+                source: 'NSE Daily Bulk Deals Archive',
+                lastTradeDate: latest?.tradeDate ?? null,
+                lastSyncedAt: latest?.createdAt ?? null,
+                daysFilter: daysParam ?? null,
+            },
+        });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// Institutional Confluence Radar (Super Signals)
+app.get('/api/institutional/confluence', requireAuth, requireSubscription, async (_req: Request, res: Response) => {
+    try {
+        const confluences = await prisma.institutionalConfluence.findMany({
+            orderBy: [{ isSuperSignal: 'desc' }, { confluenceScore: 'desc' }],
+            take: 50,
+        });
+        res.json({
+            success: true,
+            count: confluences.length,
+            data: confluences,
+            meta: {
+                basis: 'Classified stock-level NSE bulk deals; candidates require a separate current scanner match.',
+                lastTradeDate: confluences[0]?.tradeDate ?? null,
+            },
+        });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// Manual Sync trigger for Daily Bulk Deals
+app.post('/api/institutional/sync', requireAuth, requireAdmin, async (_req: Request, res: Response) => {
+    try {
+        const result = await syncNseDailyBulkDeals();
+        res.json(result);
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// Historical Bulk Deals Backfill — admin only, runs in background, returns 202 immediately
+app.post('/api/institutional/backfill', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+    try {
+        const daysBack = req.body?.days ? Math.min(parseInt(String(req.body.days), 10), 730) : 730;
+        if (!Number.isFinite(daysBack) || daysBack < 1) {
+            res.status(400).json({ success: false, message: 'days must be a number between 1 and 730' });
+            return;
+        }
+
+        res.status(202).json({
+            success: true,
+            message: `Backfill started for ${daysBack} calendar days. Progress is logged server-side.`,
+            daysBack,
+        });
+
+        // Fire-and-forget — intentional, do not await
+        backfillNseBulkDeals(daysBack).then((result) => {
+            console.log('[BackfillAPI]', result.message);
+        }).catch((err) => {
+            console.error('[BackfillAPI] Backfill failed:', err?.message ?? err);
+        });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// 360° Stock Intelligence Deep-Dive Endpoint
+app.get('/api/stock/:ticker/deep-dive', requireAuth, requireSubscription, async (req: Request, res: Response) => {
+    try {
+        const ticker = req.params.ticker.toUpperCase();
+        const data = await getStockDeepDive(ticker);
+        res.json({ success: true, data });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// Strictly Grounded Real News Endpoint (EXTRACT-ONLY, ZERO MOCK/HALLUCINATED FALLBACKS)
+app.get('/api/stock/:ticker/news', requireAuth, requireSubscription, async (req: Request, res: Response) => {
+    try {
+        const ticker = req.params.ticker.toUpperCase();
+        const rawSources = await fetchTickerNewsSource(ticker).catch(() => []);
+        
+        if (!rawSources || rawSources.length === 0) {
+            res.json({ success: true, ticker, count: 0, news: [] });
+            return;
+        }
+
+        const newsItems = rawSources.map((item, idx) => {
+            const pubDate = item.publishedAt ? new Date(item.publishedAt) : null;
+            let timeAgo = 'Recently';
+            if (pubDate && !isNaN(pubDate.getTime())) {
+                const diffHours = Math.floor((Date.now() - pubDate.getTime()) / (1000 * 60 * 60));
+                timeAgo = diffHours < 1 ? 'Just now' : diffHours < 24 ? `${diffHours} hours ago` : `${Math.floor(diffHours / 24)} days ago`;
+            }
+
+            // Keyword sentiment check on real headline text
+            const text = `${item.title} ${item.summary || ''}`.toLowerCase();
+            let sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+            if (/\b(profit|revenue|growth|order|beat|up|surge|gain|bull|expansion|contract)\b/i.test(text)) sentiment = 'BULLISH';
+            else if (/\b(loss|drop|fall|probe|sebi|penalty|down|bear|miss|decline|warning)\b/i.test(text)) sentiment = 'BEARISH';
+
+            let impact: 'HIGH' | 'MEDIUM' | 'LOW' = 'MEDIUM';
+            if (/\b(results|order win|sebi|rbi|acquisition|merger|fda|probe)\b/i.test(text)) impact = 'HIGH';
+
+            return {
+                id: `real-news-${idx}-${Date.now()}`,
+                title: item.title,
+                source: item.source || 'Source unavailable',
+                timeAgo,
+                publishedAt: item.publishedAt || null,
+                sentiment,
+                impact,
+                summary: item.summary || item.body || item.title,
+                url: item.url,
+            };
+        });
+
+        res.json({
+            success: true,
+            ticker,
+            count: newsItems.length,
+            news: newsItems,
+        });
+    } catch (err: any) {
+        console.error(`[News API Error for ${req.params.ticker}]:`, err?.message);
+        res.json({ success: true, ticker: req.params.ticker.toUpperCase(), count: 0, news: [] });
+    }
+});
+
+
+// Position Size & Risk Governor Calculation API
+app.post('/api/risk/calculate', requireAuth, requireSubscription, validateBody(riskCalculationSchema), (req: Request, res: Response) => {
+    try {
+        const { portfolioCapital, maxRiskPct, entryPrice, stopLoss, regime } = req.body || {};
+        const result = calculateRiskAndPosition({
+            portfolioCapital,
+            maxRiskPct,
+            entryPrice,
+            stopLoss,
+            regime,
+        });
+        res.json({ success: true, data: result });
+    } catch (err: any) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+});
+
+// Grounded Multi-LLM Chat Engine API for Signal Labs Desk
+app.post('/api/chat/signal-labs', chatLimiter, requireAuth, requireSubscription, validateBody(signalLabsSchema), async (req: Request, res: Response) => {
+    try {
+        const { prompt, model } = req.body || {};
+        if (!prompt) {
+            res.status(400).json({ success: false, message: 'Prompt is required.' });
+            return;
+        }
+        const result = await querySignalLabsAi(String(prompt), String(model || 'gemini'));
+        res.json({ success: true, data: result });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// Live Intraday Delivery & Volume Footprint Scanner API (9:15 AM - 3:30 PM)
+app.get('/api/scan/intraday-delivery', scanLimiter, requireAuth, requireSubscription, async (_req: Request, res: Response) => {
+    try {
+        const results = await scanIntradayDeliverySpikes();
+        res.json({ success: true, count: results.length, data: results });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+// Subscription Payment Routes
+app.get('/api/subscription/plans', (_req: Request, res: Response) => {
+    res.json({ success: true, data: SUBSCRIPTION_PLANS });
+});
+
+app.post('/api/subscription/create-order', paymentLimiter, requireAuth, validateBody(subscriptionOrderSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const order = await createRazorpayOrder(req.userId!, req.body.planId);
+        res.json({ success: true, ...order });
+    } catch (err: any) {
+        console.error('[Payments] Order creation failed:', err?.message || err);
+        res.status(503).json({ success: false, message: 'Payment order service is unavailable.' });
+    }
+});
+
+app.post('/api/subscription/verify-payment', paymentLimiter, requireAuth, validateBody(paymentVerificationSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const result = await verifyAndActivateSubscription(req.userId!, req.body);
+        res.json(result);
+    } catch (err: any) {
+        console.warn('[Payments] Verification rejected:', err?.message || err);
+        res.status(400).json({ success: false, message: 'Payment verification failed.' });
+    }
+});
+
+app.post('/api/subscription/webhook', paymentLimiter, async (req: RawBodyRequest, res: Response) => {
+    try {
+        const signature = req.header('x-razorpay-signature') ?? '';
+        if (!req.rawBody || !signature) {
+            res.status(400).json({ success: false, message: 'Webhook signature is required.' });
+            return;
+        }
+        const result = await processRazorpayWebhook(req.rawBody, signature);
+        res.json({ success: true, ...result });
+    } catch (err: any) {
+        console.warn('[Payments] Webhook rejected:', err?.message || err);
+        res.status(400).json({ success: false, message: 'Webhook verification failed.' });
+    }
+});
+
+
+
+
+
+
+app.get('/api/economic-calendar', requireAuth, (_req: Request, res: Response) => {
+    res.json({
+        success: true,
+        data: [],
+        source: 'unavailable',
+        note: 'No authoritative economic calendar provider is configured.',
+    });
 });
 
 // SECTORS
-app.get('/api/sectors', async (_req, res) => {
+app.get('/api/sectors', requireAuth, requireSubscription, async (_req, res) => {
     try {
         const data = await buildSectorPulse();
         res.json({ success: true, data });
@@ -1338,24 +1540,298 @@ app.get('/api/portfolio', requireAuth, async (req: AuthRequest, res: Response) =
     res.json({ success: true, data: trades });
 });
 
+// GLOBAL MASTER AI PORTFOLIO (Autonomous Track Record)
+app.get('/api/portfolio/global-track-record', requireAuth, requireSubscription, async (_req: Request, res: Response) => {
+    try {
+        const trades = await prisma.trade.findMany({ 
+            where: { userId: SYSTEM_AGENT_USER_ID },
+            orderBy: { entryDate: 'desc' }
+        });
+
+        const mktStatus = getMarketStatus();
+        const openTrades = trades.filter((t: any) => t.status === 'OPEN');
+        const openTickers = openTrades.map((t: any) => t.ticker);
+
+        // Live Price Refresh
+        let liveLtps: Record<string, number> = {};
+
+        if (mktStatus.isOpen && openTickers.length > 0) {
+            // MARKET OPEN: Use Dhan HQ for real-time LTPs
+            liveLtps = await getLiveLtpBatch(openTickers).catch(() => ({}));
+        }
+
+        // Fallback to Yahoo Finance for any tickers not covered or outside hours
+        await Promise.allSettled(openTrades.map(async (t: any) => {
+            try {
+                let ltp = liveLtps[t.ticker] || 0;
+                if (!ltp) {
+                    // Yahoo Finance daily candle fallback
+                    ltp = await fetchLtp(t.ticker + '.NS').catch(() => 0);
+                }
+                if (ltp && !isNaN(ltp) && ltp > 0) {
+                    t.currentPrice = +ltp.toFixed(2);
+                    t.pnlRs = +((ltp - t.entryPrice) * t.quantity).toFixed(2);
+                    t.pnlPct = +(((ltp - t.entryPrice) / t.entryPrice) * 100).toFixed(2);
+                }
+            } catch { }
+        }));
+
+        let totalPnlRs = 0;
+        let totalWins = 0;
+        let totalClosed = 0;
+        let activeRunners = 0;
+        let capitalDeployed = 0;
+        let unrealizedPnlRs = 0;
+
+        trades.forEach((t: any) => {
+            if (t.status === 'CLOSED') {
+                totalClosed++;
+                totalPnlRs += t.pnlRs || 0;
+                if ((t.pnlRs || 0) > 0) totalWins++;
+            } else if (t.status === 'OPEN') {
+                capitalDeployed += t.capitalDeployed || 0;
+                unrealizedPnlRs += t.pnlRs || 0;
+                if (t.stopLossTrail) activeRunners++;
+            }
+        });
+
+        const winRate = totalClosed > 0 ? (totalWins / totalClosed) * 100 : 0;
+
+        res.json({
+            success: true,
+            data: {
+                trades,
+                metrics: {
+                    totalPnlRs,
+                    unrealizedPnlRs,
+                    winRate,
+                    totalClosed,
+                    capitalDeployed,
+                    activeRunners,
+                },
+                marketStatus: mktStatus,
+                priceSource: mktStatus.isOpen ? 'Dhan HQ (Live)' : 'Yahoo Finance (EOD)',
+                refreshedAt: new Date().toISOString(),
+            }
+        });
+    } catch (e: any) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 app.get('/api/portfolio/summary', requireAuth, async (req: AuthRequest, res: Response) => {
     const summary = await getPortfolioSummary(req.userId!);
     res.json({ success: true, data: summary });
 });
 
 app.get('/api/portfolio/news-risk', requireAuth, async (req: AuthRequest, res: Response) => {
-    const summary = await getPortfolioNewsRisk(req.userId!, lastSwingScan);
+    const summary = await getPortfolioNewsRisk(req.userId!, getCachedScan('swing'));
     res.json({ success: true, data: summary });
 });
 
 app.get('/api/portfolio/intelligence', requireAuth, async (req: AuthRequest, res: Response) => {
-    const summary = await getPortfolioIntelligence(req.userId!, lastSwingScan);
+    const summary = await getPortfolioIntelligence(req.userId!, getCachedScan('swing'));
     res.json({ success: true, data: summary });
 });
 
-app.post('/api/portfolio/trade', requireAuth, async (req: AuthRequest, res: Response) => {
-    const trade = await createTrade(req.userId!, req.body);
-    res.json({ success: true, data: trade });
+// MARKET INTEL (Sidebar & Signal Labs data)
+// ── LIVE MARKET DATA: Real-time tick during market hours ──────────────
+// GET /api/live/market — Live Nifty / BankNifty / Sensex + market open status
+// Poll every 1-2 seconds during market hours, every 30-60s outside hours
+app.get('/api/live/market', requireAuth, requireSubscription, async (_req: Request, res: Response) => {
+    try {
+        const status = getMarketStatus();
+        const indices = await getLiveIndexPrices();
+        res.json({
+            success: true,
+            data: {
+                marketStatus: status,
+                indices,
+            }
+        });
+    } catch (e: any) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// GET /api/live/prices?tickers=RELIANCE,TCS,INFY — Live LTPs for watchlist stocks
+// Returns { ticker: ltp } map. Sourced from Dhan HQ during market hours.
+app.get('/api/live/prices', requireAuth, requireSubscription, async (req: Request, res: Response) => {
+    try {
+        const status = getMarketStatus();
+        const tickersParam = String(req.query.tickers || '');
+        const tickers = tickersParam ? tickersParam.split(',').map(t => t.trim().toUpperCase()).filter(Boolean) : [];
+
+        let ltps: Record<string, number> = {};
+        if (tickers.length > 0 && status.isOpen) {
+            // During market hours: fetch live from Dhan HQ
+            ltps = await getLiveLtpBatch(tickers);
+        } else if (tickers.length > 0) {
+            // Outside market hours: return last known prices from cached scan
+            const cached = getCachedScan('swing');
+            if (cached?.setups) {
+                for (const s of cached.setups) {
+                    if (tickers.includes(s.ticker)) {
+                        ltps[s.ticker] = (s as any).ltp || (s as any).entryPrice || 0;
+                    }
+                }
+            }
+        }
+
+        res.json({
+            success: true,
+            data: {
+                marketStatus: status,
+                ltps,
+                fetchedAt: new Date().toISOString(),
+            }
+        });
+    } catch (e: any) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.get('/api/market/intel', requireAuth, requireSubscription, async (_req: Request, res: Response) => {
+    try {
+        const [niftyRaw, bankNiftyRaw, sensexRaw] = await Promise.all([
+            fetchLtp('^NSEI').catch(() => 0),
+            fetchLtp('^NSEBANK').catch(() => 0),
+            fetchLtp('^BSESN').catch(() => 0),
+        ]);
+
+        const nifty = (typeof niftyRaw === 'number' && niftyRaw > 0) ? niftyRaw : null;
+        const bankNifty = (typeof bankNiftyRaw === 'number' && bankNiftyRaw > 0) ? bankNiftyRaw : null;
+        const sensex = (typeof sensexRaw === 'number' && sensexRaw > 0) ? sensexRaw : null;
+        
+        let niftySparkline: number[] = [];
+        try {
+            const hist = await fetchHistoricalData('^NSEI', 30, '1d');
+            if (hist && hist.length > 0) {
+                niftySparkline = hist.map(c => c.close);
+            }
+        } catch { /* ignore */ }
+
+        const flowSummary = await getInstitutionalFlowSummary().catch(() => null);
+        const fiiDii = flowSummary?.series ? flowSummary.series.slice(0, 10).map(s => ({
+            day: s.tradingDate,
+            fii: s.fiiNet,
+            dii: s.diiNet,
+            total: s.totalNet,
+            bias: s.marketBias,
+        })) : [];
+
+        res.json({
+            success: true,
+            data: {
+                nifty,
+                bankNifty,
+                sensex,
+                flowSummary,
+                fiiDii,
+                sparklines: {
+                    nifty: niftySparkline,
+                    fiiData: fiiDii.map(f => ({
+                        h: Math.min(80, Math.max(10, Math.abs(f.total) / 50)),
+                        isPos: f.total >= 0,
+                    })),
+                }
+            }
+        });
+    } catch (e: any) {
+        console.error('[API] Error fetching market intel:', e?.message || e);
+        res.status(500).json({ success: false, message: 'Failed to fetch market intel' });
+    }
+});
+
+// CAPITAL & POSITION SIZING SETTINGS
+app.get('/api/user/capital', requireAuth, async (req: AuthRequest, res: Response) => {
+    const user = await prisma.user.findUnique({ where: { id: req.userId! }, select: { tradingCapital: true, maxRiskPct: true, maxPositions: true, maxSectorConc: true } });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    res.json({ success: true, data: user });
+});
+
+app.put('/api/user/capital', requireAuth, validateBody(capitalSettingsSchema), async (req: AuthRequest, res: Response) => {
+    const { tradingCapital, maxRiskPct, maxPositions, maxSectorConc } = req.body;
+    const updated = await prisma.user.update({
+        where: { id: req.userId! },
+        data: {
+            ...(tradingCapital !== undefined && { tradingCapital: Number(tradingCapital) }),
+            ...(maxRiskPct !== undefined && { maxRiskPct: Number(maxRiskPct) }),
+            ...(maxPositions !== undefined && { maxPositions: Number(maxPositions) }),
+            ...(maxSectorConc !== undefined && { maxSectorConc: Number(maxSectorConc) }),
+        },
+        select: { tradingCapital: true, maxRiskPct: true, maxPositions: true, maxSectorConc: true },
+    });
+    res.json({ success: true, data: updated });
+});
+
+app.post('/api/portfolio/trade', requireAuth, validateBody(portfolioTradeSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const trade = await createTrade(req.userId!, req.body);
+        res.json({ success: true, trade, data: trade });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.post('/api/portfolio/trades', requireAuth, validateBody(portfolioTradeSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const trade = await createTrade(req.userId!, req.body);
+        res.json({ success: true, trade, data: trade });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.get('/api/portfolio/trades', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+        const trades = await prisma.trade.findMany({
+            where: { userId: req.userId! },
+            orderBy: { entryDate: 'desc' },
+        });
+        const openTrades = trades.filter(t => t.status === 'OPEN');
+        const closedTrades = trades.filter(t => t.status === 'CLOSED');
+        res.json({ success: true, openTrades, closedTrades, data: trades });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: sanitizeError(err) });
+    }
+});
+
+app.patch('/api/portfolio/trades/:id', requireAuth, validateBody(portfolioTradeUpdateSchema), async (req: AuthRequest, res: Response) => {
+    try {
+        const tradeId = req.params.id;
+        const { exitPrice, exitReason, currentPrice, stopLossTrail, notes } = req.body;
+        const trade = exitPrice !== undefined && exitReason !== undefined
+            ? await closeTrade(req.userId!, tradeId, { exitPrice, exitReason })
+            : await updateOwnedTrade(req.userId!, tradeId, { currentPrice, stopLossTrail, notes });
+        res.json({ success: true, trade, data: trade });
+    } catch (err: any) {
+        res.status(404).json({ success: false, message: 'Open trade not found.' });
+    }
+});
+
+
+// REAL-TIME WEBSOCKET TICK STREAM (SSE Endpoint for UI)
+app.get('/api/stream/ticks', requireAuth, requireSubscription, (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const tickHandler = (tick: any) => {
+        res.write(`data: ${JSON.stringify(tick)}\n\n`);
+    };
+
+    liveTickerStore.on('tick', tickHandler);
+
+    req.on('close', () => {
+        liveTickerStore.off('tick', tickHandler);
+    });
+});
+
+// Keep unknown API requests out of the SPA fallback so API clients receive a
+// machine-readable failure instead of index.html with a misleading HTTP 200.
+app.use('/api', (_req: Request, res: Response) => {
+    res.status(404).json({ success: false, message: 'API route not found.' });
 });
 
 // SPA Fallback
@@ -1366,16 +1842,45 @@ if (process.env.NODE_ENV === 'production') {
     });
 }
 
-function computeNextScan(): string {
-    return new Date().toISOString();
-}
-
 // =====================================================
 // 🚀 FINAL START: BIND PORT
 // =====================================================
 app.listen(Number(PORT) || 3000, '0.0.0.0', () => {
-    console.log(`\n[System] BOOT: StockSage AI Bound to Port ${PORT}`);
+    console.log(`\n[System] BOOT: ApexScan AI Bound to Port ${PORT}`);
+    console.log(`[System] Initializing Agent Engine...`);
     console.log(`[System] Mode: ${process.env.NODE_ENV || 'development'}`);
-    void verifyDatabaseConnection();
-    void backfillTrackedSignalsFromDb().catch(() => { });
+    void (async () => {
+        await verifyDatabaseConnection();
+        await initializeScanCoordinator();
+        await backfillTrackedSignalsFromDb().catch(() => undefined);
+
+        // Scanning and paper execution are deliberately separate controls.
+        initAutoScanner(trigger => startMarketScan({ mode: 'swing', trigger }));
+        initGlobalAgent();
+
+        // Warm empty/stale Signal Labs datasets without delaying HTTP readiness.
+        void (async () => {
+            const summary = await getInstitutionalFlowSummary();
+            if (!summary.series.length || summary.isStale) {
+                await syncInstitutionalFlowFromOfficialReport();
+            }
+
+            const latestDeal = await prisma.institutionalDeal.findFirst({ orderBy: { tradeDate: 'desc' } });
+            const dealAgeMs = latestDeal ? Date.now() - latestDeal.tradeDate.getTime() : Number.POSITIVE_INFINITY;
+            if (dealAgeMs > 5 * 24 * 60 * 60 * 1000) {
+                await syncNseDailyBulkDeals();
+            }
+        })().catch((error: any) => {
+            console.warn('[SignalLabs] Startup data refresh skipped:', error?.message || error);
+        });
+    })().catch((error: any) => {
+        console.error('[System] Background services failed to initialize:', error?.message || error);
+    });
+
+    // Initialize Dhan Live Market Feed WebSocket (Sub-millisecond Ticks)
+    const wsClient = getDhanWebSocketInstance();
+    if (wsClient) {
+        wsClient.on('error', () => {}); // Handle offline network errors safely
+        wsClient.connect();
+    }
 });

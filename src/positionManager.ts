@@ -3,6 +3,8 @@ import { fetchHistoricalData } from './dataService';
 import prisma from './prismaClient';
 import { analyzeStocksWithAI } from './aiAdvisor';
 import { SECTOR_MAP } from './dataService';
+import { computeAtr14 } from './indicators';
+import { buildCloseMetrics } from './portfolioService';
 
 /**
  * PositionManager
@@ -10,6 +12,12 @@ import { SECTOR_MAP } from './dataService';
  * and thesis invalidation.
  */
 export async function runActivePositionManagement() {
+    if (process.env.ENABLE_AUTOMATION !== 'true') return;
+    if (process.env.PAPER_TRADING_MODE !== 'true') {
+        console.warn('[PositionManager] Disabled: live exit-order execution is not implemented.');
+        return;
+    }
+
     // 1. Fetch all OPEN trades
     const openTrades = await prisma.trade.findMany({
         where: { status: 'OPEN' }
@@ -37,21 +45,18 @@ export async function runActivePositionManagement() {
             // ── ATR-based Trailing Stop Management ──
             // Formula: If price moves up, trail stop at (CurrentPrice - 2*ATR)
             // But only move it UP, never DOWN.
-            const atr14 = trade.notes?.includes('ATR:')
-                ? parseFloat(trade.notes.split('ATR:')[1])
-                : (currentPrice * 0.03); // Fallback to 3% move if ATR not recorded
-
-            const potentialTrail = currentPrice - (1.5 * atr14);
+            const atr14 = computeAtr14(candles);
+            const potentialTrail = atr14 > 0 ? currentPrice - (1.5 * atr14) : null;
             const currentStop = trade.stopLossTrail || trade.stopLossInit;
 
-            if (potentialTrail > currentStop) {
+            if (potentialTrail !== null && potentialTrail > currentStop) {
                 console.log(`[PositionManager] 📈 Trailing stop for ${trade.ticker} raised from ₹${currentStop.toFixed(2)} to ₹${potentialTrail.toFixed(2)}`);
                 await prisma.trade.update({
                     where: { id: trade.id },
                     data: { stopLossTrail: potentialTrail }
                 });
 
-                pushEvent('TRADE_ALERT', 'info', `Trailing Stop Raised: ${trade.ticker}`,
+                pushEvent('TRADE_ALERT', 'info', `[PAPER] Trailing Stop Raised: ${trade.ticker}`,
                     `LTP ₹${currentPrice.toFixed(2)} pushed trailing stop to ₹${potentialTrail.toFixed(2)}.`);
             }
 
@@ -59,8 +64,9 @@ export async function runActivePositionManagement() {
             // If price >= T1 and we haven't scaled out yet
             if (currentPrice >= trade.target1 && !trade.notes?.includes('SCALED_OUT')) {
                 const sellQty = Math.floor(trade.quantity * 0.33);
+                if (sellQty > 0) {
 
-                pushEvent('TRADE_ALERT', 'success', `🎯 PROJECT PROFIT: ${trade.ticker} T1 Hit`,
+                pushEvent('TRADE_ALERT', 'success', `[PAPER] ${trade.ticker} T1 Hit`,
                     `Price ₹${currentPrice.toFixed(2)} hit Target 1. Scaling out 33% (${sellQty} shares) and moving SL to Break-Even.`);
 
                 // Update trade record: Quantity reduced, Move SL to Break-Even
@@ -72,9 +78,8 @@ export async function runActivePositionManagement() {
                         notes: (trade.notes || '') + ' | SCALED_OUT'
                     }
                 });
+                }
 
-                // Real Implementation would place a SELL order here
-                // tradingApi.placeOrder({ ticker: trade.ticker, quantity: sellQty, side: 'SELL' ... });
             }
 
             // ── Exit Check: Stop Loss Triggered ──
@@ -85,6 +90,7 @@ export async function runActivePositionManagement() {
                     `🛑 EXIT TRIGGERED: ${trade.ticker}`,
                     `Price ₹${currentPrice.toFixed(2)} hit Stop Loss ₹${currentStop.toFixed(2)}. Net: ${profitPct.toFixed(2)}%`);
 
+                const closeMetrics = buildCloseMetrics(trade, currentPrice);
                 await prisma.trade.update({
                     where: { id: trade.id },
                     data: {
@@ -92,7 +98,7 @@ export async function runActivePositionManagement() {
                         exitPrice: currentPrice,
                         exitDate: new Date(),
                         exitReason: 'STOP_LOSS',
-                        pnlPct: profitPct
+                        ...closeMetrics,
                     }
                 });
             }
@@ -115,9 +121,10 @@ export async function runActivePositionManagement() {
 
                 const assessment = aiResult.get(trade.ticker);
                 if (assessment && assessment.signal === 'REJECT') {
-                    pushEvent('TRADE_ALERT', 'critical', `⚠️ THESIS INVALIDATED: ${trade.ticker}`,
+                    pushEvent('TRADE_ALERT', 'critical', `[PAPER] THESIS INVALIDATED: ${trade.ticker}`,
                         `AI Advisor recommends REJECT: "${assessment.logic}". Closing position to protect capital.`);
 
+                    const closeMetrics = buildCloseMetrics(trade, currentPrice);
                     await prisma.trade.update({
                         where: { id: trade.id },
                         data: {
@@ -125,6 +132,7 @@ export async function runActivePositionManagement() {
                             exitPrice: currentPrice,
                             exitDate: new Date(),
                             exitReason: 'THESIS_INVALIDATED',
+                            ...closeMetrics,
                             notes: (trade.notes || '') + ` | THESIS_REJECTED: ${assessment.logic}`
                         }
                     });

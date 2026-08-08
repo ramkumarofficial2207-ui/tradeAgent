@@ -53,7 +53,7 @@ export async function sendBuyAlert(whatsappNumber: string, setup: {
     const signalEmoji = setup.aiSignal === 'BUY' ? '🟢' : '🟡';
     const to = whatsappNumber.startsWith('whatsapp:') ? whatsappNumber : formatWhatsApp(whatsappNumber);
 
-    const body = `${signalEmoji} *StockSage AI Signal*
+    const body = `${signalEmoji} *ApexScan AI Signal*
 
 📌 ${setup.ticker} — ${setup.aiSignal}
 📊 Confidence: ${setup.confidenceScore}/10
@@ -93,7 +93,7 @@ export async function sendPreMarketDigest(whatsappNumber: string, setups: any[],
         `${i + 1}. ${s.ticker} — ${s.aiSignal} (${s.confidenceScore}/10) | Tgt +${s.targetPct}% | RR ${s.riskReward}:1`
     ).join('\n');
 
-    const body = `📅 *StockSage AI — Pre-Market Brief*
+    const body = `📅 *ApexScan AI — Pre-Market Brief*
 
 Market: ${regimeLabel}
 Signals: ${buySetups.length} active

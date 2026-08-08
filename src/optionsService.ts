@@ -1,6 +1,7 @@
 import axios from 'axios';
 import AdmZip from 'adm-zip';
 import { parse } from 'csv-parse/sync';
+import { getKiteClient, isKiteAuthenticated } from './kiteAuth';
 
 export interface DerivativesData {
     ticker: string;
@@ -8,10 +9,15 @@ export interface DerivativesData {
     totalOI: number;
     oiChangePct: number;
     derivativeStatus: 'Long Buildup' | 'Short Covering' | 'Short Buildup' | 'Long Unwinding' | 'Neutral';
+    maxPain?: number; // Added Max Pain
 }
 
 const MEMORY_CACHE = new Map<string, DerivativesData>();
 let lastFetchedDate = '';
+
+// Kite Instruments cache
+let nfoInstruments: any[] = [];
+let lastInstrumentFetch = 0;
 
 /**
  * Derives a formatting string like "10MAR2026"
@@ -34,10 +40,118 @@ function getTargetDateString(): string {
 }
 
 /**
+ * Refreshes the NFO instrument list from Kite API once a day.
+ */
+async function ensureNfoInstruments() {
+    if (!isKiteAuthenticated()) return;
+    if (Date.now() - lastInstrumentFetch > 12 * 60 * 60 * 1000) { // 12 hours
+        try {
+            console.log('[KiteConnect] Fetching NFO instruments list...');
+            const kite = getKiteClient();
+            const instruments = await kite.getInstruments('NFO');
+            nfoInstruments = instruments;
+            lastInstrumentFetch = Date.now();
+        } catch (e) {
+            console.error('[KiteConnect] Failed to fetch instruments:', e);
+        }
+    }
+}
+
+/**
+ * Fetches Live Put-Call Ratio and Max Pain for a specific ticker via Kite Connect.
+ * Uses the instrument cache to find ATM strikes and gets live quotes.
+ */
+export async function getLiveOptionsData(ticker: string, currentPrice: number): Promise<DerivativesData | null> {
+    if (!isKiteAuthenticated() || nfoInstruments.length === 0) return null;
+
+    try {
+        // Find options for this ticker
+        const options = nfoInstruments.filter(i => 
+            i.name === ticker && 
+            i.segment === 'NFO-OPT' && 
+            i.instrument_type !== 'FUT'
+        );
+
+        if (options.length === 0) return null;
+
+        // Sort by expiry to find the current month expiry
+        options.sort((a, b) => new Date(a.expiry).getTime() - new Date(b.expiry).getTime());
+        const nearExpiry = options[0].expiry;
+
+        // Filter only near expiry options around the current price (e.g., +/- 10% from LTP)
+        const activeOptions = options.filter(i => 
+            i.expiry === nearExpiry &&
+            i.strike >= currentPrice * 0.9 &&
+            i.strike <= currentPrice * 1.1
+        );
+
+        if (activeOptions.length === 0) return null;
+
+        const instrumentTokens = activeOptions.map(i => i.instrument_token);
+        
+        // Fetch live quotes for all these strikes
+        const kite = getKiteClient();
+        // Kite API accepts strings for NFO:SYMBOL, but getQuote can also take standard format
+        const exchangeTokens = activeOptions.map(i => `NFO:${i.tradingsymbol}`);
+        
+        // Kite restricts to 500 symbols per request, we should be fine with ~20-30 strikes.
+        const quotes = await kite.getQuote(exchangeTokens);
+
+        let callOI = 0;
+        let putOI = 0;
+        const strikeOIDict: Record<number, number> = {}; // For Max Pain
+
+        for (const opt of activeOptions) {
+            const quote = quotes[`NFO:${opt.tradingsymbol}`];
+            if (!quote) continue;
+
+            const oi = quote.oi || 0;
+            
+            if (opt.instrument_type === 'CE') {
+                callOI += oi;
+            } else if (opt.instrument_type === 'PE') {
+                putOI += oi;
+            }
+
+            // For max pain, just accumulate total OI per strike
+            strikeOIDict[opt.strike] = (strikeOIDict[opt.strike] || 0) + oi;
+        }
+
+        const pcr = callOI > 0 ? +(putOI / callOI).toFixed(2) : 1;
+
+        // Calculate Max Pain (strike with highest total OI)
+        let maxPainStrike = currentPrice;
+        let maxPainOI = 0;
+        for (const [strikeStr, oi] of Object.entries(strikeOIDict)) {
+            if (oi > maxPainOI) {
+                maxPainOI = oi;
+                maxPainStrike = parseFloat(strikeStr);
+            }
+        }
+
+        return {
+            ticker,
+            pcr,
+            totalOI: callOI + putOI,
+            oiChangePct: 0, // Hard to calculate intra-day without baseline
+            derivativeStatus: pcr > 1.2 ? 'Long Buildup' : pcr < 0.8 ? 'Short Buildup' : 'Neutral',
+            maxPain: maxPainStrike
+        };
+
+    } catch (e: any) {
+        console.error(`[KiteConnect] Error fetching live OI for ${ticker}:`, e.message);
+        return null;
+    }
+}
+
+/**
  * Downloads the ZIP, parses the CSV, and caches Put-Call Ratios & OI.
  * Fails gracefully returning an empty map if NSE blocks the request.
  */
 export async function getOptionsFlow(): Promise<Map<string, DerivativesData>> {
+    // Make sure we have instruments if kite is authenticated
+    await ensureNfoInstruments();
+
     const targetDate = getTargetDateString();
 
     // Return cached data if already fetched today
@@ -46,96 +160,12 @@ export async function getOptionsFlow(): Promise<Map<string, DerivativesData>> {
     }
 
     try {
-        const year = targetDate.slice(-4);
-        const month = targetDate.slice(2, 5);
-        const url = `https://archives.nseindia.com/content/historical/DERIVATIVES/${year}/${month}/fo${targetDate}bhav.csv.zip`;
-
-        console.log(`[OptionsService] Fetching NSE Bhavcopy from: ${url}`);
-
-        const response = await axios.get(url, {
-            responseType: 'arraybuffer',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Accept': '*/*'
-            },
-            timeout: 10000
-        });
-
-        const zip = new AdmZip(Buffer.from(response.data));
-        const entries = zip.getEntries();
-        if (entries.length === 0) return MEMORY_CACHE;
-
-        const csvContent = entries[0].getData().toString('utf8');
-
-        // CSV Parsing
-        const records = parse(csvContent, {
-            columns: true,
-            skip_empty_lines: true,
-            trim: true
-        });
-
-        const tickerAgg: Record<string, { callOI: number, putOI: number, totalOI: number, prevOI: number, close: number, prevClose: number }> = {};
-
-        for (const row of records as any[]) {
-            // Options only
-            if (row.INSTRUMENT !== 'OPTSTK' && row.INSTRUMENT !== 'FUTSTK') continue;
-
-            const ticker = row.SYMBOL;
-            if (!tickerAgg[ticker]) {
-                tickerAgg[ticker] = { callOI: 0, putOI: 0, totalOI: 0, prevOI: 0, close: 0, prevClose: 0 };
-            }
-
-            const openInt = parseInt(row.OPEN_INT || '0', 10);
-
-            if (row.INSTRUMENT === 'OPTSTK') {
-                if (row.OPTION_TYP === 'CE') tickerAgg[ticker].callOI += openInt;
-                else if (row.OPTION_TYP === 'PE') tickerAgg[ticker].putOI += openInt;
-            }
-
-            if (row.INSTRUMENT === 'FUTSTK') {
-                // Approximate overall trend with the near-month future close
-                tickerAgg[ticker].totalOI += openInt;
-                tickerAgg[ticker].close = parseFloat(row.CLOSE || '0');
-
-                // Usually the CSV doesn't track yesterday's OI in the same row easily for options, 
-                // but FUTSTK often tracks changes or we use the CHG_IN_OI column directly from NSE
-                const chgOi = parseInt(row.CHG_IN_OI || '0', 10);
-                tickerAgg[ticker].prevOI += (openInt - chgOi);
-            }
-        }
-
-        MEMORY_CACHE.clear();
-        lastFetchedDate = targetDate;
-
-        for (const [ticker, data] of Object.entries(tickerAgg)) {
-            const pcr = data.callOI > 0 ? +(data.putOI / data.callOI).toFixed(2) : 1;
-            const oiChangePct = data.prevOI > 0 ? +(((data.totalOI - data.prevOI) / data.prevOI) * 100).toFixed(2) : 0;
-
-            // Very coarse close approximation as F&O close differs slightly from cash
-            // Assumes 'close' was set by the FUTSTK record
-            const priceUp = data.close > 0 ? true : false; // Placeholder, need delta, assume we determine elsewhere, or use a pseudo logic
-
-            // Simplified standard derivatives logic
-            let status: DerivativesData['derivativeStatus'] = 'Neutral';
-            if (oiChangePct > 2 && pcr >= 1.0) status = 'Long Buildup';
-            else if (oiChangePct < -2 && pcr >= 1.0) status = 'Short Covering';
-            else if (oiChangePct > 2 && pcr < 0.8) status = 'Short Buildup';
-            else if (oiChangePct < -2 && pcr < 0.8) status = 'Long Unwinding';
-
-            MEMORY_CACHE.set(ticker, {
-                ticker,
-                pcr,
-                totalOI: data.totalOI,
-                oiChangePct,
-                derivativeStatus: status
-            });
-        }
-
-        console.log(`[OptionsService] Loaded F&O data for ${MEMORY_CACHE.size} equities. (PCR/OI active)`);
-
+        return MEMORY_CACHE;
     } catch (e: any) {
-        console.warn(`[OptionsService] Could not fetch F&O Bhavcopy. Using empty flow data. (Err: ${e.message})`);
+        console.warn(`[OptionsService] Could not fetch F&O Bhavcopy. (Err: ${e.message})`);
     }
+
+    return MEMORY_CACHE;
 
     return MEMORY_CACHE;
 }

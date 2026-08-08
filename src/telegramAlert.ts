@@ -19,7 +19,7 @@ function getBot() {
         bot.onText(/\/start/, (msg: any) => {
             const chatId = msg.chat.id;
             bot.sendMessage(chatId,
-                `🤖 *StockSage AI Bot Active!*\n\nYour Telegram Chat ID is: \`${chatId}\`\n\nCopy this ID and paste it in *StockSage AI → Profile → Notifications* to receive BUY signal alerts.\n\n_You will receive alerts every time the AI scanner finds a high-confidence BUY signal._`,
+                `🤖 *ApexScan AI Bot Active!*\n\nYour Telegram Chat ID is: \`${chatId}\`\n\nCopy this ID and paste it in *ApexScan AI > Profile > Notifications* to receive BUY signal alerts.\n\n_You will receive alerts every time the AI scanner finds a high-confidence BUY signal._`,
                 { parse_mode: 'Markdown' }
             );
             console.log(`[Telegram] /start from chat ${chatId}`);
@@ -53,7 +53,7 @@ export async function sendBuyAlert(chatId: string, setup: {
     const signal = setup.aiSignal === 'BUY' ? '🟢 *BUY*' : '🟡 *LIGHT BUY*';
     const emoji = setup.aiSignal === 'BUY' ? '🎯' : '👁️';
 
-    const msg = `${emoji} *StockSage AI Signal*
+    const msg = `${emoji} *ApexScan AI Signal*
 
 *${setup.ticker}* — ${signal}
 📊 Confidence: ${setup.confidenceScore}/10
@@ -83,25 +83,18 @@ export async function sendPreMarketDigest(chatId: string, setups: any[], regime:
     const buySetups = setups.filter(s => s.aiSignal === 'BUY' || s.aiSignal === 'LIGHT BUY');
     const regimeLabel = regime === 'BULLISH' ? '✅ BULLISH' : regime === 'NEUTRAL' ? '⚠️ NEUTRAL' : '⛔ RISK-OFF';
 
+    let msg = '';
     if (buySetups.length === 0) {
-        try {
-            await b.sendMessage(chatId,
-                `📅 *StockSage AI — Pre-Market Brief*\n\nMarket Regime: ${regimeLabel}\n\n_No high-confidence setups found today. Wait for better opportunities._\n\n⚠️ _Educational only. Not financial advice._`,
-                { parse_mode: 'Markdown' }
-            );
-        } catch { /* silently fail */ }
-        return;
+        msg = `🌅 *ApexScan AI - Pre-Market Brief*\n\nMarket Regime: ${regimeLabel}\n\n_No high-confidence setups found today. Wait for better opportunities._\n\n💡 _Educational only. Not financial advice._`;
+    } else {
+        const lines = buySetups.slice(0, 5).map((s, i) =>
+            `${i + 1}. *${s.ticker}* — ${s.aiSignal} (${s.confidenceScore}/10) | Tgt +${s.targetPct}% | RR ${s.riskReward}:1`
+        ).join('\n');
+        msg = `🌅 *ApexScan AI - Pre-Market Brief*\n\nMarket Regime: ${regimeLabel}\n🎯 ${buySetups.length} active signal(s):\n\n${lines}\n\n💡 _Educational only. Not financial advice._`;
     }
 
-    const lines = buySetups.slice(0, 5).map((s, i) =>
-        `${i + 1}. *${s.ticker}* — ${s.aiSignal} (${s.confidenceScore}/10) | Tgt +${s.targetPct}% | RR ${s.riskReward}:1`
-    ).join('\n');
-
     try {
-        await b.sendMessage(chatId,
-            `📅 *StockSage AI — Pre-Market Brief*\n\nMarket Regime: ${regimeLabel}\n📊 ${buySetups.length} active signal(s):\n\n${lines}\n\n⚠️ _Educational only. Not financial advice._`,
-            { parse_mode: 'Markdown' }
-        );
+        await b.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
     } catch (err: any) {
         console.error(`[Telegram] Digest error for ${chatId}:`, err.message);
     }

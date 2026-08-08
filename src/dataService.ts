@@ -1566,7 +1566,7 @@ export async function fetchHistoricalData(
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': 'application/json',
             },
-            timeout: 15000,
+            timeout: Math.min(15_000, Math.max(3_000, Number(process.env.MARKET_DATA_TIMEOUT_MS) || 8_000)),
         });
         return parseYahooCandles(data, interval);
     } catch (err) {
@@ -1629,13 +1629,14 @@ export async function fetchNiftyData(): Promise<MarketDataChange> {
     }
 }
 
-type BrokerProvider = 'paper' | 'kite';
+export type BrokerProvider = 'paper' | 'kite';
 
 export interface LiveQuoteSnapshot {
     ticker: string;
     price: number;
     previousClose: number;
     changePct: number;
+    volume?: number;
     source: 'kite' | 'yahoo_5m' | 'yahoo_1d';
     fetchedAt: string;
 }
@@ -1725,6 +1726,7 @@ export async function getLiveQuoteSnapshot(
         price: +derivedPrice.toFixed(2),
         previousClose: +reference.previousClose.toFixed(2),
         changePct: +((((derivedPrice - reference.previousClose) / reference.previousClose) * 100) || 0).toFixed(2),
+        volume: intradayCandles[intradayCandles.length - 1]?.volume,
         source: marketDataApi && livePrice != null ? 'kite' : reference.source,
         fetchedAt: new Date().toISOString(),
     };
@@ -1902,8 +1904,15 @@ export class KiteLiveTradingApi implements TradingApi {
                 timeout: 15000,
             });
             const id = data?.data?.trigger_id;
+            if (id === undefined || id === null || String(id).trim() === '') {
+                return {
+                    orderId: '',
+                    status: 'rejected',
+                    message: 'Kite did not return a GTT trigger id; order acceptance cannot be verified',
+                };
+            }
             return {
-                orderId: String(id ?? `kite-gtt-${order.ticker}-${Date.now()}`),
+                orderId: String(id),
                 status: 'accepted',
                 message: 'Kite GTT trigger placed',
             };
@@ -1940,12 +1949,21 @@ export class GrowwPaperTradingApi implements TradingApi {
 
 export function getTradingApiFromEnv(): { provider: BrokerProvider; api: TradingApi; live: boolean } {
     const provider = (process.env.BROKER_PROVIDER ?? 'paper').toLowerCase() as BrokerProvider;
-    if (provider === 'kite') {
+    const paperMode = process.env.PAPER_TRADING_MODE !== 'false';
+    const liveTradingEnabled = process.env.ENABLE_LIVE_TRADING === 'true';
+
+    if (!paperMode && liveTradingEnabled && provider === 'kite') {
         const apiKey = process.env.KITE_API_KEY;
         const accessToken = process.env.KITE_ACCESS_TOKEN;
         if (apiKey && accessToken) {
             return { provider: 'kite', api: new KiteLiveTradingApi(apiKey, accessToken), live: true };
         }
+        throw new Error('Live trading was requested, but Kite credentials are incomplete.');
     }
+
+    if (!paperMode) {
+        throw new Error('PAPER_TRADING_MODE is disabled without an explicitly enabled live broker.');
+    }
+
     return { provider: 'paper', api: new GrowwPaperTradingApi(), live: false };
 }

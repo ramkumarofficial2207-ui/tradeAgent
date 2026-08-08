@@ -78,7 +78,7 @@ function makeMeta(partial: Partial<ChatMeta> = {}): ChatMeta {
 
 async function summarizeConcept(message: string): Promise<string> {
     const systemPrompt = [
-        'You are StockSage, an NSE market research assistant.',
+        'You are ApexScan, an NSE market research assistant.',
         'Explain concepts clearly for Indian swing traders.',
         'Do not claim live data, self-learning, or unsupported forecasting.',
         'Keep the answer under 180 words.',
@@ -445,7 +445,7 @@ async function buildNewsReply(message: string, ticker: string | undefined, scan:
             report?.sector && scan?.sectorBreadth ? scan.sectorBreadth[report.sector] ?? null : null,
         ) ?? buildTechnicalContextFromStock(report, setup);
 
-    const analysis = analyzeNewsImpact({
+    const analysis = await analyzeNewsImpact({
         headline: message.slice(0, 240),
         articleText: message,
         targetTicker: ticker,

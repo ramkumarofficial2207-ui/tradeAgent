@@ -5,7 +5,7 @@
 // =====================================================
 
 import axios from 'axios';
-import { fetchHistoricalData, NSE_UNIVERSE, SECTOR_MAP } from './dataService';
+import { fetchHistoricalData, getLiveQuoteSnapshot, NSE_UNIVERSE, SECTOR_MAP } from './dataService';
 import { computeIndicators } from './indicators';
 
 // ── Types ─────────────────────────────────────────────
@@ -95,16 +95,8 @@ let _scrCookie = ''; let _scrTs = 0;
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 async function nseCookie(): Promise<string> {
-    if (_nseCookie && Date.now() - _nseTs < 20 * 60 * 1000) return _nseCookie;
-    try {
-        const r = await axios.get('https://www.nseindia.com/', {
-            headers: { 'User-Agent': CHROME_UA },
-            timeout: 12000,
-        });
-        _nseCookie = (r.headers['set-cookie'] ?? []).map((c: string) => c.split(';')[0]).join('; ');
-        _nseTs = Date.now();
-    } catch (e: any) { console.warn('[NSE] cookie:', e.message); }
-    return _nseCookie;
+    // Bypassed NSE scraper to rely on Zerodha / Screener.in APIs
+    return '';
 }
 
 async function scrCookie(): Promise<string> {
@@ -127,27 +119,38 @@ async function scrCookie(): Promise<string> {
 }
 
 // ── NSE: price, P/E, 52W ─────────────────────────────
-async function fetchNSE(symbol: string) {
-    const cookie = await nseCookie();
+interface NseSnapshot {
+    currentPrice: number;
+    companyName: string;
+    dayChange: number;
+    dayChangePct: number;
+    high52w: number;
+    low52w: number;
+    peRatio: number | null;
+    industryPe: number | null;
+}
+
+async function fetchNSE(symbol: string): Promise<NseSnapshot | null> {
     try {
-        const { data } = await axios.get(
-            `https://www.nseindia.com/api/quote-equity?symbol=${encodeURIComponent(symbol)}`,
-            { headers: { 'User-Agent': CHROME_UA, 'Accept': 'application/json', 'Referer': 'https://www.nseindia.com/', 'Cookie': cookie }, timeout: 10000 }
-        );
-        const pi = data?.priceInfo ?? {}, md = data?.metadata ?? {}, inf = data?.info ?? {};
-        const last = Number(pi.lastPrice ?? 0);
-        const prev = Number(pi.previousClose ?? last);
+        const [quote, candles] = await Promise.all([
+            getLiveQuoteSnapshot(symbol),
+            fetchHistoricalData(NSE_UNIVERSE[symbol] ?? `${symbol}.NS`, 370, '1d'),
+        ]);
+        const highs = candles.map(candle => candle.high).filter(Number.isFinite);
+        const lows = candles.map(candle => candle.low).filter(Number.isFinite);
         return {
-            companyName: inf.companyName ?? symbol,
-            currentPrice: last,
-            dayChange: +(last - prev).toFixed(2),
-            dayChangePct: prev > 0 ? +((last - prev) / prev * 100).toFixed(2) : 0,
-            high52w: Number(pi.weekHighLow?.max ?? 0),
-            low52w: Number(pi.weekHighLow?.min ?? 0),
-            peRatio: Number(md.pdSymbolPe) || null,
-            industryPe: Number(md.pdSectorPe) || null,
+            currentPrice: quote.price,
+            companyName: symbol,
+            dayChange: +(quote.price - quote.previousClose).toFixed(2),
+            dayChangePct: quote.changePct,
+            high52w: highs.length ? Math.max(...highs.slice(-252)) : 0,
+            low52w: lows.length ? Math.min(...lows.slice(-252)) : 0,
+            peRatio: null,
+            industryPe: null,
         };
-    } catch (e: any) { console.warn(`[NSE] ${symbol}: ${e?.response?.status ?? e.message}`); return null; }
+    } catch {
+        return null;
+    }
 }
 
 // ── Screener.in: fundamentals + financials ────────────

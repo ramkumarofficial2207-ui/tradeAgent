@@ -30,24 +30,45 @@ export async function groqChat(
         throw new Error('GROQ_API_KEY not configured. Visit https://console.groq.com/keys to get a free key and add it to your .env file.');
     }
 
-    const resp = await axios.post(
-        GROQ_BASE,
-        {
-            model: MODEL,
-            messages,
-            max_tokens: options.maxTokens ?? 512,
-            temperature: options.temperature ?? 0.4,
-        },
-        {
-            headers: {
-                Authorization: `Bearer ${apiKey}`,
-                'Content-Type': 'application/json',
-            },
-            timeout: 30_000,
-        }
-    );
+    let attempts = 0;
+    const maxAttempts = 2;
+    let baseDelay = 1000; // Start with 1s delay
 
-    return resp.data.choices?.[0]?.message?.content?.trim() ?? '';
+    while (attempts < maxAttempts) {
+        try {
+            const resp = await axios.post(
+                GROQ_BASE,
+                {
+                    model: MODEL,
+                    messages,
+                    max_tokens: options.maxTokens ?? 512,
+                    temperature: options.temperature ?? 0.4,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json',
+                    },
+                    timeout: 30_000,
+                }
+            );
+
+            return resp.data.choices?.[0]?.message?.content?.trim() ?? '';
+        } catch (error: any) {
+            attempts++;
+            const status = error.response?.status;
+            
+            // Retry on temporary server errors (500, 502, 503, 504), fail fast on 429 rate limit
+            if (status >= 500 && status <= 504 && attempts < maxAttempts) {
+                const backoff = baseDelay * Math.pow(2, attempts - 1) + Math.random() * 500;
+                console.warn(`[Groq Client] Request failed (${status}). Retrying attempt ${attempts}/${maxAttempts} in ${Math.round(backoff)}ms...`);
+                await new Promise(resolve => setTimeout(resolve, backoff));
+            } else {
+                throw error;
+            }
+        }
+    }
+    throw new Error('Groq request failed after maximum retry attempts');
 }
 
 /** Single-turn convenience helper (system prompt + user message). */

@@ -1,9 +1,9 @@
 # ── Stage 1: Build frontend ───────────────────────────────────
 FROM node:20-alpine AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
+WORKDIR /app/apex-intelligence
+COPY apex-intelligence/package*.json ./
 RUN npm ci
-COPY frontend/ .
+COPY apex-intelligence/ ./
 RUN npm run build
 
 # ── Stage 2: Build backend ────────────────────────────────────
@@ -12,9 +12,7 @@ RUN apk add --no-cache openssl libc6-compat tzdata
 WORKDIR /app
 COPY package*.json ./
 COPY prisma/ ./prisma/
-WORKDIR /app
-COPY package*.json ./
-COPY prisma/ ./prisma/
+ENV DATABASE_URL=postgresql://build:build@localhost:5432/build?schema=public
 RUN npm ci
 COPY src/ ./src/
 COPY tsconfig.json ./
@@ -39,7 +37,7 @@ COPY --from=backend-build /app/node_modules/@prisma/client ./node_modules/@prism
 COPY --from=backend-build /app/node_modules/.prisma ./node_modules/.prisma
 
 # Copy built frontend
-COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY --from=frontend-build /app/apex-intelligence/dist ./apex-intelligence/dist
 
 # Expose port and start
 EXPOSE 3000

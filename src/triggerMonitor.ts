@@ -1,6 +1,7 @@
 import { pushEvent } from './agentEvents';
 import { fetchHistoricalData } from './dataService';
 import prisma from './prismaClient';
+import { SYSTEM_AGENT_USER_ID } from './systemConstants';
 
 /**
  * TriggerMonitor
@@ -56,24 +57,26 @@ export async function runTriggerMonitoring() {
 
                 // Create a virtual trade record if not exists to track theoretical performance
                 const existingTrade = await prisma.trade.findFirst({
-                    where: { ticker: setup.ticker, status: 'OPEN' }
+                    where: { userId: SYSTEM_AGENT_USER_ID, ticker: setup.ticker, status: 'OPEN' }
                 });
 
                 if (!existingTrade) {
+                    const quantity = Math.max(1, Math.floor(100000 / setup.entryPrice));
                     await prisma.trade.create({
                         data: {
-                            userId: '0', // System user or default
+                            userId: SYSTEM_AGENT_USER_ID,
                             ticker: setup.ticker,
                             companyName: setup.ticker,
-                            sector: 'Monitored',
                             entryPrice: setup.entryPrice,
-                            quantity: 100, // Dummy quantity for P&L calc
+                            quantity,
                             stopLossInit: setup.stopLoss,
                             target1: setup.targetPrice,
-                            status: 'OPEN', // PositionManager will pick this up
+                            status: 'OPEN',
                             setupType: setup.setupType,
                             confidenceScore: setup.confidenceScore,
-                            notes: `MONITORED_ADVISOR | Trigger: ${setup.entryPrice} | ATR: ${(setup.entryPrice * 0.03).toFixed(2)}`
+                            capitalDeployed: setup.entryPrice * quantity,
+                            initialRiskRs: Math.max((setup.entryPrice - setup.stopLoss) * quantity, 0),
+                            notes: `PAPER_MONITORED_ADVISOR | Trigger: ${setup.entryPrice}`
                         }
                     });
                 }

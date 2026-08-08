@@ -1,6 +1,8 @@
 import { StockReport } from './fundamentalService';
 import { MarketGroundingContext, TradeSetup } from './types';
 import { NewsEvent } from './newsIntel/types';
+import { groqAsk } from './groqClient';
+import { geminiAsk } from './geminiClient';
 
 export type NewsCategory = 'CORPORATE_ACTION' | 'MACRO' | 'REGULATORY' | 'SECTORAL';
 export type ImpactMagnitude = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -456,12 +458,18 @@ export function buildTechnicalContextFromStock(report: StockReport | null, setup
     };
 }
 
-export function analyzeNewsImpact(input: NewsImpactInput): NewsImpactOutput {
+export async function analyzeNewsImpact(input: NewsImpactInput): Promise<NewsImpactOutput> {
     const text = combinedText(input);
     const support = inferSupportLevel(input);
     const category = inferCategory(text);
     const eventScore = scoreSentimentFromEvents(input.events);
-    const score = eventScore ?? scoreSentiment(text);
+    let score = eventScore ?? scoreSentiment(text);
+
+    // Fast regex sentiment analysis (sub-millisecond, zero API rate limit bottleneck)
+    if (!eventScore && text.length > 5) {
+        score = clamp(scoreSentiment(text), -1.0, 1.0);
+    }
+
     const textMagnitude = inferImpactMagnitude(text, score);
     const magnitude = inferImpactMagnitudeFromEvents(input.events, textMagnitude);
     const pricedIn = inferPricedIn(text, magnitude);

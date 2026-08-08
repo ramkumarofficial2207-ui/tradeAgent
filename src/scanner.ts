@@ -4,6 +4,7 @@
 // =====================================================
 
 import { fetchHistoricalData, fetchNiftyData, MARKET_CAP_CR_MAP, NSE_UNIVERSE, SECTOR_MAP } from './dataService';
+import { computeSectorMatrix, getSectorStrength } from './sectorMatrix';
 import { getDynamicUniverse, getTopGainersToday, getBhavcopyCacheStatus } from './nseDiscovery';
 import { getNewsCatalystTickers } from './newsIntel/service';
 import { computeIndicators, computeConfidence, computeRegime, estimateHitProbability, identifySetupType, detectCompressionSetup, detectVCP } from './indicators';
@@ -11,13 +12,53 @@ import prisma from './prismaClient';
 import { validateNewsRisk } from './newsValidator';
 import { validateEarningsRisk } from './earningsValidator';
 import { analyzeStocksWithAI } from './aiAdvisor';
-import { getOptionsFlow } from './optionsService';
+import { getOptionsFlow, getLiveOptionsData } from './optionsService';
 import { getInstitutionalFlowSignal } from './institutionalFlowService';
 import { getTickerNewsDigest } from './newsIntel/service';
 import { NewsEvent } from './newsIntel/types';
 import { buildMarketGroundingFromIndicator, buildSectorBreadthMap } from './newsIntel/marketGrounding';
 import { applyRiskGovernor } from './riskGovernor';
+import { roundToNseTick, formatNsePrice } from './pricingUtils';
 import { Candle, MarketDataApi, MarketStatus, ScanDiagnostics, ScanResult, StockIndicators, TradeSetup } from './types';
+import { getDhanWebSocketInstance } from './dhanWebSocket';
+import { liveTickerStore } from './liveTickerStore';
+
+export interface ScannerProgress {
+    stage: string;
+    message: string;
+    progressPct: number;
+    processedStocks?: number;
+    totalStocks?: number;
+    setupsFound?: number;
+}
+
+export interface ScannerExecutionOptions {
+    signal?: AbortSignal;
+    onProgress?: (progress: ScannerProgress) => void;
+}
+
+function throwIfScanAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    const error = new Error('Scan deadline exceeded.');
+    error.name = 'AbortError';
+    throw error;
+}
+
+function reportScanProgress(options: ScannerExecutionOptions | undefined, progress: ScannerProgress): void {
+    options?.onProgress?.(progress);
+}
+
+function configuredInt(name: string, fallback: number, min: number, max: number): number {
+    const value = Number(process.env[name]);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+export function getMarketCapTier(ticker: string, marketCapCr: number): 'LARGE_CAP' | 'MID_CAP' | 'SMALL_CAP' {
+    if (marketCapCr >= 20000) return 'LARGE_CAP';
+    if (marketCapCr >= 5000) return 'MID_CAP';
+    return 'SMALL_CAP';
+}
 
 // ── Universe liquidity gates ─────────────────────────────────────
 const MIN_MARKET_CAP_CR = 250;       // Lowered to ₹250 Cr to include all small/midcaps
@@ -301,6 +342,10 @@ function scoreCompressionQuality(params: {
 
 function inferSetupFamily(setupType: string, ind: StockIndicators): TradeSetup['setupFamily'] {
     if (setupType === 'Compression Breakout') return 'COMPRESSION';
+    if (setupType === 'Compression in Leaders') return 'LEADER';
+    if (setupType === 'Leader Pullback Reclaim') return 'LEADER';
+    if (setupType === 'Second-Entry Retest') return 'BREAKOUT';
+    if (setupType === 'Earnings Reaction Continuation') return 'EVENT_DRIVEN';
     if (ind.isDeepValue) return 'REVERSAL';
     if (setupType.includes('Pullback') || setupType.includes('Bounce')) return 'PULLBACK';
     if (setupType.includes('VCP') || setupType.includes('Breakout')) return 'BREAKOUT';
@@ -322,16 +367,26 @@ function scoreConfluence(params: {
 
     if (ind.ema20 >= ind.ema50 * 0.995) score += 1.1;
     if (ind.ema50Slope > 0.35) score += 0.8;
+    if (ind.timeSeriesMomentumBullish) score += 0.8;
+    if (ind.isLeader) score += 0.9;
+    if ((ind.leaderScore ?? 0) >= 7) score += 0.6;
+    if (ind.supertrendBullish) score += 0.5;
+    if (ind.ichimokuBullish) score += 0.5;
     if (ind.volumeRatio >= 1.35) score += 1.2;
     else if (ind.volumeRatio >= 1.05) score += 0.5;
     if (rsDelta >= 5) score += 1.3;
     else if (rsDelta >= 1.5) score += 0.7;
     if ((ind.accumulationScore ?? 0) >= 58) score += 0.7;
+    if (ind.acceptanceScore >= 7) score += 0.7;
+    if (ind.persistenceScore >= 7) score += 0.6;
+    if (ind.breakoutRetentionScore >= 7) score += 0.6;
+    if (ind.failureRiskScore >= 7) score -= 0.8;
     if (ind.rsi14 >= 52 && ind.rsi14 <= 72) score += 0.8;
     else if (ind.rsi14 > 78) score -= 0.7;
     if (effectiveRiskReward >= 2) score += 0.6;
     else if (effectiveRiskReward < 1.55) score -= 0.7;
     score += (gapQuality - 5) * 0.08;
+    score += Math.max(0, ind.preMoveScore - 5) * 0.12;
 
     if (setupFamily === 'BREAKOUT' || setupFamily === 'CONTINUATION') {
         score += (breakoutQuality - 5) * 0.28;
@@ -342,6 +397,18 @@ function scoreConfluence(params: {
     if (setupFamily === 'COMPRESSION') {
         score += (compressionQuality - 5) * 0.34;
         if (ind.volumeRatio <= 1.2) score += 0.25;
+    }
+    if (setupFamily === 'LEADER') {
+        score += Math.max(0, ind.leaderScore - 5) * 0.18;
+        score += ind.isLeaderPullbackReclaim ? 0.45 : 0;
+        score += ind.isSecondEntryRetest ? 0.35 : 0;
+        score += ind.isCompressionInLeaders ? 0.4 : 0;
+        if (ind.volumeRatio >= 0.9) score += 0.2;
+    }
+    if (setupFamily === 'EVENT_DRIVEN') {
+        score += (gapQuality - 5) * 0.18;
+        score += ind.isEarningsReactionContinuation ? 0.6 : 0;
+        if (ind.volumeRatio >= 1.2) score += 0.35;
     }
 
     return +clamp(score, 0, 10).toFixed(1);
@@ -363,6 +430,12 @@ function scoreTomorrowContinuation(params: {
     const extensionFromEma20 = Math.abs(ind.ltp - ind.ema20) / Math.max(ind.ema20, 1) * 100;
     let score = 4.4;
 
+    if (ind.acceptanceScore >= 7) score += 1.0;
+    if (ind.breakoutRetentionScore >= 7) score += 0.9;
+    if (ind.persistenceScore >= 7) score += 0.8;
+    if (ind.supertrendBullish) score += 0.35;
+    if (ind.ichimokuBullish) score += 0.35;
+
     if (closeLocation >= 75) score += 1.5;
     else if (closeLocation >= 60) score += 0.8;
     else score -= 0.9;
@@ -381,6 +454,8 @@ function scoreTomorrowContinuation(params: {
     if (ind.ema20 >= ind.ema50 * 0.995) score += 0.4;
     if (extensionFromEma20 > 6) score -= 1.1;
     else if (extensionFromEma20 > 4) score -= 0.45;
+    if (ind.failureRiskScore >= 7) score -= 0.8;
+    score += Math.max(0, ind.preMoveScore - 5) * 0.1;
 
     score += (breakoutQuality - 5) * 0.18;
     score += (gapQuality - 5) * 0.08;
@@ -396,6 +471,13 @@ function scoreFiveDaySwingPotential(params: {
     const rs1m = ind.returns1m - ind.nifty1mReturn;
     const rs3m = ind.returns3m - ind.nifty3mReturn;
     let score = 4.8;
+
+    if (ind.acceptanceScore >= 7) score += 0.7;
+    if (ind.absorptionScore >= 7) score += 0.6;
+    if (ind.efficiencyScore >= 7) score += 0.6;
+    if (ind.persistenceScore >= 7) score += 0.8;
+    if (ind.ichimokuBullish) score += 0.35;
+    if (ind.supertrendBullish) score += 0.35;
 
     if (rs1m >= 4) score += 1.2;
     else if (rs1m >= 1) score += 0.6;
@@ -418,6 +500,8 @@ function scoreFiveDaySwingPotential(params: {
     score += (Math.max(breakoutQuality, pullbackQuality) - 5) * 0.2;
     if (ind.isBullFlag) score += 0.45;
     if (ind.isDeepValue) score -= 0.7;
+    if (ind.failureRiskScore >= 7) score -= 0.8;
+    score += Math.max(0, ind.preMoveScore - 5) * 0.12;
 
     return +clamp(score, 0, 10).toFixed(1);
 }
@@ -527,7 +611,8 @@ function getLatestSessionCandles(candles: Candle[]): Candle[] {
 async function fetchUniverseData(
     dataApi: MarketDataApi | null,
     newsCatalystTickers: string[] = [],
-    concurrency = 8
+    concurrency = 45,
+    options?: ScannerExecutionOptions,
 ): Promise<Array<{ ticker: string; candles: any[] }>> {
 
     // ── Source 1: NSE Bhavcopy (dynamic, zero hardcoding) ──────────
@@ -558,6 +643,14 @@ async function fetchUniverseData(
     // Add any AI-identified tickers not already in the bhavcopy set.
     // These are stocks with fresh news catalysts that may not yet show
     // technical momentum — but need to be watched.
+    // Rank-wide scans used to traverse 1,300+ symbols every 30 minutes. Limit
+    // the deep universe to the most liquid names, then append news catalysts.
+    const universeLimit = configuredInt('SCANNER_UNIVERSE_LIMIT', 500, 50, 1_500);
+    if (entries.length > universeLimit) {
+        entries = entries.slice(0, universeLimit);
+        console.log(`[scanner] Liquidity-ranked universe capped at ${universeLimit} stocks.`);
+    }
+
     const existingSymbols = new Set(entries.map(([sym]) => sym.toUpperCase()));
     let newCatalystCount = 0;
     for (const rawTicker of newsCatalystTickers) {
@@ -573,20 +666,43 @@ async function fetchUniverseData(
     }
 
     // ── Fetch historical candles for all candidates ───────────────
+    reportScanProgress(options, {
+        stage: 'Fetching market history',
+        message: `Downloading price history for ${entries.length} liquid NSE stocks.`,
+        progressPct: 8,
+        processedStocks: 0,
+        totalStocks: entries.length,
+    });
+
     const out: Array<{ ticker: string; candles: any[] }> = [];
     for (let i = 0; i < entries.length; i += concurrency) {
+        throwIfScanAborted(options?.signal);
         const batch = entries.slice(i, i + concurrency);
         const settled = await Promise.allSettled(
             batch.map(async ([ticker, yahoo]) => {
-                const candles = dataApi
-                    ? await dataApi.getHistoricalData(ticker, '1d', 300)
-                    : await fetchHistoricalData(yahoo, 300);
+                let candles: any[] = [];
+                if (dataApi) {
+                    try {
+                        candles = await dataApi.getHistoricalData(ticker, '1d', 300);
+                    } catch { /* fallback to yahoo */ }
+                }
+                if (!candles || candles.length === 0) {
+                    candles = await fetchHistoricalData(yahoo, 300);
+                }
                 return { ticker, candles };
             })
         );
         for (const row of settled) {
             if (row.status === 'fulfilled') out.push(row.value);
         }
+        const processed = Math.min(entries.length, i + batch.length);
+        reportScanProgress(options, {
+            stage: 'Fetching market history',
+            message: `Fetched ${processed} of ${entries.length} stocks.`,
+            progressPct: 8 + (processed / Math.max(entries.length, 1)) * 54,
+            processedStocks: processed,
+            totalStocks: entries.length,
+        });
     }
     return out;
 }
@@ -604,10 +720,17 @@ export { getBhavcopyCacheStatus };
 
 function scoreSwingComposite(candidate: StockIndicators): number {
     return (
-        (candidate.volumeRatio * 0.4) +
-        ((candidate.returns3m - candidate.nifty3mReturn) * 0.3) +
-        (candidate.adx14 / 100 * 0.2) +
-        (candidate.rsi14 / 100 * 0.1)
+        (candidate.volumeRatio * 0.20) +
+        ((candidate.returns3m - candidate.nifty3mReturn) * 0.16) +
+        (candidate.adx14 / 100 * 0.10) +
+        (candidate.rsi14 / 100 * 0.05) +
+        ((candidate.preMoveScore ?? 0) * 0.20) +
+        ((candidate.acceptanceScore ?? 0) * 0.06) +
+        ((candidate.persistenceScore ?? 0) * 0.04) +
+        ((candidate.breakoutRetentionScore ?? 0) * 0.04) -
+        ((candidate.failureRiskScore ?? 0) * 0.08) +
+        (candidate.isSqueeze ? 0.12 : 0) +
+        (candidate.isPocketPivot ? 0.10 : 0)
     );
 }
 
@@ -616,14 +739,16 @@ function scoreSwingWatchConfidence(params: {
     adx14?: number;
     rsi14?: number;
     pctChange?: number;
+    structureScore?: number;
 }): number {
-    const { volumeRatio = 1, adx14 = 14, rsi14 = 55, pctChange = 0 } = params;
+    const { volumeRatio = 1, adx14 = 14, rsi14 = 55, pctChange = 0, structureScore = 0 } = params;
     return +clamp(
         4.8 +
         Math.max(0, volumeRatio - 1) * 1.6 +
         Math.max(0, adx14 - 14) * 0.08 +
         Math.max(0, Math.min(12, pctChange)) * 0.14 +
-        (rsi14 >= 52 && rsi14 <= 72 ? 0.45 : 0),
+        (rsi14 >= 52 && rsi14 <= 72 ? 0.45 : 0) +
+        Math.max(0, structureScore - 5) * 0.16,
         4.6,
         9.2,
     ).toFixed(1);
@@ -673,6 +798,7 @@ export async function finalizeSwingDiagnostics(
             volumeRatio: candidate.volumeRatio,
             adx14: candidate.adx14,
             rsi14: candidate.rsi14,
+            structureScore: candidate.preMoveScore,
         });
 
         if (exhaustion.exhausted) {
@@ -793,13 +919,22 @@ async function enrichTradeSetupsWithAI(setups: TradeSetup[], qualified: StockInd
             setupType: s.setupType,
             confidenceScore: s.confidenceScore,
             headlines: s.headlines,
-            pcr: s.pcr,
-            derivativeStatus: s.derivativeStatus,
-            timeframe: s.timeframe,
+            pcr: ind?.pcr,
+            oiChangePct: ind?.oiChangePct,
+            derivativeStatus: ind?.derivativeStatus,
+            volumeRatio: ind?.volumeRatio,
+            distFrom20dma: ind && ind.ema20 > 0 ? ((ind.ltp - ind.ema20) / ind.ema20) * 100 : 0,
+            distFrom50dma: ind && ind.ema50 > 0 ? ((ind.ltp - ind.ema50) / ind.ema50) * 100 : 0,
+            sectorRs5d: 0.0, // Should be imported from sectorMatrix if available, defaulting for now
+            sectorRs20d: 0.0,
+            timeframe: (s as any).timeframe,
         };
     });
 
-    const aiAssessments = await analyzeStocksWithAI(aiInputData);
+    const topCandidates = [...aiInputData]
+        .sort((a, b) => (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0))
+        .slice(0, 10);
+    const aiAssessments = await analyzeStocksWithAI(topCandidates);
     for (const s of setups) {
         const assessment = aiAssessments.get(s.ticker);
         if (!assessment) continue;
@@ -808,6 +943,8 @@ async function enrichTradeSetupsWithAI(setups: TradeSetup[], qualified: StockInd
         s.aiLogic = assessment.logic;
         s.aiTargetRange = assessment.target_range;
         s.aiStopLoss = assessment.stop_loss;
+        s.mlWinProbability = assessment.mlWinProbability ? Number(assessment.mlWinProbability) : undefined;
+        s.mlAction = assessment.mlAction ? String(assessment.mlAction) : undefined;
 
         if (assessment.trigger_price) {
             s.authorizedZone = {
@@ -894,9 +1031,16 @@ async function enrichSetupsWithGroundedNews(
 // a real catalyst can ever be missed due to a hardcoded list.
 // ──────────────────────────────────────────────────────────────────
 export async function runScanner(
-    dataApi: MarketDataApi | null = null
+    dataApi: MarketDataApi | null = null,
+    options?: ScannerExecutionOptions,
 ): Promise<{ qualified: StockIndicators[]; marketStatus: MarketStatus; diagnostics: ScanDiagnostics }> {
 
+    throwIfScanAborted(options?.signal);
+    reportScanProgress(options, {
+        stage: 'Checking market regime',
+        message: 'Validating Nifty trend, volatility, and institutional conditions.',
+        progressPct: 2,
+    });
     const marketStatus = await checkMarketCondition();
     const diagnostics: ScanDiagnostics = {
         mode: 'swing',
@@ -922,6 +1066,13 @@ export async function runScanner(
     // These are stocks the AI identified from news in the last 24-48h.
     // They get added to the scan universe even if they have no
     // technical momentum yet — so catalysts are caught early.
+    throwIfScanAborted(options?.signal);
+    reportScanProgress(options, {
+        stage: 'Discovering candidates',
+        message: 'Building the liquidity-ranked NSE universe and news catalyst list.',
+        progressPct: 5,
+    });
+
     let newsCatalystTickers: string[] = [];
     try {
         newsCatalystTickers = await getNewsCatalystTickers();
@@ -933,13 +1084,26 @@ export async function runScanner(
     }
 
     // ── Step 2: Fetch full merged universe + historical candles ───
+    await computeSectorMatrix(); // Phase 1: Compute Sector Relative Strength
     const niftyCandles = await fetchHistoricalData('^NSEI', 300);
-    const allData = await fetchUniverseData(dataApi, newsCatalystTickers, 8);
+    const concurrency = configuredInt('SCANNER_CONCURRENCY', 12, 2, 24);
+    const allData = await fetchUniverseData(dataApi, newsCatalystTickers, concurrency, options);
     const optionsFlow = await getOptionsFlow();
     const qualified: StockIndicators[] = [];
     diagnostics.universeCount = allData.length;
 
-    for (const { ticker, candles } of allData) {
+    for (let index = 0; index < allData.length; index++) {
+        throwIfScanAborted(options?.signal);
+        const { ticker, candles } = allData[index];
+        if (index % 25 === 0 || index === allData.length - 1) {
+            reportScanProgress(options, {
+                stage: 'Computing technical indicators',
+                message: `Analyzed ${index + 1} of ${allData.length} downloaded stocks.`,
+                progressPct: 63 + ((index + 1) / Math.max(allData.length, 1)) * 12,
+                processedStocks: index + 1,
+                totalStocks: allData.length,
+            });
+        }
         // ── GATE 1: Dynamic Liquidity ─────────────────────────────
         if (candles.length < 20) {
             reject('insufficient_candles');
@@ -948,28 +1112,24 @@ export async function runScanner(
         const last20 = candles.slice(-20);
         const avgVol20 = last20.reduce((s, c) => s + c.volume, 0) / 20;
         const lastClose = candles[candles.length - 1]?.close ?? 0;
-        const avgTurnoverCr = (avgVol20 * lastClose) / 10000000; // ₹ in Crores
-        if (avgTurnoverCr < 10) {
-            reject('turnover_gate');
-            continue;
-        } // Minimum ₹10 Cr daily turnover
+        const avgTurnoverCr = (avgVol20 * lastClose) / 10000000;
 
-        // Rough proxy if missing to keep formatting intact
-        const marketCapCr = MARKET_CAP_CR_MAP[ticker] ?? Math.round(avgTurnoverCr * 50);
-
-        // ── GATE 2: Enough history ────────────────────────────────
-        if (candles.length < 200) {
-            reject('history_gate');
+        // ── GATE 2: Volume Liquidity ──────────────────────────────
+        const mcap = MARKET_CAP_CR_MAP[ticker] || 0;
+        const tier = getMarketCapTier(ticker, mcap);
+        const minVol = tier === 'SMALL_CAP' ? MIN_AVG_VOLUME * 1.5 : MIN_AVG_VOLUME;
+        if (avgVol20 < minVol) {
+            reject('low_volume');
             continue;
         }
 
-        // ── GATE 3: Price ≥ ₹50 ─────────────────────────────────
+        // ── GATE 3: Price Range ───────────────────────────────────
         if (lastClose < MIN_PRICE) {
-            reject('price_gate');
+            reject('price_too_low');
             continue;
         }
 
-        // ── GATE 4: ATR filter — exclude erratic stocks ───────────
+        // ── GATE 4: ATR filter — exclude erratic stocks ──────────
         const atr14 = calcATR(candles.slice(-30));
         const atrPct = lastClose > 0 ? (atr14 / lastClose) * 100 : 99;
         if (atrPct > MAX_ATR_PCT) {
@@ -984,50 +1144,14 @@ export async function runScanner(
             continue;
         }
 
-        // ── GATE 5 to 10: Setup Routing (Trend vs Deep Value vs Bull Flag) ──────
-        const isSmall = marketCapCr < 5000;
-        const volThreshold = isSmall ? VOL_RATIO_SMALL : VOL_RATIO_LARGE;
-
-        const isStandardTrend =
-            ind.ltp > ind.dma200 &&
-            ind.rsi14 >= RSI_MIN && ind.rsi14 <= RSI_MAX &&
-            ind.adx14 >= ADX_MIN &&
-            ind.volumeRatio >= volThreshold &&
-            ind.avgVolume20d >= MIN_AVG_VOLUME &&
-            ind.pctFrom52wHigh <= MAX_52W_DROP &&
-            ind.ema50Slope > 0;
-
-        // ── Phase 4 GATE: Minimum Accumulation Score (Demand Index > 45%)
-        if ((ind.accumulationScore ?? 0) < 45) {
-            reject('accumulation_gate');
-            continue;
-        }
-
-        if (!isStandardTrend && !ind.isBullFlag && !ind.isDeepValue) {
-            reject('trend_structure_gate');
-            continue;
-        }
-
-        // Note: For Deep Value, price is explicitly BELOW 200 DMA, so it bypasses standard filters.
-
-        // ── Phase 6 GATE: Options Flow Mechanics ──────────────────────
-        const cleanTicker = ticker.replace('.NS', '');
-        const optData = optionsFlow.get(cleanTicker);
-        if (optData) {
-            ind.pcr = optData.pcr;
-            ind.totalOI = optData.totalOI;
-            ind.oiChangePct = optData.oiChangePct;
-            ind.derivativeStatus = optData.derivativeStatus;
-
-            // Reject if institutional derivatives flow is fundamentally against the trade
-            if (optData.derivativeStatus === 'Short Buildup') {
-                reject('derivatives_short_buildup');
+        // ── GATE 5: Sector Rotation (Phase 1) ────────────────────
+        const sectorName = SECTOR_MAP[ticker];
+        if (sectorName) {
+            const sectorRS = getSectorStrength(sectorName);
+            if (sectorRS && sectorRS.trend === 'DISTRIBUTION') {
+                reject('sector_weakness');
                 continue;
             }
-            if (optData.pcr < 0.6) {
-                reject('pcr_gate');
-                continue;
-            } // Massive call writing resistance ceiling
         }
 
         qualified.push(ind);
@@ -1035,11 +1159,11 @@ export async function runScanner(
 
     diagnostics.qualifiedCount = qualified.length;
 
-    // Sort by composite momentum score before setup building
-    qualified.sort((a, b) => scoreSwingComposite(b) - scoreSwingComposite(a));
+
     diagnostics.summary = qualified.length
         ? `${qualified.length} names cleared the first-stage swing scan. Final trade-ready setups and tomorrow watchlist are built next.`
         : 'No names cleared the first-stage swing momentum and quality gates.';
+
     if (!qualified.length) {
         diagnostics.notes?.push('Use the rejection counts and tomorrow watchlist to review strong movers that were not trade-ready today.');
     }
@@ -1047,93 +1171,128 @@ export async function runScanner(
     return { qualified, marketStatus, diagnostics };
 }
 
-// ──────────────────────────────────────────────────────────────────
-// BUILD TRADE SETUPS — from qualified stocks
-// ──────────────────────────────────────────────────────────────────
 export async function buildTradeSetups(
     qualified: StockIndicators[],
-    marketStatus?: MarketStatus | null
+    marketStatus?: MarketStatus | null,
+    options?: ScannerExecutionOptions,
 ): Promise<TradeSetup[]> {
     const setups: TradeSetup[] = [];
+    const sectorBreadthMap = buildSectorBreadthMap(qualified, []);
 
-    for (let index = 0; index < qualified.length; index++) {
-        const ind = qualified[index];
-        // Calculate rough proxy if not in map
+    // Stage two is intentionally smaller: expensive news and earnings checks
+    // run only for the strongest technical candidates, not all 500 symbols.
+    const deepCandidateLimit = configuredInt('SCANNER_DEEP_CANDIDATE_LIMIT', 30, 8, 100);
+    const deepCandidates = [...qualified]
+        .sort((a, b) => scoreSwingComposite(b) - scoreSwingComposite(a))
+        .slice(0, deepCandidateLimit);
+
+    reportScanProgress(options, {
+        stage: 'Validating setup candidates',
+        message: `Running deeper risk checks on ${deepCandidates.length} candidates.`,
+        progressPct: 76,
+        processedStocks: 0,
+        totalStocks: deepCandidates.length,
+    });
+
+    for (let index = 0; index < deepCandidates.length; index++) {
+        throwIfScanAborted(options?.signal);
+        const ind = deepCandidates[index];
+        reportScanProgress(options, {
+            stage: 'Validating setup candidates',
+            message: `Validating candidate ${index + 1} of ${deepCandidates.length}.`,
+            progressPct: 76 + ((index + 1) / Math.max(deepCandidates.length, 1)) * 14,
+            processedStocks: index + 1,
+            totalStocks: deepCandidates.length,
+            setupsFound: setups.length,
+        });
         const avgTurnoverCr = (ind.avgVolume20d * ind.ltp) / 10000000;
         const marketCapCr = MARKET_CAP_CR_MAP[ind.ticker] ?? Math.round(avgTurnoverCr * 50);
         const lastCandle = ind.candles[ind.candles.length - 1];
-        const isSmall = marketCapCr < 5000;
+        const capTier = getMarketCapTier(ind.ticker, marketCapCr);
+        const isSmall = capTier === 'SMALL_CAP';
 
-        // ── Setup type detection ──────────────────────────────────
         const setupType = identifySetupType(ind) as import('./types').SetupType;
+        const setupFamilyEarly = inferSetupFamily(setupType, ind);
 
-        // ── Phase 1: Structural Stop Loss ─────────────────────────
         const atr14 = calcATR(ind.candles.slice(-30));
-        const entryPrice = +(lastCandle.high * 1.001).toFixed(2);
+        const recentHigh10 = Math.max(...ind.candles.slice(-10).map(c => c.high));
+        const recentHigh20 = Math.max(...ind.candles.slice(-20).map(c => c.high));
+        const recentHigh5 = Math.max(...ind.candles.slice(-5).map(c => c.high));
+        const recentLow5 = Math.min(...ind.candles.slice(-5).map(c => c.low));
+        const recentLow8 = Math.min(...ind.candles.slice(-8).map(c => c.low));
+        const recentLow12 = Math.min(...ind.candles.slice(-12).map(c => c.low));
+
+        let rawEntryPrice = lastCandle.high * 1.001;
+        if (setupType === 'Leader Pullback Reclaim') {
+            rawEntryPrice = Math.max(lastCandle.high, ind.ema20, recentHigh10) * 1.001;
+        } else if (setupType === 'Second-Entry Retest') {
+            rawEntryPrice = Math.max(lastCandle.high, recentHigh20) * 1.0012;
+        } else if (setupType === 'Earnings Reaction Continuation') {
+            rawEntryPrice = Math.max(lastCandle.high, recentHigh10, ind.ema20) * 1.001;
+        } else if (setupType === 'Compression in Leaders') {
+            rawEntryPrice = Math.max(lastCandle.high, recentHigh5) * 1.0015;
+        }
+        const entryPrice = roundToNseTick(rawEntryPrice);
         const previousClose = ind.candles[ind.candles.length - 2]?.close ?? lastCandle.close;
         const gapPct = calcGapPct(lastCandle.open, previousClose);
 
-        let stopLoss = 0;
+        let rawStopLoss = 0;
         if (ind.isDeepValue) {
-            // Structural stop: just below the lowest low of the last 15 days
             const recentLows = ind.candles.slice(-15).map(c => c.low);
-            stopLoss = Math.min(...recentLows) * 0.99; // 1% buffer
-        } else if (setupType.includes('VCP') || ind.isBullFlag) {
-            // Tight structural stop: below the recent pivot low (5 days)
+            rawStopLoss = Math.min(...recentLows) * 0.99;
+        } else if (setupType === 'Leader Pullback Reclaim') {
+            rawStopLoss = Math.min(recentLow8, ind.ema20 * 0.993, entryPrice - 1.3 * atr14);
+        } else if (setupType === 'Second-Entry Retest') {
+            rawStopLoss = Math.min(recentLow12, ind.ema20 * 0.992, entryPrice - 1.5 * atr14);
+        } else if (setupType === 'Earnings Reaction Continuation') {
+            rawStopLoss = Math.min(recentLow5, previousClose * 0.995, entryPrice - 1.4 * atr14);
+        } else if (setupType === 'Compression in Leaders') {
+            rawStopLoss = Math.min(recentLow5, ind.ema20 * 0.994, entryPrice - 1.25 * atr14);
+        } else if (setupType.includes('VCP') || ind.isBullFlag || setupType === 'Squeeze Breakout' || setupType === 'Compression Breakout') {
             const recentLows = ind.candles.slice(-5).map(c => c.low);
-            stopLoss = Math.min(...recentLows) * 0.993; // 0.7% buffer
+            rawStopLoss = Math.min(...recentLows) * 0.993;
+        } else if (setupType.includes('Pullback')) {
+            const recentLows = ind.candles.slice(-8).map(c => c.low);
+            rawStopLoss = Math.min(...recentLows) * 0.994;
         } else {
-            // Trend follower: below 20 EMA or 1.5 ATR
-            stopLoss = Math.min(ind.ema20 * 0.99, entryPrice - 1.5 * atr14);
+            rawStopLoss = Math.min(ind.ema20 * 0.99, entryPrice - 1.5 * atr14);
         }
 
-        // Failsafe bounds
-        if (entryPrice - stopLoss > 2.5 * atr14) stopLoss = entryPrice - 2.5 * atr14;
-        if (stopLoss >= entryPrice) stopLoss = entryPrice - atr14;
+        if (entryPrice - rawStopLoss > 2.5 * atr14) rawStopLoss = entryPrice - 2.5 * atr14;
+        if (rawStopLoss >= entryPrice) rawStopLoss = entryPrice - atr14;
 
-        stopLoss = +(stopLoss).toFixed(2);
+        const stopLoss = roundToNseTick(rawStopLoss);
         const slPct = +(((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2);
 
         if (stopLoss <= 0 || stopLoss >= entryPrice) continue;
 
-        // ── Target: 3×ATR (ensures ≥ 2:1 RR) ────────────────────
-        const target1 = +(entryPrice + 3.0 * atr14).toFixed(2); // T1 = 3×ATR (RR 1.5)
+        const targetAtrMult = setupType === 'Leader Pullback Reclaim' ? 2.8 :
+            setupType === 'Second-Entry Retest' ? 3.1 :
+                setupType === 'Earnings Reaction Continuation' ? 3.4 :
+                    setupType === 'Compression in Leaders' ? 3.2 :
+                        setupType === 'Deep Value Reversion 📉' ? 2.6 : 3.0;
+        const target1 = roundToNseTick(entryPrice + targetAtrMult * atr14);
         let targetPrice = target1;
 
-        // For Deep Value Reversion, target the 50 DMA if it makes sense mathematically
         if (ind.isDeepValue && ind.ema50 > entryPrice + (2.0 * atr14)) {
-            targetPrice = +(ind.ema50).toFixed(2);
+            targetPrice = roundToNseTick(ind.ema50);
         }
 
-        const target2 = +(targetPrice + 1.5 * atr14).toFixed(2); // T2
+        const target2 = roundToNseTick(targetPrice + 1.5 * atr14);
         const targetPct = +(((targetPrice - entryPrice) / entryPrice) * 100).toFixed(2);
         const rawRiskReward = +(((targetPrice - entryPrice) / (entryPrice - stopLoss))).toFixed(2);
         const slippagePct = estimateSlippagePct(marketCapCr, ind.volumeRatio, 'Swing');
         const effectiveRiskReward = calcEffectiveRiskReward(entryPrice, stopLoss, targetPrice, slippagePct);
         const riskReward = effectiveRiskReward;
 
-        // ── GATE: Minimum RR ≥ 2:1 ───────────────────────────────
-        const strongEarlyContinuation =
-            ind.volumeRatio >= 1.5 &&
-            ind.returns10d >= 3 &&
-            ind.rsi14 >= 54 &&
-            ind.rsi14 <= 72;
-        const minimumRiskReward = strongEarlyContinuation ? 1.35 : MIN_RR;
-        const minimumTargetPct = strongEarlyContinuation ? 3.2 : 4;
-        if (riskReward < minimumRiskReward) continue;
-        // ── GATE: Target ≥ 4% ────────────────────────────────────
-        if (targetPct < minimumTargetPct) continue;
-
-        // ── GATE: News risk check ─────────────────────────────────
-        const news = await validateNewsRisk(ind.ticker);
+        const [news, earnings] = await Promise.all([
+            validateNewsRisk(ind.ticker),
+            validateEarningsRisk(ind.ticker),
+        ]);
         if (news.blocked) continue;
-
-        // ── GATE: Earnings risk check ─────────────────────────────
-        const earnings = await validateEarningsRisk(ind.ticker);
         if (earnings.blocked) continue;
 
-        // ── 5-Component Confidence Score ──────────────────────────
-        const breakdown = computeConfidence(ind, riskReward);
+        const breakdown = computeConfidence(ind, riskReward, setupType);
         const recentSwingHigh = Math.max(...ind.candles.slice(-21, -1).map(candle => candle.high));
         const recentSwingLow = Math.min(...ind.candles.slice(-10).map(candle => candle.low));
         const breakoutQuality = scoreBreakoutQuality({
@@ -1161,11 +1320,6 @@ export async function buildTradeSetups(
             pctFromPivot: compression.pctFromPivot,
             rangeTightnessPct: compression.rangeTightnessPct,
         });
-        const primaryExecutionQuality = setupType.includes('Pullback') || ind.isDeepValue
-            ? pullbackQuality
-            : setupType === 'Compression Breakout'
-                ? Math.max(breakoutQuality, compressionQuality)
-                : breakoutQuality;
         const setupFamily = inferSetupFamily(setupType, ind);
         let tomorrowContinuationScore = scoreTomorrowContinuation({
             ind,
@@ -1192,46 +1346,37 @@ export async function buildTradeSetups(
             effectiveRiskReward,
         });
         const predictiveEdgeScore = +(((tomorrowContinuationScore * 0.46) + (fiveDaySwingScore * 0.34) + (confluenceScore * 0.20))).toFixed(1);
-        const isPredictiveLeader = tomorrowContinuationScore >= 6.8 || fiveDaySwingScore >= 7.1;
-        const minimumExecutionQuality = isPredictiveLeader ? 4.4 : 4.8;
-        const minimumGapQuality = isPredictiveLeader ? 3.4 : 3.8;
-        if (primaryExecutionQuality < minimumExecutionQuality || gapQuality < minimumGapQuality) continue;
-        const executionAdjustment = ((primaryExecutionQuality - 5) * 0.2) + ((gapQuality - 5) * 0.08) + ((effectiveRiskReward - 1.5) * 0.35);
-        const predictiveAdjustment = ((tomorrowContinuationScore - 5) * 0.24) + ((fiveDaySwingScore - 5) * 0.22);
-        const executionAdjustedConfidence = +clamp(breakdown.total + executionAdjustment + predictiveAdjustment, 0, 10).toFixed(1);
 
-        // ── GATE: Score ≥ MIN_CONFIDENCE — THE KEY FILTER ───────────────────
-        if (executionAdjustedConfidence < MIN_CONFIDENCE) continue;
-
-        // ── In NEUTRAL regime: raise bar to 8.0 ──────────────────
-        // (half size AND higher quality threshold)
-        // This is already handled by the positionSizeMult on the frontend
-
-        // To approach a high win rate, we only trade outperformers.
-        // Stock must beat Nifty over 3 months.
-        if (ind.returns3m - ind.nifty3mReturn < 0) continue;
-
-        // ── GATE: Moving Average Pinch ────────────────────────────────
-        // Precise short-term momentum alignment required (with slight tolerance for pullbacks)
-        if (ind.ema20 < ind.ema50 * 0.98) continue;
-
-        if (predictiveEdgeScore < 6.2) continue;
-
-        // Note: setupType was already computed above.
-
-        // ── GATE: The VCP Volume Dry-Up Law ───────────────────────
-        if (setupType.includes('VCP')) {
-            if (ind.candles.length >= 6) {
-                const last5Vols = ind.candles.slice(-6, -1).map(c => c.volume);
-                const avgVol5d = last5Vols.reduce((a, b) => a + b, 0) / 5;
-                // Soft warning instead of absolute rejection to prevent 0 setups
-                if (avgVol5d > ind.avgVolume20d * 0.8) {
-                    // We let it pass but Claude will see the exact volume ratio
-                }
+        let regimeMultiplier = 1.0;
+        const regime = marketStatus?.regime ?? 'NEUTRAL';
+        if (regime === 'BULLISH') {
+            if (setupType === 'Squeeze Breakout' || ind.isBullFlag || setupType.includes('Breakout') || setupType === 'Momentum Continuation') {
+                regimeMultiplier = 1.20;
+            } else if (ind.isDeepValue) {
+                regimeMultiplier = 0.65;
+            }
+        } else if (regime === 'NEUTRAL') {
+            if (setupType === 'Compression Breakout' || setupType.includes('Contraction') || setupType.includes('Pullback') || setupType.includes('Bounce')) {
+                regimeMultiplier = 1.15;
+            } else if (setupType === 'Momentum Continuation' || ind.isBullFlag) {
+                regimeMultiplier = 0.80;
+            }
+        } else if (regime === 'RISK_OFF') {
+            if (ind.isDeepValue) {
+                regimeMultiplier = 1.30;
+            } else {
+                regimeMultiplier = 0.50;
             }
         }
 
-        // ── Timeframe categorization ─────────────────────────────
+        let finalConfidenceScore = +clamp(breakdown.total * regimeMultiplier, 1, 10).toFixed(1);
+        let finalPredictiveEdgeScore = +clamp(predictiveEdgeScore * regimeMultiplier, 1, 10).toFixed(1);
+
+        const requiresHighVolMultiplier = !setupType.includes('Pullback') && !ind.isBullFlag && !ind.isSqueeze;
+        const passesVolumeMultiplier = !requiresHighVolMultiplier || ind.volumeRatio >= 1.5;
+        const isTriggered = passesVolumeMultiplier && finalConfidenceScore >= 6.5;
+        const setupStatus = isTriggered ? 'TRIGGERED' : 'QUALIFIED';
+
         const horizon = classifySwingHorizon(tomorrowContinuationScore, fiveDaySwingScore);
         const horizonLabel = horizon.label;
         const timeframe = (() => {
@@ -1242,15 +1387,17 @@ export async function buildTradeSetups(
             return 'Short Swing';
         })();
 
-        // ── Hit probability ───────────────────────────────────────
         const hitProb = estimateHitProbability(ind, targetPct);
 
-        // ── Entry trigger text ────────────────────────────────────
         const entryTrigger = (() => {
-            if (ind.isDeepValue) return `Deep Value Reversal. Buy on confirmation close above ${entryPrice}.`;
-            if (ind.isBullFlag) return `Bull Flag breakout. Buy as it crosses ${entryPrice} with early volume.`;
+            if (setupType === 'Leader Pullback Reclaim') return `Leader pullback reclaim. Buy above ${roundToNseTick(entryPrice)} as price reclaims EMA20 and leadership resumes.`;
+            if (setupType === 'Second-Entry Retest') return `Second-entry retest. Buy above ${roundToNseTick(entryPrice)} only if the prior breakout high is reclaimed cleanly.`;
+            if (setupType === 'Earnings Reaction Continuation') return `Earnings reaction continuation. Buy above ${roundToNseTick(entryPrice)} if the post-event move keeps expanding.`;
+            if (setupType === 'Compression in Leaders') return `Compression in leaders. Buy above ${roundToNseTick(entryPrice)} on expansion out of the tight range.`;
+            if (ind.isDeepValue) return `Deep Value Reversal. Buy on confirmation close above ${roundToNseTick(entryPrice)}.`;
+            if (ind.isBullFlag) return `Bull Flag breakout. Buy as it crosses ${roundToNseTick(entryPrice)} with early volume.`;
             const vcp = detectVCP(ind.candles);
-            if (vcp.isVCP) return `VCP breakout above pivot ${entryPrice}. Volume must be ≥ 1.5× on breakout day.`;
+            if (vcp.isVCP) return `VCP breakout above pivot ${roundToNseTick(entryPrice)}. Volume must be ≥ 1.5× on breakout day.`;
             if (compression.isCompression) {
                 const patternBits = [
                     compression.nr7 ? 'NR7' : null,
@@ -1258,16 +1405,15 @@ export async function buildTradeSetups(
                     compression.insideBar ? 'inside bar' : null,
                 ].filter((value): value is string => Boolean(value));
                 const patternLabel = patternBits.length ? ` (${patternBits.join(' + ')})` : '';
-                return `Compression breakout${patternLabel}. Buy above ${entryPrice} only if price expands with volume follow-through.`;
+                return `Compression breakout${patternLabel}. Buy above ${roundToNseTick(entryPrice)} only if price expands with volume follow-through.`;
             }
-            if (Math.abs(ind.ltp - ind.ema20) / ind.ema20 < 0.02) return `Bounce from 20 EMA. Enter above ${entryPrice} on green candle.`;
-            if (Math.abs(ind.ltp - ind.ema50) / ind.ema50 < 0.03) return `50 EMA pullback. Enter above ${entryPrice} with volume confirmation.`;
+            if (Math.abs(ind.ltp - ind.ema20) / ind.ema20 < 0.02) return `Bounce from 20 EMA. Enter above ${roundToNseTick(entryPrice)} on green candle.`;
+            if (Math.abs(ind.ltp - ind.ema50) / ind.ema50 < 0.03) return `50 EMA pullback. Enter above ${roundToNseTick(entryPrice)} with volume confirmation.`;
             return horizonLabel === 'Tomorrow continuation'
-                ? `Tomorrow continuation setup. Buy above ${entryPrice} if price holds strength into the next session.`
-                : `Short swing setup. Buy above ${entryPrice} if price confirms continuation over the next 1-2 sessions.`;
+                ? `Tomorrow continuation setup. Buy above ${roundToNseTick(entryPrice)} if price holds strength into the next session.`
+                : `Short swing setup. Buy above ${roundToNseTick(entryPrice)} if price confirms continuation over the next 1-2 sessions.`;
         })();
 
-        // ── Catalyst text ─────────────────────────────────────────
         const catalyst = [
             `RSI: ${ind.rsi14.toFixed(1)} ${ind.isDeepValue ? '(oversold)' : '(momentum zone)'}`,
             ind.isDeepValue ? `Stretch: ${ind.distFrom200.toFixed(1)}% below 200 DMA` : `ADX: ${ind.adx14.toFixed(1)} (${ind.adx14 > 30 ? 'strong' : 'moderate'} trend)`,
@@ -1283,20 +1429,23 @@ export async function buildTradeSetups(
             sector: SECTOR_MAP[ind.ticker] ?? 'Diversified',
             setupFamily,
             marketCapCr,
-            ltp: +ind.ltp.toFixed(2),
-            trendStatus: `${ind.ltp.toFixed(2)} is ${ind.distFrom200.toFixed(1)}% above 200 DMA. 50EMA slope: ${ind.ema50Slope > 0 ? '+' : ''}${ind.ema50Slope.toFixed(2)}%/10d`,
+            ltp: roundToNseTick(ind.ltp),
+            trendStatus: `${roundToNseTick(ind.ltp)} is ${ind.distFrom200.toFixed(1)}% above 200 DMA. 50EMA slope: ${ind.ema50Slope > 0 ? '+' : ''}${ind.ema50Slope.toFixed(2)}%/10d`,
             volumeSpike: `${ind.volumeRatio.toFixed(2)}× 20d avg (${isSmall ? 'small cap — 2× required' : '1.5× required'})`,
             entryTrigger,
-            buyZone: entryPrice,
-            target: targetPrice,
-            target2,
+            buyZone: roundToNseTick(entryPrice),
+            target: roundToNseTick(targetPrice),
+            target2: roundToNseTick(target2),
             atr14: +atr14.toFixed(2),
-            stopLoss,
+            stopLoss: roundToNseTick(stopLoss),
+            isTriggered,
+            status: setupStatus,
             targetPct,
             slPct,
             riskReward,
             catalyst,
-            confidenceScore: executionAdjustedConfidence,
+            confidenceScore: finalConfidenceScore,
+            aiSignal: isTriggered && finalConfidenceScore >= 7 ? 'BUY' : 'WATCH',
             confidenceBreakdown: {
                 scoreTrend: breakdown.scoreTrend,
                 scoreVolume: breakdown.scoreVolume,
@@ -1319,6 +1468,7 @@ export async function buildTradeSetups(
             totalOI: ind.totalOI,
             oiChangePct: ind.oiChangePct,
             derivativeStatus: ind.derivativeStatus,
+            maxPain: (ind as any).maxPain,
             executionQuality: {
                 breakoutQuality,
                 pullbackQuality,
@@ -1326,7 +1476,7 @@ export async function buildTradeSetups(
                 effectiveRiskReward,
                 slippagePct,
             },
-            calibratedEdgeScore: predictiveEdgeScore,
+            calibratedEdgeScore: finalPredictiveEdgeScore,
             confluenceScore,
             rejectionReasons: [],
             confidenceDrivers: [
@@ -1341,93 +1491,37 @@ export async function buildTradeSetups(
                 `Slippage-adjusted RR ${effectiveRiskReward}:1 (raw ${rawRiskReward}:1)`,
             ],
             alertStage: 'SETUP_DETECTED',
-        });
+            sectorBreadthScore: sectorBreadthMap[SECTOR_MAP[ind.ticker] || 'Diversified']?.breadthScore ?? 0.5,
+        } as any);
     }
 
-    // Take top 8 (after all gates — should be small quality set)
     const finalSetups = setups
-        .sort((a, b) =>
-            (a.setupCategory === 'TOMORROW' ? 0 : 1) - (b.setupCategory === 'TOMORROW' ? 0 : 1) ||
-            (b.calibratedEdgeScore ?? 0) - (a.calibratedEdgeScore ?? 0) ||
-            (b.confluenceScore ?? 0) - (a.confluenceScore ?? 0) ||
-            b.confidenceScore - a.confidenceScore ||
-            b.riskReward - a.riskReward
-        )
+        .sort((a, b) => b.confidenceScore - a.confidenceScore)
         .slice(0, 8);
-    await enrichTradeSetupsWithAI(finalSetups, qualified);
 
-    // ── AI ENRICHMENT ────────────────────────────────────────────
-    if (false && finalSetups.length > 0) {
-        const aiInputData = finalSetups.map(s => {
-            const ind = qualified.find(q => q.ticker === s.ticker);
-            return {
-                ticker: s.ticker,
-                close: s.ltp,
-                high: ind?.candles[ind.candles.length - 1]?.high,
-                volume: ind?.todayVolume,
-                avgVolume20d: ind?.avgVolume20d,
-                rsi14: ind?.rsi14,
-                adx14: ind?.adx14,
-                distFromDma200Pct: ind?.distFrom200 ?? null,
-                sector: s.sector,
-                mcap: s.marketCapCr,
-                setupType: s.setupType,
-                confidenceScore: s.confidenceScore,
-                headlines: s.headlines,
-                pcr: s.pcr,
-                derivativeStatus: s.derivativeStatus,
-            };
-        });
+    reportScanProgress(options, {
+        stage: 'Finalizing setup rankings',
+        message: `${finalSetups.length} trade-ready setup${finalSetups.length === 1 ? '' : 's'} identified.`,
+        progressPct: 92,
+        processedStocks: deepCandidates.length,
+        totalStocks: deepCandidates.length,
+        setupsFound: finalSetups.length,
+    });
 
-        const aiAssessments = await analyzeStocksWithAI(aiInputData);
-        for (const s of finalSetups) {
-            const assessment = aiAssessments.get(s.ticker);
-            if (!assessment) continue;
-            const safeAssessment = assessment!;
-            s.aiSignal = safeAssessment.signal;
-            s.aiLogic = safeAssessment.logic;
-            s.aiTargetRange = safeAssessment.target_range;
-            s.aiStopLoss = safeAssessment.stop_loss;
-            // Phase 1: Authorized Trigger Zone
-            if (safeAssessment.trigger_price != null) {
-                s.authorizedZone = {
-                    triggerPrice: safeAssessment.trigger_price!,
-                    triggerVolumeRatio: safeAssessment.trigger_volume_ratio ?? 1.2,
-                    authorizedAt: new Date(),
-                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
-                };
-            }
-            // Only override confidence if AI momentum_score is meaningful AND higher
-            if (safeAssessment.momentum_score && safeAssessment.momentum_score > s.confidenceScore) {
-                s.confidenceScore = Math.min(10, safeAssessment.momentum_score);
-            }
-        }
-    }
-
-    // STRICT CUSTOMER REQUEST: Filter out WATCH and REJECT signals.
-
-    // ── Phase 5: Multi-Agent Risk Manager (Sector Concentration) ─────
-
-    // ── Phase 3: EV-Based Prioritization ──────────────────────────
-    const setupsWithEV = await Promise.all(finalSetups.map(async s => {
-        (s as any).expectedValue = await calculateExpectedValue(s);
-        return s;
-    }));
-
-    // Sort by EV (Descending)
-    setupsWithEV.sort((a, b) => (b as any).expectedValue - (a as any).expectedValue);
-
-    if (marketStatus) {
-        await enrichSetupsWithGroundedNews(setupsWithEV, qualified, marketStatus, false);
-        await applyRiskGovernor(setupsWithEV, marketStatus);
-    }
-
-    return setupsWithEV;
+    return finalSetups;
 }
-
 export async function runIntradayScanner(
-    dataApi: MarketDataApi | null = null
+    dataApi: MarketDataApi | null = null,
+    options?: ScannerExecutionOptions,
 ): Promise<{ qualified: StockIndicators[]; marketStatus: MarketStatus; setups: TradeSetup[]; diagnostics: ScanDiagnostics }> {
+    throwIfScanAborted(options?.signal);
+    reportScanProgress(options, {
+        stage: 'Checking intraday market regime',
+        message: 'Preparing the liquid intraday universe.',
+        progressPct: 5,
+        processedStocks: 0,
+        totalStocks: INTRADAY_UNIVERSE.length,
+    });
     const marketStatus = await checkMarketCondition();
     const diagnostics: ScanDiagnostics = {
         mode: 'intraday',
@@ -1457,13 +1551,20 @@ export async function runIntradayScanner(
     const qualified: StockIndicators[] = [];
 
     for (let i = 0; i < INTRADAY_UNIVERSE.length; i += 8) {
+        throwIfScanAborted(options?.signal);
         const batch = INTRADAY_UNIVERSE.slice(i, i + 8);
         const settled = await Promise.allSettled(
             batch.map(async (ticker) => {
                 const yahoo = NSE_UNIVERSE[ticker] ?? `${ticker}.NS`;
-                const candles = dataApi
-                    ? await dataApi.getHistoricalData(ticker, '5m', 10)
-                    : await fetchHistoricalData(yahoo, 10, '5m');
+                let candles: any[] = [];
+                if (dataApi) {
+                    try {
+                        candles = await dataApi.getHistoricalData(ticker, '5m', 10);
+                    } catch { /* fallback to yahoo */ }
+                }
+                if (!candles || candles.length === 0) {
+                    candles = await fetchHistoricalData(yahoo, 10, '5m');
+                }
                 return { ticker, candles };
             })
         );
@@ -1511,6 +1612,15 @@ export async function runIntradayScanner(
 
             qualified.push(ind);
         }
+
+        const processed = Math.min(INTRADAY_UNIVERSE.length, i + batch.length);
+        reportScanProgress(options, {
+            stage: 'Analyzing intraday momentum',
+            message: `Analyzed ${processed} of ${INTRADAY_UNIVERSE.length} liquid stocks.`,
+            progressPct: 10 + (processed / Math.max(INTRADAY_UNIVERSE.length, 1)) * 70,
+            processedStocks: processed,
+            totalStocks: INTRADAY_UNIVERSE.length,
+        });
     }
 
     diagnostics.qualifiedCount = qualified.length;

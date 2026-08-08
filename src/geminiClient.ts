@@ -11,18 +11,26 @@ export async function geminiAsk(system: string, user: string, options?: { maxTok
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-        model: "gemini-1.5-pro",
+        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
         systemInstruction: system
     });
 
-    const result = await model.generateContent({
-        contents: [{ role: "user", parts: [{ text: user }] }],
-        generationConfig: {
-            maxOutputTokens: options?.maxTokens || 1000,
-            temperature: options?.temperature || 0.2,
-        },
-    });
 
-    const response = await result.response;
-    return response.text();
+    const timeoutPromise = new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error("Gemini API request timed out (15s)")), 15000)
+    );
+
+    const apiPromise = async () => {
+        const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: user }] }],
+            generationConfig: {
+                maxOutputTokens: options?.maxTokens || 1000,
+                temperature: options?.temperature || 0.2,
+            },
+        });
+        const response = await result.response;
+        return response.text();
+    };
+
+    return Promise.race([apiPromise(), timeoutPromise]);
 }

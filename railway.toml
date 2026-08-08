@@ -1,10 +1,11 @@
 # Railway deployment config
 [build]
-builder = "dockerfile"
+builder = "DOCKERFILE"
 
 [deploy]
-healthcheckPath = "/api/health"
+healthcheckPath = "/api/ready"
 healthcheckTimeout = 100
+preDeployCommand = ["npx prisma migrate deploy"]
 startCommand = "npm start"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3

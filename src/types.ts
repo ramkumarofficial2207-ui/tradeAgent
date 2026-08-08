@@ -9,6 +9,7 @@ export interface Candle {
     low: number;
     close: number;
     volume: number;
+    timestamp?: string | number | Date;
 }
 
 export type MarketDataInterval = '1d' | '15m' | '5m';
@@ -61,12 +62,41 @@ export interface StockIndicators {
     nifty1mReturn: number;
     outperformsNifty: boolean;
     accumulationScore?: number; // Phase 4 Extension
+    timeSeriesMomentumBullish: boolean;
+    isLeader: boolean;
+    leaderScore: number;
     isBullFlag?: boolean;
     isDeepValue?: boolean;
+    isLeaderPullbackReclaim: boolean;
+    isSecondEntryRetest: boolean;
+    isEarningsReactionContinuation: boolean;
+    isCompressionInLeaders: boolean;
+    ichimokuTenkan: number;
+    ichimokuKijun: number;
+    ichimokuSpanA: number;
+    ichimokuSpanB: number;
+    ichimokuCloudTop: number;
+    ichimokuCloudBottom: number;
+    ichimokuBullish: boolean;
+    supertrend: number;
+    supertrendBullish: boolean;
+    acceptanceScore: number;
+    absorptionScore: number;
+    efficiencyRatio: number;
+    efficiencyScore: number;
+    persistenceScore: number;
+    breakoutRetentionScore: number;
+    failureRiskScore: number;
+    relativeStrengthAcceleration: number;
+    relativeStrengthAccelerationScore: number;
+    preMoveScore: number;
     pcr?: number;
     totalOI?: number;
     oiChangePct?: number;
     derivativeStatus?: string;
+    isSqueeze: boolean;
+    squeezeTightness: number;
+    isPocketPivot: boolean;
     candles: Candle[];
 }
 
@@ -74,15 +104,23 @@ export type SetupType =
     | 'Pullback Continuation'
     | 'EMA50 Pullback'
     | 'EMA20 Pullback'
+    | 'Leader Pullback Reclaim'
+    | 'Second-Entry Retest'
+    | 'Earnings Reaction Continuation'
     | 'Volatility Contraction (VCP)'
     | 'VCP Breakout 🔥'
     | 'VCP Contraction'
     | 'Compression Breakout'
+    | 'Compression in Leaders'
     | 'Breakout Base'
     | 'EMA20 Bounce'
     | 'Momentum Continuation'
+    | 'Acceptance Breakout'
+    | 'Ichimoku Cloud Breakout'
+    | 'Supertrend Continuation'
     | 'Bull Flag Breakout 🚩'
-    | 'Deep Value Reversion 📉';
+    | 'Deep Value Reversion 📉'
+    | 'Squeeze Breakout';
 
 export interface TriggerZone {
     triggerPrice: number;
@@ -151,7 +189,7 @@ export interface ExecutionQualityContext {
 export interface TradeSetup {
     ticker: string;
     sector: string;
-    setupFamily?: 'BREAKOUT' | 'PULLBACK' | 'COMPRESSION' | 'REVERSAL' | 'CONTINUATION';
+    setupFamily?: 'BREAKOUT' | 'PULLBACK' | 'COMPRESSION' | 'REVERSAL' | 'CONTINUATION' | 'LEADER' | 'EVENT_DRIVEN';
     marketCapCr?: number;
     ltp: number;
     trendStatus: string;
@@ -189,14 +227,20 @@ export interface TradeSetup {
     aiLogic?: string;
     aiTargetRange?: string;
     aiStopLoss?: string;
+    sparkline?: number[];
+    mlWinProbability?: number;
+    mlAction?: string;
     // Phase 6 Extension
     pcr?: number;
     totalOI?: number;
     oiChangePct?: number;
     derivativeStatus?: string;
+    isTriggered?: boolean;
+    status?: 'TRIGGERED' | 'QUALIFIED' | 'WATCHLIST';
     // Phase 1 Latency Fix
     authorizedZone?: TriggerZone;
     marketGrounding?: MarketGroundingContext;
+
     newsDistribution?: NewsDistributionContext;
     executionQuality?: ExecutionQualityContext;
     calibratedEdgeScore?: number;

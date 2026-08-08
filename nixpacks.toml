@@ -2,7 +2,7 @@
 nodeVersion = "20"
 
 [phases.build]
-cmds = ["npm install --include=dev", "npx prisma generate", "tsc", "cd frontend && npm install --include=dev && npm run build"]
+cmds = ["npm ci --include=dev", "npx prisma generate", "tsc", "npm --prefix apex-intelligence ci", "npm --prefix apex-intelligence run build"]
 
 [phases.setup]
 cmds = []

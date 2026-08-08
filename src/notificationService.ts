@@ -64,7 +64,7 @@ export async function notifyUsersWithMorningDigest(setups: TradeSetup[], regime:
 
         if (user.notifyBuySignals && premiumSetups.length > 0) {
             await sendPushNotificationToUser(user.id, {
-                title: 'StockSage morning brief',
+                title: 'ApexScan morning brief',
                 body: `${premiumSetups.length} premium setup${premiumSetups.length === 1 ? '' : 's'} ready in ${regime} regime.`,
                 data: {
                     screen: '/(tabs)',
@@ -88,7 +88,7 @@ export async function notifyUsersWithPostMarketSummary(setups: TradeSetup[], reg
             }
             if (user.notifyBuySignals) {
                 await sendPushNotificationToUser(user.id, {
-                    title: 'StockSage post-market summary',
+                    title: 'ApexScan post-market summary',
                     body: premiumSetups.length
                         ? `${premiumSetups.length} premium setup${premiumSetups.length === 1 ? '' : 's'} survived the close.`
                         : 'No premium BUY setups survived the closing scan today.',

@@ -9,7 +9,7 @@ export const scanLimiter = rateLimit({
     legacyHeaders: false,
     message: {
         success: false,
-        message: 'Scanner rate limit reached. Please wait 15 minutes before scanning again.'
+        message: 'Scanner rate limit reached. Please wait a few minutes before scanning again.'
     }
 });
 
@@ -27,12 +27,23 @@ export const chatLimiter = rateLimit({
 
 export const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 10,
+    max: 5,
     standardHeaders: true,
     legacyHeaders: false,
     message: {
         success: false,
         message: 'Too many login attempts. Please try again in 15 minutes.'
+    }
+});
+
+export const paymentLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        message: 'Too many payment requests. Please try again later.'
     }
 });
 

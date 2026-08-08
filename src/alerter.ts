@@ -178,8 +178,8 @@ export async function sendPreMarketDigestToEmail(email: string, setups: TradeSet
         recipients: [email],
         setups: premiumSetups,
         title: 'PRE-MARKET BRIEF',
-        headerTitle: 'StockSage AI',
-        subject: `📈 StockSage Pre-Market Brief — ${new Date().toLocaleDateString('en-IN')}`,
+        headerTitle: 'ApexScan AI',
+        subject: `📈 ApexScan Pre-Market Brief — ${new Date().toLocaleDateString('en-IN')}`,
         subtitle: `Market regime: ${regime}`,
         summary: premiumSetups.length
             ? `${premiumSetups.length} premium setup${premiumSetups.length > 1 ? 's' : ''} cleared the morning filter.`
@@ -193,8 +193,8 @@ export async function sendPostMarketSummaryToEmail(email: string, setups: TradeS
         recipients: [email],
         setups: premiumSetups,
         title: 'POST-MARKET SUMMARY',
-        headerTitle: 'StockSage AI',
-        subject: `📊 StockSage Post-Market Summary — ${new Date().toLocaleDateString('en-IN')}`,
+        headerTitle: 'ApexScan AI',
+        subject: `📊 ApexScan Post-Market Summary — ${new Date().toLocaleDateString('en-IN')}`,
         subtitle: `Closing regime: ${regime}`,
         summary: premiumSetups.length
             ? `${premiumSetups.length} premium swing setup${premiumSetups.length > 1 ? 's remained' : ' remained'} on the close.`

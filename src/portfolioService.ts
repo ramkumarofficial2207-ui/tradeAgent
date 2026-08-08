@@ -24,6 +24,35 @@ export interface CloseTrade {
     exitReason: 'TARGET' | 'STOP' | 'TRAIL' | 'MANUAL';
 }
 
+export interface OwnedTradeUpdate {
+    currentPrice?: number;
+    stopLossTrail?: number;
+    notes?: string;
+}
+
+interface TradeForCloseMetrics {
+    entryPrice: number;
+    quantity: number;
+    stopLossInit: number;
+    initialRiskRs: number | null;
+    entryDate: Date;
+}
+
+export function buildCloseMetrics(trade: TradeForCloseMetrics, exitPrice: number, now = new Date()) {
+    const pnlRs = (exitPrice - trade.entryPrice) * trade.quantity;
+    const pnlPct = ((exitPrice - trade.entryPrice) / trade.entryPrice) * 100;
+    const initialRisk = trade.initialRiskRs || ((trade.entryPrice - trade.stopLossInit) * trade.quantity);
+    const rMultiple = initialRisk !== 0 ? pnlRs / initialRisk : 0;
+    const daysHeld = Math.max(0, Math.ceil((now.getTime() - new Date(trade.entryDate).getTime()) / 86400000));
+
+    return {
+        pnlRs: +pnlRs.toFixed(2),
+        pnlPct: +pnlPct.toFixed(2),
+        rMultiple: +rMultiple.toFixed(2),
+        daysHeld,
+    };
+}
+
 export interface PortfolioNewsRiskItem {
     ticker: string;
     sector: string | null;
@@ -109,26 +138,29 @@ export async function closeTrade(userId: string, tradeId: string, close: CloseTr
     });
     if (!trade) throw new Error('Trade not found or already closed.');
 
-    const exitPrice = close.exitPrice;
-    const pnlRs = (exitPrice - trade.entryPrice) * trade.quantity;
-    const pnlPct = ((exitPrice - trade.entryPrice) / trade.entryPrice) * 100;
-    const initialRisk = trade.initialRiskRs || ((trade.entryPrice - trade.stopLossInit) * trade.quantity);
-    const rMultiple = initialRisk !== 0 ? pnlRs / initialRisk : 0;
-    const daysHeld = Math.ceil((Date.now() - new Date(trade.entryDate).getTime()) / 86400000);
-
-    return prisma.trade.update({
-        where: { id: tradeId },
+    const metrics = buildCloseMetrics(trade, close.exitPrice);
+    const result = await prisma.trade.updateMany({
+        where: { id: tradeId, userId, status: 'OPEN' },
         data: {
             status: 'CLOSED',
             exitDate: new Date(),
-            exitPrice,
+            exitPrice: close.exitPrice,
             exitReason: close.exitReason,
-            pnlRs: +pnlRs.toFixed(2),
-            pnlPct: +pnlPct.toFixed(2),
-            rMultiple: +rMultiple.toFixed(2),
-            daysHeld,
+            ...metrics,
         },
     });
+    if (result.count !== 1) throw new Error('Trade could not be closed.');
+
+    return prisma.trade.findFirstOrThrow({ where: { id: tradeId, userId } });
+}
+
+export async function updateOwnedTrade(userId: string, tradeId: string, update: OwnedTradeUpdate) {
+    const result = await prisma.trade.updateMany({
+        where: { id: tradeId, userId, status: 'OPEN' },
+        data: update,
+    });
+    if (result.count !== 1) throw new Error('Open trade not found.');
+    return prisma.trade.findFirstOrThrow({ where: { id: tradeId, userId } });
 }
 
 // ── Get portfolio summary ─────────────────────────────────────────────
@@ -412,9 +444,6 @@ export async function getPortfolioIntelligence(userId: string, scan: ScanResult 
     };
 }
 
-export async function updateTradeCurrentPrice(tradeId: string, currentPrice: number) {
-    return prisma.trade.update({
-        where: { id: tradeId },
-        data: { currentPrice },
-    });
+export async function updateTradeCurrentPrice(userId: string, tradeId: string, currentPrice: number) {
+    return updateOwnedTrade(userId, tradeId, { currentPrice });
 }
